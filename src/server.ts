@@ -4,11 +4,20 @@ import { handleLanguages } from "./tools/languages";
 import { lookupRootInputSchema, handleLookupRoot } from "./tools/root";
 import { closeDb } from "./db";
 
-function toolResponse(fn: () => string) {
+function toolResponse(tool: string, args: Record<string, unknown>, fn: () => string) {
+  const argsStr = Object.entries(args)
+    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+    .join(" ");
+  const t0 = performance.now();
   try {
-    return { content: [{ type: "text" as const, text: fn() }] };
+    const text = fn();
+    const ms = (performance.now() - t0).toFixed(0);
+    console.log(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
+    return { content: [{ type: "text" as const, text }] };
   } catch (err) {
+    const ms = (performance.now() - t0).toFixed(0);
     const message = err instanceof Error ? err.message : String(err);
+    console.error(`[tool] ${tool} ${argsStr} → ERROR: ${message} (${ms}ms)`);
     return {
       content: [{ type: "text" as const, text: `Error: ${message}` }],
       isError: true as const,
@@ -28,14 +37,14 @@ export function createMcpServer(): McpServer {
       "Supports x-system input (e.g., 'cxirkaux' for 'ĉirkaŭ') and grammatical form stemming " +
       "(e.g., 'amikojn' finds 'amiko').",
     lookupInputSchema.shape,
-    async (args) => toolResponse(() => handleLookup(args as any))
+    async (args) => toolResponse("lookup", args as Record<string, unknown>, () => handleLookup(args as any))
   );
 
   server.tool(
     "languages",
     "List all available languages in the Reta Vortaro dictionary with their translation counts.",
     {},
-    async () => toolResponse(() => handleLanguages())
+    async (args) => toolResponse("languages", {}, () => handleLanguages())
   );
 
   server.tool(
@@ -43,7 +52,7 @@ export function createMcpServer(): McpServer {
     "Look up all derived word forms of an Esperanto root (e.g. 'rav' → ravi, rava, rave, ravado…). " +
       "Returns translations only (no definitions or examples), filtered to the specified languages.",
     lookupRootInputSchema.shape,
-    async (args) => toolResponse(() => handleLookupRoot(args as any))
+    async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => handleLookupRoot(args as any))
   );
 
   return server;

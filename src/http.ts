@@ -37,6 +37,8 @@ Bun.serve({
     }
 
     if (url.pathname === MCP_PATH) {
+      const t0 = performance.now();
+      console.log(`[http] ${req.method} ${MCP_PATH}`);
       // Fresh transport per request (stateless mode).
       // enableJsonResponse avoids SSE streaming so we can safely close after responding.
       const transport = new WebStandardStreamableHTTPServerTransport({
@@ -46,6 +48,8 @@ Bun.serve({
       await server.connect(transport);
       try {
         const response = await transport.handleRequest(req);
+        const ms = (performance.now() - t0).toFixed(0);
+        console.log(`[http] ${req.method} ${MCP_PATH} → ${response.status} (${ms}ms)`);
         const headers = new Headers(response.headers);
         for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
         return new Response(response.body, {
