@@ -11,6 +11,7 @@ COPY src/ ./src/
 COPY tsconfig.json ./
 
 # Download the Reta Vortaro database and build FTS indexes
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
 RUN bun run setup
 
 ENV PORT=3000

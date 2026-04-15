@@ -37,16 +37,21 @@ Bun.serve({
     }
 
     if (url.pathname === MCP_PATH) {
-      // SDK stateless mode requires a fresh transport per request.
-      const transport = new WebStandardStreamableHTTPServerTransport();
+      // Fresh transport per request (stateless mode).
+      // enableJsonResponse avoids SSE streaming so we can safely close after responding.
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        enableJsonResponse: true,
+      });
       const server = createMcpServer();
       await server.connect(transport);
       try {
         const response = await transport.handleRequest(req);
+        const headers = new Headers(response.headers);
+        for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
         return new Response(response.body, {
           status: response.status,
           statusText: response.statusText,
-          headers: { ...Object.fromEntries(response.headers), ...CORS_HEADERS },
+          headers,
         });
       } finally {
         await server.close();
