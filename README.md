@@ -13,6 +13,48 @@ Provides Esperanto definitions, examples, and translations across 174 languages 
 - **Grammatical form stemming** — `amikojn` (plural accusative) automatically finds `amiko`
 - **Cross-references** — related words, synonyms, antonyms
 
+## Public Server (Railway)
+
+A hosted instance is available — no setup required:
+
+```
+https://revo-mcp-production-b460.up.railway.app/mcp
+```
+
+### With Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "revo": {
+      "type": "http",
+      "url": "https://revo-mcp-production-b460.up.railway.app/mcp"
+    }
+  }
+}
+```
+
+### With `claude` CLI
+
+```json
+{
+  "mcpServers": {
+    "revo": {
+      "type": "http",
+      "url": "https://revo-mcp-production-b460.up.railway.app/mcp"
+    }
+  }
+}
+```
+
+### Deploy your own on Railway
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Davidiusdadi/revo-mcp)
+
+The `bun run setup` step runs automatically on first deploy via the Railway start command.
+
+---
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) 1.0+
