@@ -80,10 +80,10 @@ export function lookupEsperanto(
 
   if (normalized.length === 0) return [];
 
-  // 1. Exact match
+  // 1. Exact match (uses idx_nodo_kap COLLATE NOCASE)
   let nodes = db
     .query<NodoRow, [string]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE lower(kap) = ? ORDER BY length(mrk)"
+      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
     )
     .all(normalized);
 
@@ -91,10 +91,10 @@ export function lookupEsperanto(
     return assembleResults(nodes, limit);
   }
 
-  // 2. Variant match
+  // 2. Variant match (uses idx_var_kap COLLATE NOCASE)
   const variants = db
     .query<{ mrk: string; kap: string }, [string]>(
-      "SELECT mrk, kap FROM var WHERE lower(kap) = ?"
+      "SELECT mrk, kap FROM var WHERE kap = ? COLLATE NOCASE"
     )
     .all(normalized);
 
@@ -119,7 +119,7 @@ export function lookupEsperanto(
     if (stem === normalized) continue; // Already tried
     nodes = db
       .query<NodoRow, [string]>(
-        "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE lower(kap) = ? ORDER BY length(mrk)"
+        "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
       )
       .all(stem);
 
@@ -133,7 +133,7 @@ export function lookupEsperanto(
   // 4. Prefix match
   nodes = db
     .query<NodoRow, [string, number]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE lower(kap) LIKE ? || '%' ORDER BY length(kap), kap LIMIT ?"
+      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap LIKE ? || '%' COLLATE NOCASE ORDER BY length(kap), kap LIMIT ?"
     )
     .all(normalized, limit * 5);
 
@@ -157,7 +157,7 @@ export function lookupEsperanto(
       for (const kap of kaps.slice(0, limit)) {
         const n = db
           .query<NodoRow, [string]>(
-            "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE lower(kap) = ? ORDER BY length(mrk)"
+            "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
           )
           .all(kap);
         allNodes.push(...n);
@@ -188,10 +188,10 @@ export function lookupTranslation(
 
   if (normalized.length === 0) return [];
 
-  // 1. Exact match
+  // 1. Exact match (uses idx_traduko_lng_trd COLLATE NOCASE on trd)
   let trds = db
     .query<TradukoRow, [string, string]>(
-      "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND lower(trd) = ? LIMIT 50"
+      "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd = ? COLLATE NOCASE LIMIT 50"
     )
     .all(lang, normalized);
 
@@ -226,7 +226,7 @@ export function lookupTranslation(
     // 3. LIKE partial match
     trds = db
       .query<TradukoRow, [string, string]>(
-        "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND lower(trd) LIKE '%' || ? || '%' LIMIT 50"
+        "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd LIKE '%' || ? || '%' COLLATE NOCASE LIMIT 50"
       )
       .all(lang, normalized);
   }
@@ -269,7 +269,7 @@ export function lookupAllLanguages(
   // Search translations across all languages
   let trds = db
     .query<TradukoRow, [string]>(
-      "SELECT mrk, lng, trd, txt FROM traduko WHERE lower(trd) = ? LIMIT 100"
+      "SELECT mrk, lng, trd, txt FROM traduko WHERE trd = ? COLLATE NOCASE LIMIT 100"
     )
     .all(normalized);
 
@@ -317,6 +317,106 @@ export function lookupAllLanguages(
     }
   }
   return merged.slice(0, limit);
+}
+
+export interface WildcardMatch {
+  kap: string;
+  glosses: string[];
+}
+
+/**
+ * Compact wildcard search: returns just headwords + all glosses in glossLang.
+ * Used for discovery when * is in the query — fits hundreds of results in one response.
+ *
+ * Two-step for performance: (1) fetch matching headwords with a COLLATE NOCASE LIKE
+ * (uses idx_nodo_kap, ~5ms), (2) batch-fetch all translations for those mrks via
+ * idx_traduko_mrk (~25ms). Avoids the LEFT-JOIN-then-LIMIT trap that scanned all
+ * 48K rows and ran ~18s in the prior implementation.
+ */
+export function lookupWildcardCompact(
+  pattern: string,
+  glossLang: string = "en",
+  limit: number = 100,
+  offset: number = 0
+): { matches: WildcardMatch[]; total: number } {
+  const db = getDb();
+  const sqlPattern = pattern.replace(/\*/g, "%");
+
+  const total = (db
+    .query<{ c: number }, [string]>(
+      `SELECT COUNT(DISTINCT kap) as c FROM nodo WHERE kap LIKE ? COLLATE NOCASE`
+    )
+    .get(sqlPattern))?.c ?? 0;
+
+  // Step 1: fetch matching headwords (one canonical mrk per kap).
+  const headwords = db
+    .query<{ kap: string; mrk: string }, [string, number, number]>(
+      `SELECT kap, MIN(mrk) AS mrk FROM nodo
+       WHERE kap LIKE ? COLLATE NOCASE
+       GROUP BY kap
+       ORDER BY length(kap), kap
+       LIMIT ? OFFSET ?`
+    )
+    .all(sqlPattern, limit, offset);
+
+  if (headwords.length === 0) return { matches: [], total };
+
+  // Step 2: batch-fetch all translations in glossLang for those mrks.
+  const placeholders = headwords.map(() => "?").join(",");
+  const mrks = headwords.map((h) => h.mrk);
+  const glossRows = db
+    .query<{ mrk: string; trd: string }, (string | string)[]>(
+      `SELECT mrk, trd FROM traduko WHERE lng = ? AND mrk IN (${placeholders})`
+    )
+    .all(glossLang, ...mrks);
+
+  const glossMap = new Map<string, string[]>();
+  for (const row of glossRows) {
+    let arr = glossMap.get(row.mrk);
+    if (!arr) { arr = []; glossMap.set(row.mrk, arr); }
+    arr.push(row.trd);
+  }
+
+  const matches = headwords.map((h) => ({
+    kap: h.kap,
+    glosses: glossMap.get(h.mrk) ?? [],
+  }));
+
+  return { matches, total };
+}
+
+/**
+ * Wildcard search for Esperanto headwords (full rich results).
+ * Use * as wildcard: '*ejo' (suffix), 'ej*' (prefix), '*ej*' (infix), 'l*ejo' (both).
+ */
+export function lookupWildcard(
+  pattern: string,
+  limit: number = 20
+): LookupResult[] {
+  const db = getDb();
+  const sqlPattern = pattern.replace(/\*/g, "%");
+
+  const nodes = db
+    .query<NodoRow, [string, string, number]>(
+      `SELECT mrk, art, kap, num FROM (
+         SELECT n.mrk, n.art, n.kap, n.num
+         FROM nodo n
+         WHERE n.kap LIKE ? COLLATE NOCASE
+         UNION
+         SELECT n.mrk, n.art, n.kap, n.num
+         FROM nodo n JOIN var v ON n.mrk = v.mrk
+         WHERE v.kap LIKE ? COLLATE NOCASE
+       )
+       ORDER BY length(kap), kap
+       LIMIT ?`
+    )
+    .all(sqlPattern, sqlPattern, limit * 5);
+
+  if (nodes.length === 0) return [];
+
+  const results = assembleResults(nodes, limit);
+  for (const r of results) r.matchedVia = `wildcard:${pattern}`;
+  return results;
 }
 
 /**

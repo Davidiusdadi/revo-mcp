@@ -2,7 +2,7 @@
  * Formats lookup results as readable Markdown text for MCP tool responses.
  */
 
-import type { LookupResult } from "./db";
+import type { LookupResult, WildcardMatch } from "./db";
 
 const LANGUAGE_NAMES: Record<string, string> = {
   af: "Afrikaans", am: "Amara", ar: "Araba", az: "Azerbajĝana",
@@ -35,6 +35,38 @@ const LANGUAGE_NAMES: Record<string, string> = {
 
 export function languageName(code: string): string {
   return LANGUAGE_NAMES[code] ?? code;
+}
+
+/**
+ * Compact wildcard listing: one line per headword with optional gloss.
+ */
+export function formatWildcardCompact(
+  matches: WildcardMatch[],
+  pattern: string,
+  glossLang: string = "en",
+  total: number = matches.length,
+  offset: number = 0
+): string {
+  if (total === 0) {
+    return `No headwords match \`${pattern}\`.`;
+  }
+
+  const end = offset + matches.length;
+  const lines: string[] = [];
+  const range = matches.length < total ? ` (showing ${offset + 1}–${end} of ${total})` : "";
+  lines.push(
+    `Found ${total} Esperanto headword${total === 1 ? "" : "s"} matching \`${pattern}\` (gloss: ${languageName(glossLang)})${range}.`
+  );
+  lines.push("");
+  for (const m of matches) {
+    lines.push(m.glosses.length > 0 ? `- **${m.kap}** — ${m.glosses.join(", ")}` : `- **${m.kap}**`);
+  }
+  lines.push("");
+  if (end < total) {
+    lines.push(`_More results available. Call lookup again with \`offset: ${end}\` to get the next page._`);
+  }
+  lines.push("_Call \`lookup\` on any headword (without \`*\`) for full definition and translations._");
+  return lines.join("\n");
 }
 
 /**
