@@ -80,10 +80,10 @@ export function lookupEsperanto(
 
   if (normalized.length === 0) return [];
 
-  // 1. Exact match (uses idx_nodo_kap COLLATE NOCASE)
+  // 1. Exact match (uses idx_nodo_kap_norm; Unicode-aware via pre-folded column)
   let nodes = db
     .query<NodoRow, [string]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
+      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
     )
     .all(normalized);
 
@@ -91,10 +91,10 @@ export function lookupEsperanto(
     return assembleResults(nodes, limit);
   }
 
-  // 2. Variant match (uses idx_var_kap COLLATE NOCASE)
+  // 2. Variant match (uses idx_var_kap_norm)
   const variants = db
     .query<{ mrk: string; kap: string }, [string]>(
-      "SELECT mrk, kap FROM var WHERE kap = ? COLLATE NOCASE"
+      "SELECT mrk, kap FROM var WHERE kap_norm = ?"
     )
     .all(normalized);
 
@@ -119,7 +119,7 @@ export function lookupEsperanto(
     if (stem === normalized) continue; // Already tried
     nodes = db
       .query<NodoRow, [string]>(
-        "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
+        "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
       )
       .all(stem);
 
@@ -133,7 +133,7 @@ export function lookupEsperanto(
   // 4. Prefix match
   nodes = db
     .query<NodoRow, [string, number]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap LIKE ? || '%' COLLATE NOCASE ORDER BY length(kap), kap LIMIT ?"
+      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm LIKE ? || '%' ORDER BY length(kap), kap LIMIT ?"
     )
     .all(normalized, limit * 5);
 
@@ -157,7 +157,7 @@ export function lookupEsperanto(
       for (const kap of kaps.slice(0, limit)) {
         const n = db
           .query<NodoRow, [string]>(
-            "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
+            "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
           )
           .all(kap);
         allNodes.push(...n);
@@ -340,11 +340,12 @@ export function lookupWildcardCompact(
   offset: number = 0
 ): { matches: WildcardMatch[]; total: number } {
   const db = getDb();
-  const sqlPattern = pattern.replace(/\*/g, "%");
+  // Match against the Unicode-folded column; pattern must be lowercased too.
+  const sqlPattern = pattern.toLowerCase().replace(/\*/g, "%");
 
   const total = (db
     .query<{ c: number }, [string]>(
-      `SELECT COUNT(DISTINCT kap) as c FROM nodo WHERE kap LIKE ? COLLATE NOCASE`
+      `SELECT COUNT(DISTINCT kap) as c FROM nodo WHERE kap_norm LIKE ?`
     )
     .get(sqlPattern))?.c ?? 0;
 
@@ -352,7 +353,7 @@ export function lookupWildcardCompact(
   const headwords = db
     .query<{ kap: string; mrk: string }, [string, number, number]>(
       `SELECT kap, MIN(mrk) AS mrk FROM nodo
-       WHERE kap LIKE ? COLLATE NOCASE
+       WHERE kap_norm LIKE ?
        GROUP BY kap
        ORDER BY length(kap), kap
        LIMIT ? OFFSET ?`
@@ -394,18 +395,18 @@ export function lookupWildcard(
   limit: number = 20
 ): LookupResult[] {
   const db = getDb();
-  const sqlPattern = pattern.replace(/\*/g, "%");
+  const sqlPattern = pattern.toLowerCase().replace(/\*/g, "%");
 
   const nodes = db
     .query<NodoRow, [string, string, number]>(
       `SELECT mrk, art, kap, num FROM (
          SELECT n.mrk, n.art, n.kap, n.num
          FROM nodo n
-         WHERE n.kap LIKE ? COLLATE NOCASE
+         WHERE n.kap_norm LIKE ?
          UNION
          SELECT n.mrk, n.art, n.kap, n.num
          FROM nodo n JOIN var v ON n.mrk = v.mrk
-         WHERE v.kap LIKE ? COLLATE NOCASE
+         WHERE v.kap_norm LIKE ?
        )
        ORDER BY length(kap), kap
        LIMIT ?`
@@ -451,7 +452,7 @@ function assembleResults(
 
     let senses: LookupResult["senses"] = [];
     if (artRow?.txt) {
-      const entry = extractByMrk(artRow.txt, drvMrk);
+      const entry = extractByMrk(artRow.txt, drvMrk, node.art);
       if (entry) {
         senses = entry.senses;
       }
@@ -464,12 +465,14 @@ function assembleResults(
       )
       .all(drvMrk);
 
-    // Also fetch translations at sense level
+    // Also fetch translations at sense level. Using a range over the indexed
+    // mrk column instead of LIKE — case-insensitive LIKE forces a full scan
+    // of the 801K-row traduko table (~80ms vs ~0.02ms via the index).
     const senseTranslations = db
-      .query<{ lng: string; trd: string; mrk: string }, [string]>(
-        "SELECT lng, trd, mrk FROM traduko WHERE mrk LIKE ? || '.%' ORDER BY lng"
+      .query<{ lng: string; trd: string; mrk: string }, [string, string]>(
+        "SELECT lng, trd, mrk FROM traduko WHERE mrk >= ? || '.' AND mrk < ? || '/' ORDER BY lng"
       )
-      .all(drvMrk);
+      .all(drvMrk, drvMrk);
 
     const allTranslations = [...translations, ...senseTranslations].map(
       (t) => ({
@@ -478,12 +481,12 @@ function assembleResults(
       })
     );
 
-    // Fetch cross-references
+    // Fetch cross-references (range form — see senseTranslations note).
     const refs = db
-      .query<{ cel: string; tip: string }, [string]>(
-        "SELECT cel, tip FROM referenco WHERE mrk = ? OR mrk LIKE ? || '.%'"
+      .query<{ cel: string; tip: string }, [string, string, string]>(
+        "SELECT cel, tip FROM referenco WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')"
       )
-      .all(drvMrk, drvMrk);
+      .all(drvMrk, drvMrk, drvMrk);
 
     const crossRefs = refs.map((r) => {
       // Try to resolve target headword
@@ -499,12 +502,12 @@ function assembleResults(
       };
     });
 
-    // Fetch usage domains
+    // Fetch usage domains (range form — see senseTranslations note).
     const uzoj = db
-      .query<{ uzo: string }, [string]>(
-        "SELECT DISTINCT uzo FROM uzo WHERE mrk = ? OR mrk LIKE ? || '.%'"
+      .query<{ uzo: string }, [string, string, string]>(
+        "SELECT DISTINCT uzo FROM uzo WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')"
       )
-      .all(drvMrk, drvMrk);
+      .all(drvMrk, drvMrk, drvMrk);
     const usageDomains = uzoj.map((u) => u.uzo);
 
     results.push({
@@ -609,10 +612,10 @@ export function lookupFamily(query: string): FamilyResult | null {
 
   const result: FamilyMember[] = drvMembers.map(({ mrk, kap }) => {
     const trds = db
-      .query<{ lng: string; trd: string }, [string, string]>(
-        "SELECT lng, trd FROM traduko WHERE mrk = ? OR mrk LIKE ? || '.%' ORDER BY lng"
+      .query<{ lng: string; trd: string }, [string, string, string]>(
+        "SELECT lng, trd FROM traduko WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/') ORDER BY lng"
       )
-      .all(mrk, mrk);
+      .all(mrk, mrk, mrk);
     return { headword: kap, mrk, translations: trds };
   });
 

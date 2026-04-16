@@ -71,6 +71,31 @@ function augmentWithIndexes(dbPath: string): void {
   db.run("CREATE INDEX IF NOT EXISTS idx_uzo_mrk ON uzo(mrk)");
   console.log("  Standard indexes created.");
 
+  // Unicode-aware case-folded headword column. SQLite's NOCASE collation only
+  // folds ASCII; Esperanto's Ĉ Ĝ Ĥ Ĵ Ŝ Ŭ need full Unicode case folding.
+  // We pre-compute kap.toLowerCase() (Unicode-aware in JS) into kap_norm and
+  // index it, so runtime queries do plain BINARY index lookups.
+  for (const table of ["nodo", "var"] as const) {
+    const cols = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === "kap_norm")) {
+      db.run(`ALTER TABLE ${table} ADD COLUMN kap_norm TEXT`);
+    }
+    const todo = db
+      .query<{ rowid: number; kap: string }, []>(
+        `SELECT rowid, kap FROM ${table} WHERE kap_norm IS NULL`
+      )
+      .all();
+    if (todo.length > 0) {
+      const upd = db.prepare(`UPDATE ${table} SET kap_norm = ? WHERE rowid = ?`);
+      const tx = db.transaction((rows: typeof todo) => {
+        for (const r of rows) upd.run(r.kap?.toLowerCase() ?? null, r.rowid);
+      });
+      tx(todo);
+    }
+    db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_kap_norm ON ${table}(kap_norm)`);
+  }
+  console.log("  Unicode-normalized kap_norm columns + indexes created.");
+
   // FTS5 for headword search
   const ftsKapExists = db
     .query(

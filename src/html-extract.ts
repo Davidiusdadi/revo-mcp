@@ -15,6 +15,30 @@
 
 import { parse, HTMLElement, TextNode } from "node-html-parser";
 
+const PARSED_CACHE_MAX = 500;
+const parsedCache = new Map<string, HTMLElement>();
+
+function getParsedRoot(htmlBlob: Buffer | Uint8Array, cacheKey?: string): HTMLElement {
+  if (cacheKey !== undefined) {
+    const hit = parsedCache.get(cacheKey);
+    if (hit) {
+      // refresh insertion order so this entry survives FIFO eviction
+      parsedCache.delete(cacheKey);
+      parsedCache.set(cacheKey, hit);
+      return hit;
+    }
+  }
+  const root = parse(Buffer.from(htmlBlob).toString("utf-8"));
+  if (cacheKey !== undefined) {
+    if (parsedCache.size >= PARSED_CACHE_MAX) {
+      const oldest = parsedCache.keys().next().value;
+      if (oldest !== undefined) parsedCache.delete(oldest);
+    }
+    parsedCache.set(cacheKey, root);
+  }
+  return root;
+}
+
 export interface DrvEntry {
   mrk: string;
   headword: string;
@@ -32,9 +56,8 @@ export interface SenseEntry {
 /**
  * Extract all derivation entries from an article HTML blob.
  */
-export function extractArticle(htmlBlob: Buffer | Uint8Array): DrvEntry[] {
-  const html = Buffer.from(htmlBlob).toString("utf-8");
-  const root = parse(html);
+export function extractArticle(htmlBlob: Buffer | Uint8Array, cacheKey?: string): DrvEntry[] {
+  const root = getParsedRoot(htmlBlob, cacheKey);
   const entries: DrvEntry[] = [];
 
   const drvSections = root.querySelectorAll("section.drv");
@@ -58,10 +81,10 @@ export function extractArticle(htmlBlob: Buffer | Uint8Array): DrvEntry[] {
  */
 export function extractByMrk(
   htmlBlob: Buffer | Uint8Array,
-  targetMrk: string
+  targetMrk: string,
+  cacheKey?: string
 ): DrvEntry | null {
-  const html = Buffer.from(htmlBlob).toString("utf-8");
-  const root = parse(html);
+  const root = getParsedRoot(htmlBlob, cacheKey);
 
   // Try to find the h2 with this exact ID (derivation level)
   const h2 = root.querySelector(`h2[id="${targetMrk}"]`);
