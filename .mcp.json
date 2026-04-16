@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "revo-mcp": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "src/index.ts"]
+    }
+  }
+}
