@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { lookupInputSchema, handleLookup } from "./tools/lookup";
 import { handleLanguages } from "./tools/languages";
 import { lookupRootInputSchema, handleLookupRoot } from "./tools/root";
+import { examplesInputSchema, handleExamples } from "./tools/examples";
 import { closeDb } from "./db";
 
 function toolResponse(tool: string, args: Record<string, unknown>, fn: () => string) {
@@ -53,6 +54,16 @@ export function createMcpServer(): McpServer {
       "Returns translations only (no definitions or examples), filtered to the specified languages.",
     lookupRootInputSchema.shape,
     async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => handleLookupRoot(args as any))
+  );
+
+  server.tool(
+    "examples",
+    "Search the corpus of Esperanto example sentences harvested from every article. " +
+      "Useful for finding inflected forms (e.g. 'abelojn'), compounds, collocations, " +
+      "or proper nouns that don't appear as dictionary headwords. Returns matching " +
+      "example sentences grouped by the article they live in.",
+    examplesInputSchema.shape,
+    async (args) => toolResponse("examples", args as Record<string, unknown>, () => handleExamples(args as any))
   );
 
   return server;

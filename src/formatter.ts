@@ -2,7 +2,7 @@
  * Formats lookup results as readable Markdown text for MCP tool responses.
  */
 
-import type { LookupResult, WildcardMatch } from "./db";
+import type { LookupResult, WildcardMatch, ExampleHit } from "./db";
 
 const LANGUAGE_NAMES: Record<string, string> = {
   af: "Afrikaans", am: "Amara", ar: "Araba", az: "Azerbajĝana",
@@ -66,6 +66,55 @@ export function formatWildcardCompact(
     lines.push(`_More results available. Call lookup again with \`offset: ${end}\` to get the next page._`);
   }
   lines.push("_Call \`lookup\` on any headword (without \`*\`) for full definition and translations._");
+  return lines.join("\n");
+}
+
+/**
+ * Format example-corpus hits grouped by their host headword.
+ * When `fallback` is set, we prepend a message explaining that this is a
+ * fallback from a missed headword lookup rather than a direct example query.
+ */
+export function formatExampleHits(
+  hits: ExampleHit[],
+  query: string,
+  fallback: boolean = false
+): string {
+  if (hits.length === 0) {
+    return fallback
+      ? `No dictionary entry for \`${query}\`, and no examples contain this word.`
+      : `No example sentences match \`${query}\`.`;
+  }
+
+  // Group by host headword (drvMrk keeps different derivations separate
+  // even when they share the same surface kap).
+  const byDrv = new Map<string, { headword: string; hits: ExampleHit[] }>();
+  for (const h of hits) {
+    const entry = byDrv.get(h.drvMrk);
+    if (entry) entry.hits.push(h);
+    else byDrv.set(h.drvMrk, { headword: h.headword, hits: [h] });
+  }
+
+  const lines: string[] = [];
+  if (fallback) {
+    lines.push(
+      `No dictionary entry for \`${query}\`. Found ${hits.length} example sentence${hits.length === 1 ? "" : "s"} containing it:`
+    );
+  } else {
+    lines.push(
+      `Found ${hits.length} example sentence${hits.length === 1 ? "" : "s"} matching \`${query}\`.`
+    );
+  }
+  lines.push("");
+
+  for (const [, group] of byDrv) {
+    lines.push(`## ${group.headword}`);
+    for (const h of group.hits) {
+      lines.push(`- ${h.ekzMd}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("_Call \`lookup\` on any headword above for its full dictionary entry._");
   return lines.join("\n");
 }
 

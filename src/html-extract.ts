@@ -216,3 +216,98 @@ function cleanDefinition(dif: HTMLElement): string {
 function cleanText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
+
+export interface ExampleEntry {
+  drvMrk: string;
+  senseMrk?: string;
+  ekzMd: string;
+  position: number;
+}
+
+/**
+ * Walk every <i class="ekz"> element in the article, rendering each to
+ * markdown and recording its enclosing derivation + sense context.
+ */
+export function extractAllExamples(
+  htmlBlob: Buffer | Uint8Array,
+  cacheKey?: string
+): ExampleEntry[] {
+  const root = getParsedRoot(htmlBlob, cacheKey);
+  const entries: ExampleEntry[] = [];
+  let position = 0;
+
+  for (const drv of root.querySelectorAll("section.drv")) {
+    const h2 = drv.querySelector("h2");
+    const drvMrk = h2?.getAttribute("id");
+    if (!drvMrk) continue;
+
+    for (const ekz of drv.querySelectorAll("i.ekz")) {
+      const md = ekzToMarkdown(ekz);
+      if (md.length === 0) continue;
+      entries.push({
+        drvMrk,
+        senseMrk: findSenseMrk(ekz) ?? undefined,
+        ekzMd: md,
+        position: position++,
+      });
+    }
+  }
+
+  return entries;
+}
+
+function findSenseMrk(ekz: HTMLElement): string | null {
+  const dd = ekz.closest("dd");
+  if (!dd) return null;
+  let prev = dd.previousElementSibling;
+  while (prev) {
+    if (prev.tagName === "DT") {
+      const id = prev.getAttribute("id");
+      return id ?? null;
+    }
+    prev = prev.previousElementSibling;
+  }
+  return null;
+}
+
+function hasClass(el: HTMLElement, cls: string): boolean {
+  const names = el.classNames;
+  if (!names) return false;
+  return names.split(/\s+/).includes(cls);
+}
+
+/**
+ * Render an <i class="ekz"> element's inner HTML to markdown.
+ *
+ * Rules (see plan): ekztld → inlined plain (keeps inflected form as one
+ * token), nom → **bold**, klr/pr → literal brackets already in text, ref
+ * → plain text no link, fnt/fntref → dropped, anything else → text content.
+ */
+function ekzToMarkdown(ekz: HTMLElement): string {
+  const out: string[] = [];
+  walkInline(ekz, out);
+  return cleanText(out.join(""));
+}
+
+function walkInline(node: HTMLElement, out: string[]): void {
+  for (const child of node.childNodes) {
+    if (child instanceof TextNode) {
+      out.push(child.rawText);
+      continue;
+    }
+    if (!(child instanceof HTMLElement)) continue;
+
+    // Drop bibliographic noise entirely
+    if (hasClass(child, "fnt") || hasClass(child, "fntref")) continue;
+
+    if (hasClass(child, "nom")) {
+      out.push("**");
+      walkInline(child, out);
+      out.push("**");
+      continue;
+    }
+
+    // ekztld / klr / pr / ref / any other inline wrapper: just recurse
+    walkInline(child, out);
+  }
+}

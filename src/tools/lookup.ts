@@ -8,8 +8,9 @@ import {
   lookupTranslation,
   lookupAllLanguages,
   lookupWildcardCompact,
+  searchExamples,
 } from "../db";
-import { formatResults, formatWildcardCompact } from "../formatter";
+import { formatResults, formatWildcardCompact, formatExampleHits } from "../formatter";
 import { hasXSystem, fromXSystem } from "../stemmer";
 
 export const lookupInputSchema = z.object({
@@ -86,6 +87,16 @@ export function handleLookup(args: LookupInput): string {
     results = lookupAllLanguages(query, limit);
   } else {
     results = lookupTranslation(query, lang, limit);
+  }
+
+  // Fallback: if the headword chain came up empty for an Esperanto lookup,
+  // check whether the word appears inside any example sentence. Catches
+  // un-stored compounds (librotenejo), proper nouns, and rare inflections.
+  if (results.length === 0 && lang === "eo") {
+    const hits = searchExamples(query, Math.min(limit * 4, 20));
+    if (hits.length > 0) {
+      return formatExampleHits(hits, query, true);
+    }
   }
 
   return formatResults(results, show_languages);
