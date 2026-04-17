@@ -162,18 +162,50 @@ function buildEkzemploCorpus(db: Database): void {
   `);
   db.run("CREATE INDEX IF NOT EXISTS idx_ekzemplo_drv ON ekzemplo(drv_mrk)");
   db.run("CREATE INDEX IF NOT EXISTS idx_ekzemplo_art ON ekzemplo(art)");
+
+  // Trigram tokenizer: indexes every 3-char window so substring searches
+  // ('ema' finds manĝema, 'nulejo' finds malsanulejo) work as well as
+  // whole-word matches. remove_diacritics folds Ĉ↔c, ĝ↔g, etc., so an
+  // ASCII-only query like 'songo' matches 'sonĝo'.
+  const existingFts = db
+    .query<{ sql: string }, []>(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='fts_ekz'"
+    )
+    .get();
+  const hasTrigram = existingFts?.sql?.includes("trigram") ?? false;
+  let ftsNeedsRebuild = false;
+  if (existingFts && !hasTrigram) {
+    console.log("  Migrating fts_ekz to trigram tokenizer...");
+    db.run("DROP TABLE fts_ekz");
+    ftsNeedsRebuild = true;
+  } else if (!existingFts) {
+    ftsNeedsRebuild = true;
+  }
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS fts_ekz USING fts5(
       ekz_md,
       content='ekzemplo',
       content_rowid='rowid',
-      tokenize='unicode61 remove_diacritics 2'
+      tokenize='trigram case_sensitive 0 remove_diacritics 1'
     )
   `);
 
   const existing = db.query<{ c: number }, []>("SELECT COUNT(*) c FROM ekzemplo").get();
   if (existing && existing.c > 0) {
-    console.log(`  Example corpus already populated (${existing.c} rows).`);
+    // Probe the FTS index with a cheap query to detect whether it's actually
+    // populated. An external-content FTS5 table can exist but contain no
+    // tokens (e.g. after a DROP+CREATE without rebuild).
+    const probe = db
+      .query<{ c: number }, []>("SELECT COUNT(*) AS c FROM fts_ekz WHERE fts_ekz MATCH 'the'")
+      .get();
+    const indexEmpty = !probe || probe.c === 0;
+    if (ftsNeedsRebuild || indexEmpty) {
+      console.log("  Rebuilding fts_ekz index from existing ekzemplo rows...");
+      const t0 = Date.now();
+      db.run("INSERT INTO fts_ekz(fts_ekz) VALUES('rebuild')");
+      console.log(`    done in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
+    }
+    console.log(`  Example corpus ready (${existing.c} rows).`);
     return;
   }
 

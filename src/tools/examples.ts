@@ -13,13 +13,18 @@ import { formatExampleHits } from "../formatter";
 export const examplesInputSchema = z.object({
   query: z
     .string()
-    .min(1)
+    .min(3)
     .max(200)
     .describe(
-      "Word or short phrase to search for in Esperanto example sentences. " +
-      "Exact-token match first, then falls back to prefix-of-stem to catch " +
-      "inflected forms. Use this when `lookup` returns nothing or when you want " +
-      "to see how a word is actually used."
+      "Substring to search for in Esperanto example sentences. Minimum 3 characters. " +
+      "Matches anywhere inside words by default (e.g. 'ema' finds 'manĝema', " +
+      "'nulejo' finds 'malsanulejo'). " +
+      "Diacritics and case are folded: 'songo' matches 'sonĝo', 'cirkau' matches 'Ĉirkaŭ'. " +
+      "Word-boundary tip: leading/trailing spaces are significant and act as boundary " +
+      "markers. ' ema ' (space-ema-space) matches only the standalone word 'ema' (not " +
+      "'manĝema'); ' hom' matches word-initial 'hom' (homo, homaro) but not 'prahomo'; " +
+      "'hom ' matches word-final 'hom'. Use this to find inflected forms, compounds, " +
+      "proper nouns, or phrases that only appear inside example sentences."
     ),
   limit: z
     .number()

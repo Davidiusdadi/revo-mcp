@@ -646,60 +646,50 @@ export interface ExampleHit {
 /**
  * Search the pre-built example corpus (fts_ekz) for a word or phrase.
  *
- * Strategy:
- *   1. Try the query as an FTS phrase match (quoted exact-token match).
- *   2. If zero hits, fall back to a prefix search on the shortest stem
- *      from generateStems — catches inflected forms like `abelojn` → `abel*`.
- *
- * Joins back to `nodo` to resolve the host headword for display.
+ * Uses the trigram tokenizer, so matches are substring-based: 'ema' finds
+ * 'manĝema', 'nulejo' finds 'malsanulejo'. Diacritics are folded, so
+ * 'songo' finds 'sonĝo' and 'cirkau' finds 'Ĉirkaŭ'. Minimum query length
+ * is 3 characters (FTS5 trigram requirement).
  */
 export function searchExamples(query: string, limit: number = 20): ExampleHit[] {
   const db = getDb();
-  const normalized = normalizeQuery(query);
-  if (normalized.length === 0) return [];
+  // Same normalization as normalizeQuery EXCEPT we preserve leading/trailing
+  // whitespace so callers can use " word " as a word-boundary query under the
+  // trigram tokenizer (spaces are tokenizable characters).
+  let normalized = query;
+  if (hasXSystem(normalized)) normalized = fromXSystem(normalized);
+  normalized = normalized.toLowerCase();
+  if (normalized.trim().length === 0) return [];
+  if (normalized.length < 3) return [];
 
-  const runMatch = (ftsExpr: string, via: string): ExampleHit[] => {
-    const rows = db
-      .query<
-        {
-          art: string;
-          drv_mrk: string;
-          sense_mrk: string | null;
-          ekz_md: string;
-          headword: string | null;
-        },
-        [string, number]
-      >(
-        `SELECT e.art, e.drv_mrk, e.sense_mrk, e.ekz_md,
-                (SELECT kap FROM nodo n WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
-         FROM fts_ekz
-         JOIN ekzemplo e ON e.rowid = fts_ekz.rowid
-         WHERE fts_ekz MATCH ?
-         ORDER BY rank
-         LIMIT ?`
-      )
-      .all(ftsExpr, limit);
-    return rows.map((r) => ({
-      art: r.art,
-      drvMrk: r.drv_mrk,
-      senseMrk: r.sense_mrk,
-      ekzMd: r.ekz_md,
-      headword: r.headword ?? r.drv_mrk,
-      matchedVia: via,
-    }));
-  };
-
-  // FTS5 syntax: "phrase" for exact tokens/phrases, token* for prefix.
-  // We only emit prefix queries for plain alphanumeric stems to avoid
-  // having to parse/escape FTS5 special characters.
   const escapedPhrase = normalized.replace(/"/g, '""');
-  const exactHits = runMatch(`"${escapedPhrase}"`, `example:${normalized}`);
-  if (exactHits.length > 0) return exactHits;
+  const rows = db
+    .query<
+      {
+        art: string;
+        drv_mrk: string;
+        sense_mrk: string | null;
+        ekz_md: string;
+        headword: string | null;
+      },
+      [string, number]
+    >(
+      `SELECT e.art, e.drv_mrk, e.sense_mrk, e.ekz_md,
+              (SELECT kap FROM nodo n WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
+       FROM fts_ekz
+       JOIN ekzemplo e ON e.rowid = fts_ekz.rowid
+       WHERE fts_ekz MATCH ?
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(`"${escapedPhrase}"`, limit);
 
-  const stems = generateStems(normalized).filter((s) => s.length >= 3);
-  if (stems.length === 0) return [];
-  const shortest = stems[0];
-  if (shortest === normalized) return [];
-  if (!/^[\p{L}\p{N}]+$/u.test(shortest)) return [];
-  return runMatch(`${shortest}*`, `example-stem:${shortest}`);
+  return rows.map((r) => ({
+    art: r.art,
+    drvMrk: r.drv_mrk,
+    senseMrk: r.sense_mrk,
+    ekzMd: r.ekz_md,
+    headword: r.headword ?? r.drv_mrk,
+    matchedVia: `example:${normalized}`,
+  }));
 }
