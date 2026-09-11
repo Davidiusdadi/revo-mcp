@@ -3,3 +3,6 @@
 	url = https://github.com/Davidiusdadi/revo-fonto.git
 	branch = master
 	shallow = true
+[submodule "vendor/voko-grundo"]
+	path = vendor/voko-grundo
+	url = https://github.com/revuloj/voko-grundo.git
