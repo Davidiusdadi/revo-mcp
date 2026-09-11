@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "MCP server for Reta Vortaro (Esperanto dictionary) lookup",
   "type": "module",
+  "license": "GPL-2.0-or-later",
   "scripts": {
     "setup": "bun run src/setup.ts",
     "start": "bun run src/index.ts",

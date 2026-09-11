@@ -183,4 +183,10 @@ The server uses the pre-built SQLite database from the Revo daily releases, whic
 
 ## License
 
-The Reta Vortaro dictionary content is licensed under the [GNU General Public License](https://www.gnu.org/licenses/gpl-3.0.html).
+The code in this repository is licensed under the GNU General Public License,
+version 2 or (at your option) any later version — see `LICENSE`.
+
+The Reta Vortaro dictionary content is licensed under the
+[GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
+only, and so is anything here derived from it (generated data, VOKO articles,
+databases built from the corpus).
