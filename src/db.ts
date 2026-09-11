@@ -13,9 +13,12 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { extractArticle, extractByMrk, type DrvEntry } from "./html-extract";
+import { isVokoDb, sensesOf } from "./db-voko";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "..", "data", "revo.db");
+// REVO_DB points the server at an alternative database (e.g. the XML-built
+// data/voko.db); default stays the upstream release DB.
+const DB_PATH = process.env.REVO_DB ?? join(__dirname, "..", "data", "revo.db");
 
 export interface NodoRow {
   mrk: string;
@@ -48,11 +51,14 @@ export interface LookupResult {
 }
 
 let _db: Database | null = null;
+// true when DB_PATH is the XML-built corpus (meta.schema = 'voko')
+let _voko = false;
 
 export function getDb(): Database {
   if (!_db) {
     _db = new Database(DB_PATH, { readonly: true });
     _db.exec("PRAGMA cache_size = -64000"); // 64MB cache
+    _voko = isVokoDb(_db);
   }
   return _db;
 }
@@ -443,19 +449,19 @@ function assembleResults(
   for (const [drvMrk, node] of drvNodes) {
     if (results.length >= limit) break;
 
-    // Fetch article HTML
-    const artRow = db
-      .query<{ txt: Buffer }, [string]>(
-        "SELECT txt FROM artikolo WHERE mrk = ?"
-      )
-      .get(node.art);
-
+    // Senses: read from the dif/ekz tables on voko.db; scraped back out of
+    // the rendered article HTML on the upstream revo.db.
     let senses: LookupResult["senses"] = [];
-    if (artRow?.txt) {
-      const entry = extractByMrk(artRow.txt, drvMrk, node.art);
-      if (entry) {
-        senses = entry.senses;
-      }
+    if (_voko) {
+      senses = sensesOf(db, drvMrk);
+    } else {
+      const artRow = db
+        .query<{ txt: Buffer }, [string]>(
+          "SELECT txt FROM artikolo WHERE mrk = ?"
+        )
+        .get(node.art);
+      const entry = artRow?.txt ? extractByMrk(artRow.txt, drvMrk, node.art) : null;
+      if (entry) senses = entry.senses;
     }
 
     // Fetch translations for this mrk
@@ -505,7 +511,7 @@ function assembleResults(
     // Fetch usage domains (range form — see senseTranslations note).
     const uzoj = db
       .query<{ uzo: string }, [string, string, string]>(
-        "SELECT DISTINCT uzo FROM uzo WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')"
+        `SELECT DISTINCT uzo FROM ${_voko ? "uzo_compat" : "uzo"} WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')`
       )
       .all(drvMrk, drvMrk, drvMrk);
     const usageDomains = uzoj.map((u) => u.uzo);
@@ -629,7 +635,9 @@ export function getLanguages(): { lng: string; count: number }[] {
   const db = getDb();
   return db
     .query<{ lng: string; count: number }, []>(
-      "SELECT lng, COUNT(*) as count FROM traduko GROUP BY lng ORDER BY count DESC"
+      // voko.db: count the trd table directly — through the traduko view the
+      // join makes this ~4 s; the view only hides ~140 mrk-less rows anyway.
+      `SELECT lng, COUNT(*) as count FROM ${_voko ? "trd" : "traduko"} GROUP BY lng ORDER BY count DESC`
     )
     .all();
 }

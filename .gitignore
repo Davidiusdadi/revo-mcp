@@ -5,3 +5,11 @@ scripts/render-all-failures.json
 # generated from the vendor/voko-grundo submodule (bun run fonto)
 packages/voko-xml/data/entities.json
 packages/voko-xml/data/cfg/
+
+# built corpus (regenerate with bun run corpus:build)
+data/voko.db
+data/voko-vec.db
+data/parity.md
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
