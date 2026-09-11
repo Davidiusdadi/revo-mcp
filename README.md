@@ -74,6 +74,8 @@ bun run setup
 
 The setup script downloads the latest daily release of `revo.db` from [revuloj/revo-fonto releases](https://github.com/revuloj/revo-fonto/releases) and augments it with FTS5 full-text search indexes.
 
+The database can also be built from ReVo's VOKO XML sources instead of the prebuilt release, which keeps the structure that upstream's rendered HTML flattens — see [docs/corpus.md](docs/corpus.md).
+
 ## Usage
 
 ### With Claude Desktop
