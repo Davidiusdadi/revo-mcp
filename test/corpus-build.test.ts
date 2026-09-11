@@ -11,6 +11,8 @@ import { join } from "path";
 import { buildL2, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
 import { sensesOf } from "../src/db-voko";
+import { lemmaCandidates } from "../src/morph";
+import { parse, descendants } from "voko-xml";
 
 let dir: string;
 let db: Database;
@@ -183,5 +185,82 @@ describe("fixes from the parity report", () => {
     const e = one<{ id: number }>("SELECT id FROM trd WHERE owner_kind = 'ekz' LIMIT 1");
     expect(e).toBeTruthy();
     expect(one("SELECT 1 FROM traduko WHERE rowid = ?", e.id)).toBeNull();
+  });
+});
+
+describe("pass tld-links", () => {
+  test("every <tld/> is one row", () => {
+    let n = 0;
+    for (const { xml } of all<{ xml: string }>("SELECT xml FROM art")) n += [...descendants(parse(xml).root, "tld")].length;
+    expect(one<{ c: number }>("SELECT COUNT(*) c FROM x_tld_occ").c).toBe(n);
+  });
+
+  test("the token is in its owner's text", () => {
+    const rows = all<{ norm: string; txt: string }>(
+      `SELECT o.norm, COALESCE(e.txt, d.txt, r.txt, k.txt) txt FROM x_tld_occ o
+       LEFT JOIN ekz e ON o.owner_kind = 'ekz' AND e.id = o.owner_id
+       LEFT JOIN dif d ON o.owner_kind = 'dif' AND d.id = o.owner_id
+       LEFT JOIN rim r ON o.owner_kind = 'rim' AND r.id = o.owner_id
+       LEFT JOIN kap k ON o.owner_kind = 'kap' AND k.id = o.owner_id
+       WHERE o.owner_kind IN ('ekz','dif','rim','kap')`);
+    expect(rows.length).toBeGreaterThan(1000);
+    const found = rows.filter((r) => r.txt.toLowerCase().includes(r.norm)).length;
+    expect(found / rows.length).toBeGreaterThan(0.99);
+  });
+
+  test("a headword's tilde splits it into prefix, root and rest", () => {
+    const o = one<{ pre: string; rad: string; post: string }>(
+      `SELECT o.pre, o.rad, o.post FROM x_tld_occ o JOIN kap k ON k.id = o.owner_id
+       WHERE o.owner_kind = 'kap' AND k.norm = 'malsanulejo'`);
+    expect(o).toEqual({ pre: "mal", rad: "san", post: "ulejo" });
+  });
+});
+
+describe("pass refs", () => {
+  test("every ref is an authored edge or an issue", () => {
+    const refs = one<{ c: number }>("SELECT COUNT(*) c FROM ref").c;
+    const authored = one<{ c: number }>("SELECT COUNT(*) c FROM x_ref_edge WHERE inferred = 0").c;
+    const issues = one<{ c: number }>("SELECT COUNT(*) c FROM x_ref_issue").c;
+    expect(authored + issues).toBe(refs);
+  });
+
+  test("inferred edges are the ontology's inverses and never repeat an authored edge", () => {
+    expect(one<{ c: number }>("SELECT COUNT(*) c FROM x_ref_edge WHERE inferred = 1").c).toBeGreaterThan(0);
+    expect(one<{ c: number }>(
+      `SELECT COUNT(*) c FROM x_ref_edge e JOIN ref r ON r.id = e.ref_id JOIN x_ref_tip t ON t.tip = r.tip
+       WHERE e.inferred = 1 AND t.inverse IS NOT e.tip`).c).toBe(0);
+    expect(one<{ c: number }>(
+      `SELECT COUNT(*) c FROM x_ref_edge e WHERE e.inferred = 1 AND EXISTS (
+         SELECT 1 FROM x_ref_edge a WHERE a.inferred = 0 AND a.src_node = e.src_node
+           AND a.dst_node = e.dst_node AND a.tip IS e.tip)`).c).toBe(0);
+  });
+
+  test("hundo has lupo as a part, so lupo belongs to hundo", () => {
+    const e = all<{ tip: string }>(
+      `SELECT e.tip FROM x_ref_edge e JOIN node s ON s.id = e.src_node JOIN node d ON d.id = e.dst_node
+       WHERE s.mrk = 'lup.0o' AND d.mrk_near LIKE 'hund.0o%'`);
+    expect(e.map((r) => r.tip)).toContain("malprt");
+  });
+});
+
+describe("pass morph", () => {
+  test("every headword gets a segmentation", () => {
+    expect(one<{ c: number }>("SELECT COUNT(*) c FROM x_morph").c).toBe(one<{ c: number }>("SELECT COUNT(*) c FROM kap").c);
+  });
+
+  test("mal~ulejo = mal|san|ul|ej|o, root pinned by the tilde", () => {
+    expect(one<{ seg: string; kinds: string; source: string }>(
+      "SELECT seg, kinds, source FROM x_morph WHERE form = 'malsanulejo'")).toEqual(
+      { seg: "mal|san|ul|ej|o", kinds: "PRSSE", source: "tilde" });
+  });
+
+  test("attested forms are tied to a headword of their own article", () => {
+    expect(one<{ c: number }>(
+      `SELECT COUNT(*) c FROM x_token t JOIN kap k ON k.id = t.lemma_kap_id JOIN node n ON n.id = k.node_id
+       WHERE n.art_id <> t.art_id`).c).toBe(0);
+    const infl = all<{ norm: string; lemma: string }>(
+      `SELECT t.norm, k.norm lemma FROM x_token t JOIN kap k ON k.id = t.lemma_kap_id WHERE t.how = 'infl'`);
+    expect(infl.length).toBeGreaterThan(50);
+    for (const r of infl) expect(lemmaCandidates(r.norm).map((c) => c.lemma)).toContain(r.lemma);
   });
 });

@@ -27,6 +27,9 @@ import stiloj from "voko-xml/data/cfg/stiloj.json";
 import mallongigoj from "voko-xml/data/cfg/mallongigoj.json";
 import { runPass, type Pass } from "./pass";
 import { ftsPass } from "./passes/fts";
+import { tldLinksPass } from "./passes/tld-links";
+import { refsPass } from "./passes/refs";
+import { morphPass } from "./passes/morph";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
@@ -35,7 +38,7 @@ const GRUNDO = join(ROOT, "vendor", "voko-grundo");
 const OVERLAY = join(ROOT, "corpus", "overlay");
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
-export const PASSES: Pass[] = [ftsPass];
+export const PASSES: Pass[] = [ftsPass, tldLinksPass, refsPass, morphPass];
 
 // ---------------------------------------------------------------------------
 

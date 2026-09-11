@@ -12,6 +12,7 @@ import { Database } from "bun:sqlite";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
+import { lemmaCandidates } from "./morph";
 import { extractArticle, extractByMrk, type DrvEntry } from "./html-extract";
 import { isVokoDb, sensesOf } from "./db-voko";
 
@@ -119,8 +120,9 @@ export function lookupEsperanto(
     }
   }
 
-  // 3. Stemmed matches
-  const stems = generateStems(normalized);
+  // 3. Inflected forms: the ending says which dictionary form to look for
+  //    (morph.ts); the older ending-stripping heuristic is the fallback.
+  const stems = new Set([...lemmaCandidates(normalized).map((c) => c.lemma), ...generateStems(normalized)]);
   for (const stem of stems) {
     if (stem === normalized) continue; // Already tried
     nodes = db
@@ -579,9 +581,10 @@ export function lookupFamily(query: string): FamilyResult | null {
     if (nodoRow) root = nodoRow.art;
   }
 
-  // 3. Try stemming
+  // 3. Inflected forms, as in lookupEsperanto: dictionary forms first, heuristic after
   if (!root) {
-    for (const stem of generateStems(normalized)) {
+    const stems = new Set([...lemmaCandidates(normalized).map((c) => c.lemma), ...generateStems(normalized)]);
+    for (const stem of stems) {
       const nodoRow = db
         .query<{ art: string }, [string]>(
           "SELECT art FROM nodo WHERE lower(kap) = ? LIMIT 1"
