@@ -8,7 +8,8 @@
     "setup": "bun run src/setup.ts",
     "start": "bun run src/index.ts",
     "start:http": "bun run src/http.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "fonto": "sh scripts/fonto.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

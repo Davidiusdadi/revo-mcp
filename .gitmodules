@@ -1,0 +1,5 @@
+[submodule "vendor/revo-fonto"]
+	path = vendor/revo-fonto
+	url = https://github.com/Davidiusdadi/revo-fonto.git
+	branch = master
+	shallow = true
