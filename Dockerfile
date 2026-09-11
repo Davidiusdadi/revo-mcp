@@ -4,6 +4,8 @@ WORKDIR /app
 
 # Install dependencies
 COPY package.json bun.lock ./
+# workspace packages (voko-xml) must be present for the frozen install
+COPY packages/ ./packages/
 RUN bun install --frozen-lockfile
 
 # Copy source

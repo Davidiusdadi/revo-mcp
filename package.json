@@ -4,16 +4,21 @@
   "description": "MCP server for Reta Vortaro (Esperanto dictionary) lookup",
   "type": "module",
   "license": "GPL-2.0-or-later",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "setup": "bun run src/setup.ts",
     "start": "bun run src/index.ts",
     "start:http": "bun run src/http.ts",
     "test": "bun test",
-    "fonto": "sh scripts/fonto.sh"
+    "fonto": "sh scripts/fonto.sh",
+    "corpus:entities": "bun run scripts/gen-entities.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "node-html-parser": "^7.0.1",
+    "voko-xml": "workspace:*",
     "zod": "^3.25.0"
   },
   "devDependencies": {

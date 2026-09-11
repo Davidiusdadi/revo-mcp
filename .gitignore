@@ -1,3 +1,7 @@
 node_modules/
 data/revo.db
 scripts/render-all-failures.json
+
+# generated from the vendor/voko-grundo submodule (bun run fonto)
+packages/voko-xml/data/entities.json
+packages/voko-xml/data/cfg/
