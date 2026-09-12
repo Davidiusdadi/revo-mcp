@@ -182,7 +182,9 @@ compounds and proper nouns that are not headwords — `examples({ query: "abeloj
 The reference graph around a word, grouped by relation: synonyms, antonyms, broader
 and narrower terms, parts and wholes, see-also. Includes the inverse links the other
 article states — `thesaurus({ word: "hundo" })` lists the breeds that declare
-themselves a kind of dog, which the `hund` article itself never mentions.
+themselves a kind of dog, which the `hund` article itself never mentions. The
+relations are those of the entry asked for and its senses; the other derivations in
+the same article keep their own (`bela` does not inherit `malbeligi`'s synonyms).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
