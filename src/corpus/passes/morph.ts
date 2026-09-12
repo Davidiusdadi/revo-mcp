@@ -12,7 +12,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
-import { lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph } from "../../morph";
+import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph } from "../../morph";
 
 const WORD = /\p{L}+/gu;
 /** Articles for grammatical endings, not word-building affixes. */
@@ -20,7 +20,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 1,
+  version: 2,
   tables: ["x_morpheme", "x_morph", "x_token"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -92,7 +92,10 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
   let ok = true;
   let pinned = false;
   for (const [w] of form.matchAll(WORD)) {
-    const pin = fixed && !pinned && w === fixed.word ? { at: fixed.at, root: fixed.root } : undefined;
+    const candidate = fixed && !pinned && w === fixed.word ? { at: fixed.at, root: fixed.root } : undefined;
+    // segment() ignores a pin the word does not bear; say so here too, so the
+    // recorded source ("tilde" vs "free") is what actually happened.
+    const pin = candidate && pinFits(w, candidate) ? candidate : undefined;
     if (pin) pinned = true;
     const s: Morph[] | null = segment(w, inv, pin);
     if (!s) {
@@ -150,6 +153,21 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
   return n;
 }
 
+/**
+ * One row per distinct form per article: the form, how often it occurs, and
+ * where the tilde puts the root.
+ *
+ * pre and rad have to come from the same occurrence: a prefix taken from one
+ * row and a root from another pin a span that no row has — that is how
+ * "ĉevalo" came out as "ĉeva|lo", the pin being the empty prefix of one
+ * occurrence with the root of a `lit`-capitalised one ("eval"). With exactly
+ * one min/max aggregate in the query SQLite takes the bare columns from the
+ * row it picked, so MIN(id) makes that the first occurrence. Exported so the
+ * test can hold the pin against the occurrences it came from.
+ */
+export const TOKEN_GROUPS = `SELECT norm, art_id, COUNT(*) n, pre, rad, MIN(id) AS first_id
+    FROM x_tld_occ WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, art_id`;
+
 function attestedTokens(db: Database, inv: Inventory, log: (m: string) => void): number {
   db.run(`
     CREATE TABLE x_token (
@@ -173,8 +191,7 @@ function attestedTokens(db: Database, inv: Inventory, log: (m: string) => void):
   const ins = db.prepare("INSERT INTO x_token (norm, art_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
   let n = 0, ok = 0, lemma = 0;
   for (const t of db.query<{ norm: string; art_id: number; n: number; pre: string; rad: string }, []>(
-    `SELECT norm, art_id, COUNT(*) n, MIN(pre) pre, MIN(rad) rad FROM x_tld_occ
-     WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, art_id`).iterate()) {
+    TOKEN_GROUPS).iterate()) {
     const s = segmentForm(t.norm, inv, { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() });
     const h = heads.get(t.art_id);
     let kap: number | undefined, how: string | null = null;

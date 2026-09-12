@@ -85,6 +85,15 @@ describe("segment", () => {
     expect(seg("malzorgulo", { at: 3, root: "zorg" })).toEqual({ seg: "mal|zorg|ul|o", kinds: "PRSE" });
   });
 
+  test("a pin the word does not bear is ignored", () => {
+    // an offset and a root read off different occurrences produced pins like
+    // these, and the span was stamped R anyway ("ĉevalo" came out "ĉeva|lo")
+    expect(seg("hundo", { at: 1, root: "hund" })).toEqual({ seg: "hund|o", kinds: "RE" });
+    expect(seg("hundo", { at: 3, root: "hund" })).toEqual({ seg: "hund|o", kinds: "RE" });
+    expect(seg("hundo", { at: 0, root: "" })).toEqual({ seg: "hund|o", kinds: "RE" });
+    expect(seg("malsanulejo", { at: 4, root: "san" })).toEqual({ seg: "mal|san|ul|ej|o", kinds: "PRSSE" });
+  });
+
   test("uncoverable words give null", () => {
     expect(seg("xyzo")).toBeNull();
     expect(seg("")).toBeNull();

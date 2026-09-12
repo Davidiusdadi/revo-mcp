@@ -10,6 +10,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { buildL2, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
+import { TOKEN_GROUPS } from "../src/corpus/passes/morph";
 import { sensesOf, thesaurusOf, searchDefinitions } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
 import { parse, descendants } from "voko-xml";
@@ -18,8 +19,9 @@ let dir: string;
 let db: Database;
 // hand-picked on top of the first 120 (which include a subdrv in `a` and a subart in `acx`):
 // mal~ulejo needs san plus the mal/ul/ej affix articles; hund prt lup for the ref graph;
-// unu and li each hold a <trdgrp> nested inside a translation's <klr>
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li"];
+// unu and li each hold a <trdgrp> nested inside a translation's <klr>; cxeval writes
+// some of its tildes with lit="Ĉ", which is where a wrong root pin came from
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -278,6 +280,39 @@ describe("pass morph", () => {
     expect(one<{ seg: string; kinds: string; source: string }>(
       "SELECT seg, kinds, source FROM x_morph WHERE form = 'malsanulejo'")).toEqual(
       { seg: "mal|san|ul|ej|o", kinds: "PRSSE", source: "tilde" });
+  });
+
+  test("every root in a segmentation is a root the inventory knows", () => {
+    // The pinned root used to be assembled from two different <tld/> rows (an
+    // offset from one, a root from another), which stamped spans like "ĉeva"
+    // as roots of words no article has.
+    const known = new Set(
+      all<{ morph: string }>("SELECT morph FROM x_morpheme WHERE kind = 'R'").map((r) => r.morph)
+    );
+    const invented = new Set<string>();
+    for (const t of all<{ norm: string; seg: string; kinds: string }>(
+      "SELECT norm, seg, kinds FROM x_token WHERE ok = 1")) {
+      const words = t.seg.split(" ");
+      const kinds = t.kinds.split(" ");
+      for (let w = 0; w < words.length; w++) {
+        const ms = words[w].split("|");
+        for (let i = 0; i < ms.length; i++) {
+          if (kinds[w][i] === "R" && !known.has(ms[i])) invented.add(`${t.norm}: ${words[w]}`);
+        }
+      }
+    }
+    expect([...invented]).toEqual([]);
+  });
+
+  test("the tilde pin comes from one occurrence, not two", () => {
+    // cxeval writes some tildes as <tld lit="Ĉ"/>, so its occurrences of
+    // "ĉevalo" differ in pre and rad; the pass must not mix them.
+    const groups = all<{ norm: string; art_id: number; pre: string; rad: string }>(TOKEN_GROUPS);
+    expect(groups.length).toBeGreaterThan(100);
+    const bad = groups.filter((g) => !one(
+      `SELECT 1 FROM x_tld_occ WHERE norm = ? AND art_id = ? AND owner_kind <> 'kap'
+         AND pre = ? AND rad = ?`, g.norm, g.art_id, g.pre, g.rad));
+    expect(bad.map((g) => `${g.norm}: ${g.pre}|${g.rad}`)).toEqual([]);
   });
 
   test("attested forms are tied to a headword of their own article", () => {

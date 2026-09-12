@@ -91,6 +91,20 @@ interface Cell {
 }
 
 /**
+ * Does `fixed` name a root that really sits at that offset in `word`?
+ *
+ * The pins come from the corpus (`<tld/>` occurrences), where the root and the
+ * offset are read off separate columns, so a mismatch is possible and must not
+ * reach the segmenter.
+ */
+export function pinFits(word: string, fixed: { at: number; root: string }): boolean {
+  const w = word.toLowerCase();
+  const r = fixed.root.toLowerCase();
+  if (r.length === 0 || fixed.at < 0 || fixed.at + r.length > w.length) return false;
+  return w.slice(fixed.at, fixed.at + r.length) === r;
+}
+
+/**
  * Cheapest split of `word` into morphemes; null if the inventory can't cover
  * it. Cost counts morphemes, with penalties for 1–2 letter roots and words, prefixes
  * after a root and linking vowels, so "mal|san|ul|ej|o" beats readings with
@@ -104,8 +118,12 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
   if (n === 0) return null;
   const best: (Cell | undefined)[][] = Array.from({ length: n + 1 }, () => []);
   best[0][0] = { cost: 0, from: -1, fromPh: -1, morph: null };
-  const fAt = fixed ? fixed.at : -1;
-  const fEnd = fixed ? fixed.at + fixed.root.length : -1;
+  // A pin the word does not bear is dropped: the span it names would be
+  // stamped as a root whatever text happens to sit there, and straddling it
+  // is forbidden, so a wrong pin also rules out every correct reading.
+  const pin = fixed && pinFits(w, fixed) ? fixed : undefined;
+  const fAt = pin ? pin.at : -1;
+  const fEnd = pin ? pin.at + pin.root.length : -1;
 
   const relax = (i: number, ph: number, j: number, next: number, k: MorphKind, s: string, cost: number) => {
     const c = best[i][ph]!.cost + cost;
@@ -117,7 +135,7 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
     if (!best[i].some(Boolean)) continue;
     for (let j = i + 1; j <= Math.min(n, i + MAX_MORPH); j++) {
       const isFixed = i === fAt && j === fEnd;
-      if (fixed && !isFixed && i < fEnd && j > fAt) continue; // nothing may straddle the fixed root
+      if (pin && !isFixed && i < fEnd && j > fAt) continue; // nothing may straddle the fixed root
       const s = w.slice(i, j);
       for (let ph = 0; ph < 4; ph++) {
         if (!best[i][ph]) continue;
