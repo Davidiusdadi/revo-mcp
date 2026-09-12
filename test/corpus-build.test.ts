@@ -17,8 +17,9 @@ import { parse, descendants } from "voko-xml";
 let dir: string;
 let db: Database;
 // hand-picked on top of the first 120 (which include a subdrv in `a` and a subart in `acx`):
-// mal~ulejo needs san plus the mal/ul/ej affix articles; hund prt lup for the ref graph
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup"];
+// mal~ulejo needs san plus the mal/ul/ej affix articles; hund prt lup for the ref graph;
+// unu and li each hold a <trdgrp> nested inside a translation's <klr>
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -79,6 +80,31 @@ describe("corpus build", () => {
     expect(klr.xml).toContain("<klr");
     expect(klr.txt).not.toContain("<");
     expect(klr.txt).not.toContain(`(${klr.klr})`);
+  });
+
+  // The DTD lets <klr> hold trd/trdgrp, which ReVo uses to gloss a translation
+  // in a third language: `unu` has Finnish inside a Spanish trd, `li` Ido inside
+  // an Indonesian one. <trd> used to be a leaf to the extractor, so the inventory
+  // counted these and no row was written.
+  test("translations nested in a translation's <klr> are kept", () => {
+    const nested = all<{ file: string; lng: string; txt: string }>(
+      `SELECT a.file, t.lng, t.txt FROM trd t
+         JOIN node n ON t.node_id = n.id JOIN art a ON n.art_id = a.id
+        WHERE t.owner_kind = 'klr' AND a.file IN ('unu', 'li') ORDER BY a.file, t.id`);
+    expect(nested.map((r) => `${r.file}:${r.lng}:${r.txt}`)).toEqual([
+      "li:io:ilu", "li:io:il", "unu:fi:alayksikkö", "unu:fi:kerrannaisyksikkö",
+    ]);
+
+    // the language is the nested <trdgrp lng>, not the enclosing translation's
+    const outer = all<{ lng: string }>(
+      `SELECT t.lng FROM trd t JOIN node n ON t.node_id = n.id JOIN art a ON n.art_id = a.id
+        WHERE a.file IN ('unu', 'li') AND t.owner_kind = 'node' AND t.xml LIKE '%<trdgrp%'`);
+    expect(outer.map((r) => r.lng).sort()).toEqual(["es", "id"]);
+
+    // and they reach the compat view, so lookup answers with them
+    for (const r of nested) {
+      expect(one("SELECT 1 FROM traduko WHERE lng = ? AND trd = ?", r.lng, r.txt)).toBeTruthy();
+    }
   });
 
   test("references inherit tip from refgrp", () => {

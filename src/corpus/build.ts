@@ -204,6 +204,12 @@ function extract(el: Element, ctx: Ctx): void {
         childText(el, "pr", ctx), childText(el, "klr", ctx), childText(el, "ofc", ctx),
         el.attrs.kod ?? null, el.attrs.fnt ?? null, outerXml(el)
       );
+      // A <trd> is not a leaf: the DTD lets its <klr> hold trd/trdgrp/ekz/ref
+      // (vokoxml.dtd, <!ELEMENT klr>), which ReVo uses to gloss a translation
+      // in a third language — `unu` carries Finnish inside a Spanish trd, `li`
+      // Ido inside an Indonesian one. Descending keeps those rows; the language
+      // comes from the nested <trdgrp lng>, since withOwner clears grpLng.
+      extractChildren(el, withOwner(ctx, "trd", lastId(ctx.db)));
       return;
     }
     case "refgrp": {

@@ -254,7 +254,7 @@ deliberately; `test/deploy-pins.test.ts` checks every stage uses the `ARG`.
    renders every headword.
 5. Each pass: unit test on hand-picked articles + corpus-level count assertions
    (`test/corpus-build.test.ts` builds the first 120 articles plus `san`, `mal`,
-   `ul`, `ej`, `hund`, `lup`; the passes also assert their own counts at build).
+   `ul`, `ej`, `hund`, `lup`, `unu`, `li`; the passes also assert their own counts at build).
 
 ## Parity with revo.db
 
