@@ -64,18 +64,22 @@ export interface LookupResult {
 let _db: Database | null = null;
 
 export function getDb(): Database {
-  if (!_db) {
-    _db = new Database(DB_PATH, { readonly: true });
-    _db.exec("PRAGMA cache_size = -64000"); // 64MB cache
-    // Fail here rather than on a missing table further in: everything below
-    // reads the XML-built schema (or the compat views over it).
-    if (!isVokoDb(_db)) {
-      throw new Error(
-        `${DB_PATH} is not an XML-built corpus (meta.schema is not 'voko'). ` +
-          "Run `bun run setup` to build data/voko.db."
-      );
-    }
+  if (_db) return _db;
+  // Opened into a local: a database that fails the check is closed again and
+  // never cached, so every later call reports the same error instead of
+  // handing out the rejected handle.
+  const db = new Database(DB_PATH, { readonly: true });
+  db.exec("PRAGMA cache_size = -64000"); // 64MB cache
+  // Fail here rather than on a missing table further in: everything below
+  // reads the XML-built schema (or the compat views over it).
+  if (!isVokoDb(db)) {
+    db.close();
+    throw new Error(
+      `${DB_PATH} is not an XML-built corpus (meta.schema is not 'voko'). ` +
+        "Run `bun run setup` to build data/voko.db."
+    );
   }
+  _db = db;
   return _db;
 }
 
