@@ -5,9 +5,12 @@
  */
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createMcpServer, registerShutdownHandlers } from "./server";
+import { createMcpServer } from "./server";
+import { ensureBunDatabase } from "./runtime/bun-database";
+import { registerShutdownHandlers } from "./runtime/bun-shutdown";
 
 registerShutdownHandlers();
+ensureBunDatabase();
 
 const server = createMcpServer();
 const transport = new StdioServerTransport();

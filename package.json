@@ -16,14 +16,23 @@
     "corpus:entities": "bun run scripts/gen-entities.ts",
     "corpus:build": "bun run src/corpus/build.ts",
     "corpus:validate": "bun run scripts/compare-db.ts",
-    "corpus:eval": "bun run scripts/eval-stemming.ts"
+    "corpus:eval": "bun run scripts/eval-stemming.ts",
+    "web:export": "bun run src/web/export.ts",
+    "web:export-shards": "bun run src/web/export-shards.ts",
+    "browser:build": "bun run scripts/build-browser-worker.ts",
+    "browser:smoke:build": "bun run scripts/build-browser-smoke.ts",
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@sqlite.org/sqlite-wasm": "^3.53.4-build1",
+    "lru-cache": "^11.5.2",
+    "sqlite-wasm-http": "1.2.0",
     "voko-xml": "workspace:*",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0"
+    "@types/bun": "^1.2.0",
+    "typescript": "^7.0.2"
   }
 }

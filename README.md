@@ -2,12 +2,14 @@
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server for looking up words in [Reta Vortaro](https://www.reta-vortaro.de/revo/) — the comprehensive, open-source Esperanto dictionary.
 
-Provides Esperanto definitions, examples, and translations across 174 languages to any MCP-compatible AI assistant (Claude Desktop, `claude` CLI, etc.).
+Provides Esperanto definitions, examples, and translations across 191 languages
+to MCP-compatible clients. It can run as a Bun server or directly in a browser
+Worker over a `MessagePort` transport.
 
 ## Features
 
 - **Esperanto headword lookup** — definitions in Esperanto with example sentences
-- **Translation lookup** — search in English, German, French, or any of 174 languages
+- **Translation lookup** — search in English, German, French, or any of 191 languages
 - **Cross-language search** — find words across all available languages at once
 - **X-system support** — type `cxirkaux` instead of `ĉirkaŭ`
 - **Grammatical form stemming** — `amikojn` (plural accusative) automatically finds `amiko`
@@ -93,6 +95,38 @@ See [docs/corpus.md](docs/corpus.md) for the layers, the schema and the passes.
 
 ## Usage
 
+### In a browser Worker
+
+The browser build keeps the MCP boundary intact while replacing Bun/SQLite with
+static, progressively fetched dictionary shards. This makes it suitable for a
+static site or PWA without shipping a server or downloading the complete SQLite
+database at startup.
+
+```bash
+# Export deterministic JSON shards from data/voko.db
+bun run web:export-shards --out ./dist/revo
+
+# Bundle the Worker entry point
+bun run browser:build --out ./dist/revo/revo-worker.js
+```
+
+The export contains:
+
+- `manifest.json` and `languages.json` for discovery and attribution metadata
+- one search index per translation language under `index/`
+- 256 deterministic entry buckets under `entries/`
+
+Applications can precache the Worker, manifest, language metadata, and selected
+language indexes, then runtime-cache entry buckets as users open definitions.
+`ShardRepository` is the browser-neutral dictionary API;
+`createShardMcpServer` exposes it through the real MCP `search` and `languages`
+tools. `MessagePortTransport` and `connectWorkerServer` connect that server to a
+Web Worker without relying on Node or Bun globals.
+
+The experimental HTTP-range SQLite readers remain available for measurement,
+but are not the recommended production transport: ordinary SQLite access over
+HTTP can require excessive repeated range traffic on static hosting.
+
 ### With Claude Desktop
 
 Add to your Claude Desktop MCP configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
@@ -155,7 +189,7 @@ Search the Esperanto dictionary.
 
 ### `languages`
 
-Lists all 174 available languages with translation counts. Takes no parameters.
+Lists all 191 available languages with translation counts. Takes no parameters.
 
 ### `lookup_root`
 
@@ -225,6 +259,8 @@ revo-mcp/
 │   ├── stemmer.ts         # Esperanto stemmer, x-system, normalization
 │   ├── morph.ts           # Morphology: dictionary forms, segmentation
 │   ├── formatter.ts       # Format results as Markdown
+│   ├── browser/           # Worker MCP transport and static-shard repository
+│   ├── web/               # Deterministic browser-data exporters
 │   ├── corpus/            # XML → voko.db: schema, build, enrichment passes
 │   └── tools/             # One handler per MCP tool
 ├── packages/voko-xml/     # The VOKO XML parser (lossless DOM + walkers)

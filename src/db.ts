@@ -9,9 +9,7 @@
  * - Cross-language search
  */
 
-import { Database } from "bun:sqlite";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import type { SqlReader } from "./sql";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { lemmaCandidates } from "./morph";
 import {
@@ -22,11 +20,6 @@ import {
   type ThesaurusResult,
   type DefinitionHit,
 } from "./db-voko";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// The XML-built corpus is the database the server reads; `bun run setup`
-// builds it. REVO_DB points at a different file (e.g. an older revo.db).
-const DB_PATH = process.env.REVO_DB ?? join(__dirname, "..", "data", "voko.db");
 
 export interface NodoRow {
   mrk: string;
@@ -60,27 +53,31 @@ export interface LookupResult {
   crossRefs: { target: string; type: string; targetKap?: string }[];
   usageDomains: string[];
   matchedVia?: string; // How the result was found (e.g., "stem:amik", "translation:en:friend")
+  matchKind?: "exact" | "fts" | "partial";
 }
 
-let _db: Database | null = null;
+let _db: SqlReader | null = null;
+let _databaseFactory: (() => SqlReader) | null = null;
 
-export function getDb(): Database {
-  if (_db) return _db;
-  // Opened into a local: a database that fails the check is closed again and
-  // never cached, so every later call reports the same error instead of
-  // handing out the rejected handle.
-  const db = new Database(DB_PATH, { readonly: true });
-  db.exec("PRAGMA cache_size = -64000"); // 64MB cache
-  // Fail here rather than on a missing table further in: everything below
-  // reads the XML-built schema (or the compat views over it).
-  if (!isVokoDb(db)) {
-    db.close();
+export function configureDatabase(database: SqlReader): void {
+  if (!isVokoDb(database)) {
+    database.close();
     throw new Error(
-      `${DB_PATH} is not an XML-built corpus (meta.schema is not 'voko'). ` +
-        "Run `bun run setup` to build data/voko.db."
+      "The configured database is not an XML-built corpus (meta.schema is not 'voko'). " +
+        "Run `bun run setup` to build data/voko.db.",
     );
   }
-  _db = db;
+  if (_db && _db !== database) _db.close();
+  _db = database;
+}
+
+export function configureDatabaseFactory(factory: () => SqlReader): void {
+  _databaseFactory = factory;
+}
+
+export function getDb(): SqlReader {
+  if (!_db && _databaseFactory) configureDatabase(_databaseFactory());
+  if (!_db) throw new Error("Dictionary database has not been configured for this runtime.");
   return _db;
 }
 
@@ -261,6 +258,7 @@ export function lookupTranslation(
       `SELECT mrk, lng, trd, txt, ind FROM traduko WHERE lng = ? AND trd = ? COLLATE NOCASE ${TRD_RANK} LIMIT 50`
     )
     .all(lang, normalized);
+  let matchKind: LookupResult["matchKind"] = trds.length > 0 ? "exact" : undefined;
 
   if (trds.length === 0) {
     // 2. FTS match
@@ -273,6 +271,7 @@ export function lookupTranslation(
 
       // Filter by language using the traduko table
       if (ftsRows.length > 0) {
+        matchKind = "fts";
         const rowids = ftsRows.map((r) => r.rowid);
         // Get matching traduko rows filtered by language
         for (const rowid of rowids) {
@@ -297,6 +296,7 @@ export function lookupTranslation(
         `SELECT mrk, lng, trd, txt, ind FROM traduko WHERE lng = ? AND trd LIKE '%' || ? || '%' COLLATE NOCASE ${TRD_RANK} LIMIT 50`
       )
       .all(lang, normalized);
+    if (trds.length > 0) matchKind = "partial";
   }
 
   if (trds.length === 0) return [];
@@ -312,10 +312,10 @@ export function lookupTranslation(
       .get(mrk);
     if (node) allNodes.push(node);
   }
-
   const results = assembleResults(allNodes, limit);
   for (const r of results) {
     r.matchedVia = translationVia(lang, trdFor(trds, r.mrk), query);
+    r.matchKind = matchKind;
   }
   return results;
 }
@@ -579,6 +579,19 @@ function assembleResults(
   }
 
   return results;
+}
+
+/** Assemble canonical dictionary entries for known derivation marks. */
+export function lookupMarks(mrks: string[], limit: number = mrks.length): LookupResult[] {
+  if (mrks.length === 0 || limit <= 0) return [];
+  const unique = [...new Set(mrks)].slice(0, limit);
+  const placeholders = unique.map(() => "?").join(",");
+  const nodes = getDb()
+    .query<NodoRow, string[]>(
+      `SELECT mrk, art, kap, num FROM nodo WHERE mrk IN (${placeholders}) ORDER BY length(mrk)`,
+    )
+    .all(...unique);
+  return assembleResults(nodes, limit);
 }
 
 /**

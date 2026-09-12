@@ -5,18 +5,36 @@ import { lookupRootInputSchema, handleLookupRoot } from "./tools/root";
 import { examplesInputSchema, handleExamples } from "./tools/examples";
 import { thesaurusInputSchema, handleThesaurus } from "./tools/thesaurus";
 import { reverseLookupInputSchema, handleReverseLookup } from "./tools/reverse";
-import { closeDb } from "./db";
+import { searchInputSchema, searchOutputSchema, executeSearch } from "./tools/search";
+import {
+  getLanguages,
+  lookupFamily,
+  lookupThesaurus,
+  searchDefinitions,
+  searchExamples,
+} from "./db";
+import { languageName } from "./formatter";
+import { z } from "zod";
 
-function toolResponse(tool: string, args: Record<string, unknown>, fn: () => string) {
+const genericOutputSchema = z.object({ kind: z.string(), data: z.any() });
+const languagesOutputSchema = z.object({
+  languages: z.array(z.object({ code: z.string(), name: z.string(), count: z.number() })),
+});
+
+function toolResponse(
+  tool: string,
+  args: Record<string, unknown>,
+  fn: () => { text: string; structuredContent: Record<string, unknown> },
+) {
   const argsStr = Object.entries(args)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(" ");
   const t0 = performance.now();
   try {
-    const text = fn();
+    const { text, structuredContent } = fn();
     const ms = (performance.now() - t0).toFixed(0);
     console.log(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
-    return { content: [{ type: "text" as const, text }] };
+    return { content: [{ type: "text" as const, text }], structuredContent };
   } catch (err) {
     const ms = (performance.now() - t0).toFixed(0);
     const message = err instanceof Error ? err.message : String(err);
@@ -31,72 +49,101 @@ function toolResponse(tool: string, args: Record<string, unknown>, fn: () => str
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: "revo-vortaro", version: "1.0.0" });
 
-  server.tool(
-    "lookup",
-    "Look up a word in the Reta Vortaro (Esperanto dictionary). " +
+  server.registerTool("search", {
+    description: "Search Esperanto headwords and the selected translation languages, merging ambiguous matches.",
+    inputSchema: searchInputSchema,
+    outputSchema: searchOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("search", args as Record<string, unknown>, () => {
+    const structuredContent = executeSearch(args);
+    return {
+      text: structuredContent.results.length
+        ? structuredContent.results.map((result) => result.entry.headword).join("\n")
+        : "No results found.",
+      structuredContent,
+    };
+  }));
+
+  server.registerTool("lookup", {
+    description: "Look up a word in the Reta Vortaro (Esperanto dictionary). " +
       "Search Esperanto headwords (lang='eo'), translations in a specific language " +
-      "(lang='en'/'de'/'fr'/etc.), or across all 174 languages (lang='all'). " +
+      "(lang='en'/'de'/'fr'/etc.), or across all available languages (lang='all'). " +
       "Returns definitions (in Esperanto), examples, translations, and cross-references. " +
       "Supports x-system input (e.g., 'cxirkaux' for 'ĉirkaŭ') and grammatical form stemming " +
       "(e.g., 'amikojn' finds 'amiko').",
-    lookupInputSchema.shape,
-    async (args) => toolResponse("lookup", args as Record<string, unknown>, () => handleLookup(args as any))
-  );
+    inputSchema: lookupInputSchema,
+    outputSchema: genericOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("lookup", args as Record<string, unknown>, () => ({
+    text: handleLookup(args),
+    structuredContent: { kind: "lookup", data: executeSearch({
+      query: args.query,
+      languages: args.lang === "eo" ? (args.show_languages ?? []) : [args.lang],
+      limit: Math.min(args.limit, 50),
+    }) },
+  })));
 
-  server.tool(
-    "languages",
-    "List all available languages in the Reta Vortaro dictionary with their translation counts.",
-    {},
-    async (args) => toolResponse("languages", {}, () => handleLanguages())
-  );
+  server.registerTool("languages", {
+    description: "List all available languages in the Reta Vortaro dictionary with their translation counts.",
+    outputSchema: languagesOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async () => toolResponse("languages", {}, () => ({
+    text: handleLanguages(),
+    structuredContent: {
+      languages: getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count })),
+    },
+  })));
 
-  server.tool(
-    "lookup_root",
-    "Look up all derived word forms of an Esperanto root (e.g. 'rav' → ravi, rava, rave, ravado…). " +
+  server.registerTool("lookup_root", {
+    description: "Look up all derived word forms of an Esperanto root (e.g. 'rav' → ravi, rava, rave, ravado…). " +
       "Returns translations only (no definitions or examples), filtered to the specified languages.",
-    lookupRootInputSchema.shape,
-    async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => handleLookupRoot(args as any))
-  );
+    inputSchema: lookupRootInputSchema,
+    outputSchema: genericOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => ({
+    text: handleLookupRoot(args),
+    structuredContent: { kind: "word_family", data: lookupFamily(args.root) },
+  })));
 
-  server.tool(
-    "examples",
-    "Search the corpus of Esperanto example sentences harvested from every article. " +
+  server.registerTool("examples", {
+    description: "Search the corpus of Esperanto example sentences harvested from every article. " +
       "Useful for finding inflected forms (e.g. 'abelojn'), compounds, collocations, " +
       "or proper nouns that don't appear as dictionary headwords. Returns matching " +
       "example sentences grouped by the article they live in.",
-    examplesInputSchema.shape,
-    async (args) => toolResponse("examples", args as Record<string, unknown>, () => handleExamples(args as any))
-  );
+    inputSchema: examplesInputSchema,
+    outputSchema: genericOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("examples", args as Record<string, unknown>, () => ({
+    text: handleExamples(args),
+    structuredContent: { kind: "examples", data: searchExamples(args.query, args.limit) },
+  })));
 
-  server.tool(
-    "thesaurus",
-    "Show how an Esperanto word relates to others in the Reta Vortaro: synonyms, antonyms, " +
+  server.registerTool("thesaurus", {
+    description: "Show how an Esperanto word relates to others in the Reta Vortaro: synonyms, antonyms, " +
       "broader and narrower terms ('is a kind of' / 'has kind'), parts and wholes, and see-also links. " +
       "Includes inverse links stated by the other article (e.g. 'hundo' lists breeds that declare " +
       "themselves a kind of dog), which do not appear in the article's own text. " +
       "Use it to explore a semantic field; use `lookup` for the word's definition.",
-    thesaurusInputSchema.shape,
-    async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => handleThesaurus(args as any))
-  );
+    inputSchema: thesaurusInputSchema,
+    outputSchema: genericOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => ({
+    text: handleThesaurus(args),
+    structuredContent: { kind: "thesaurus", data: lookupThesaurus(args.word) },
+  })));
 
-  server.tool(
-    "reverse_lookup",
-    "Find an Esperanto word from a description of its meaning, by searching the text of the " +
+  server.registerTool("reverse_lookup", {
+    description: "Find an Esperanto word from a description of its meaning, by searching the text of the " +
       "definitions themselves (e.g. 'granda birdo' → ŝubekulo, epiornito, strigo, emuo). " +
       "The description must be in Esperanto. Use this when you know what something is but not " +
       "what it is called; `lookup` searches headwords and translations instead.",
-    reverseLookupInputSchema.shape,
-    async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => handleReverseLookup(args as any))
-  );
+    inputSchema: reverseLookupInputSchema,
+    outputSchema: genericOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => ({
+    text: handleReverseLookup(args),
+    structuredContent: { kind: "reverse_lookup", data: searchDefinitions(args.description, args.limit) },
+  })));
 
   return server;
-}
-
-export function registerShutdownHandlers(): void {
-  const shutdown = () => {
-    closeDb();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 }

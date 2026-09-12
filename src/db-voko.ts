@@ -7,7 +7,7 @@
  * tree, and the L3 enrichment reads at the bottom of the file.
  */
 
-import type { Database } from "bun:sqlite";
+import type { SqlReader } from "./sql";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
 
@@ -20,7 +20,7 @@ export interface SenseEntry {
   domain?: string;
 }
 
-export function isVokoDb(db: Database): boolean {
+export function isVokoDb(db: SqlReader): boolean {
   try {
     const row = db
       .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema'")
@@ -44,7 +44,7 @@ interface SenseNode {
  * subdrv "A." "B.". Each sense carries only its own examples — a subsnc's
  * examples are listed under the subsnc, not repeated under its parent snc.
  */
-export function sensesOf(db: Database, drvMrk: string): SenseEntry[] {
+export function sensesOf(db: SqlReader, drvMrk: string): SenseEntry[] {
   const root = db
     .query<{ id: number }, [string]>("SELECT id FROM node WHERE mrk = ? LIMIT 1")
     .get(drvMrk);
@@ -88,7 +88,7 @@ export function sensesOf(db: Database, drvMrk: string): SenseEntry[] {
   return senses;
 }
 
-function senseAt(db: Database, nodeId: number, mrk: string | undefined): SenseEntry {
+function senseAt(db: SqlReader, nodeId: number, mrk: string | undefined): SenseEntry {
   let definition = db
     .query<{ txt: string }, [number]>("SELECT txt FROM dif WHERE node_id = ? ORDER BY ord")
     .all(nodeId)
@@ -146,7 +146,7 @@ export interface ThesaurusResult {
 
 /** Nodes whose headword (or variant) is exactly `norm`, with the first one's identity. */
 function nodesByKap(
-  db: Database,
+  db: SqlReader,
   norm: string
 ): { ids: number[]; headword: string; article: string; norm: string } | null {
   const rows = db
@@ -167,7 +167,7 @@ function nodesByKap(
  * node, and the inverses the refs pass entailed — so `hundo` lists the breeds
  * that declare themselves a kind of dog, which the `hund` article never states.
  */
-export function thesaurusOf(db: Database, query: string): ThesaurusResult | null {
+export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | null {
   const normalized = normalizeQuery(query);
   let hit = nodesByKap(db, normalized);
   let matchedVia: string | undefined;
@@ -265,7 +265,7 @@ export interface DefinitionHit {
  * Diacritics are folded by the tokenizer, so "granda birdo" and "granda
  * birdó" behave alike; x-system input is converted first.
  */
-export function searchDefinitions(db: Database, query: string, limit = 20): DefinitionHit[] {
+export function searchDefinitions(db: SqlReader, query: string, limit = 20): DefinitionHit[] {
   const terms = normalizeQuery(query)
     .split(/\s+/)
     .filter((t) => t.length > 0)
