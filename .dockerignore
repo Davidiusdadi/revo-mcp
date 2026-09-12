@@ -1,0 +1,24 @@
+# The image builds data/voko.db itself; a local copy is ~460 MB and data/ as a
+# whole can hold far more (old revo.db, parity reports, WAL files).
+data/
+
+# Installed inside the image, for its own platform.
+node_modules/
+packages/*/node_modules/
+
+# The `sources` stage fetches the VOKO XML and the DTDs at pinned SHAs, so a
+# local submodule checkout is neither needed nor wanted here — and .git is not
+# available on every builder (Railway does not ship it).
+vendor/
+.git/
+.gitmodules
+
+# Generated from vendor/voko-grundo during the build, not shipped into it.
+packages/voko-xml/data/entities.json
+packages/voko-xml/data/cfg/
+
+# Not read by the build or the server.
+test/
+docs/
+*.md
+scripts/render-all-failures.json

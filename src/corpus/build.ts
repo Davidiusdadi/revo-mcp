@@ -33,8 +33,9 @@ import { morphPass } from "./passes/morph";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..", "..");
-const FONTO = join(ROOT, "vendor", "revo-fonto");
-const GRUNDO = join(ROOT, "vendor", "voko-grundo");
+const VENDOR = join(ROOT, "vendor");
+const FONTO = join(VENDOR, "revo-fonto");
+const GRUNDO = join(VENDOR, "voko-grundo");
 const OVERLAY = join(ROOT, "corpus", "overlay");
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
@@ -369,9 +370,33 @@ function coverage(db: Database, inv: Inventory): string[] {
   return problems;
 }
 
-function gitRev(dir: string): string {
-  const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"]);
-  return p.exitCode === 0 ? p.stdout.toString().trim() : "unknown";
+/** The commit `name` was fetched at, as recorded by scripts/fetch-sources.ts. */
+function pinnedRev(name: string): string | null {
+  const file = join(VENDOR, "SOURCES.json");
+  if (!existsSync(file)) return null;
+  try {
+    const pins = JSON.parse(readFileSync(file, "utf8")) as { name: string; commit: string }[];
+    return pins.find((p) => p.name === name)?.commit ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which commit of the sources this database was built from.
+ *
+ * A development tree answers with git over the submodule checkout. A container
+ * build has no git at all (see scripts/fetch-sources.ts), so the pins that the
+ * fetch recorded stand in — the provenance is the same either way.
+ */
+function gitRev(dir: string, name: string): string {
+  try {
+    const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"]);
+    if (p.exitCode === 0) return p.stdout.toString().trim();
+  } catch {
+    // No git binary: not an error here, the pins below are authoritative.
+  }
+  return pinnedRev(name) ?? "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -417,8 +442,8 @@ export function buildL2(out: string, limit?: number, extra: string[] = []): Data
   meta.run("schema", "voko");
   meta.run("schema_version", "1");
   meta.run("built_at", new Date().toISOString());
-  meta.run("fonto_rev", gitRev(FONTO));
-  meta.run("voko_grundo_rev", gitRev(GRUNDO));
+  meta.run("fonto_rev", gitRev(FONTO, "revo-fonto"));
+  meta.run("voko_grundo_rev", gitRev(GRUNDO, "voko-grundo"));
   meta.run("articles", String(articles.length));
   meta.run("inventory", JSON.stringify(inv.elements));
   if (problems.length) {

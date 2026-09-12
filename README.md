@@ -51,15 +51,23 @@ https://revo-mcp-production-b460.up.railway.app/mcp
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Davidiusdadi/revo-mcp)
 
-The image builds the dictionary database from the XML sources at build time, so
-the build context needs the submodules checked out (`git clone
---recurse-submodules`). Expect a slow first build and a large image.
+The image builds the dictionary database from the XML at build time. It
+downloads the two source repositories itself as tarballs, pinned to the commits
+in the `ARG`s at the top of the `Dockerfile`, so it depends neither on the
+builder cloning submodules (Railway does not) nor on git being installable in
+the image. Nothing here needs credentials: both repositories are public.
+
+Expect a slow first build (the corpus build alone is ~2 min). Only the database
+and the server reach the final image; the XML and the DTDs stay in the build
+stages.
 
 ---
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) 1.0+
+- [Bun](https://bun.sh/) 1.3+ — the corpus build streams its queries with
+  `Statement.iterate()`, which older Bun does not have (tested on 1.3.13, which
+  is also what the `Dockerfile` pins)
 - git, and ~1 GB of free disk space for the sources and the built database
 
 ## Setup

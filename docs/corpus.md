@@ -211,17 +211,47 @@ XML (see `corpus/overlay/README.md`), not into a pass.
 
 ## Docker
 
-`Dockerfile` copies `packages/` before `bun install --frozen-lockfile`, which
-fails on the workspace dependency otherwise. The runtime (`src/`) does not
-import `voko-xml`.
+The image builds the database instead of shipping one, in three stages:
+
+1. `sources` — `scripts/fetch-sources.ts` downloads `revo-fonto` and
+   `voko-grundo` as tarballs at the commits pinned in the Dockerfile's `ARG`s,
+   unpacking only `revo/`, `cfg/`, `dtd/`, and recording them in
+   `vendor/SOURCES.json`.
+2. `build` — `bun install --frozen-lockfile` (`packages/` is copied first, or
+   the workspace dependency fails to resolve), then `bun run setup`.
+3. the server — `data/voko.db`, `src/`, `packages/` and `node_modules` only.
+   The XML, the DTDs and git stay behind in the earlier stages.
+
+The sources are fetched in-image rather than copied in because builders that
+clone from GitHub — Railway among them — ship neither the submodule contents
+nor `.git`, leaving an in-image `git submodule update` nothing to work from.
+Tarballs rather than `git clone` because the base image is Debian 11, whose
+mirrors already 404 on the package versions its own indexes name, so installing
+git makes the build hostage to a frozen distro; `fetch` and `tar` are already
+there. Both repositories are public, so none of this needs credentials.
+`test/deploy-pins.test.ts` fails if the `ARG` commits drift from the pins.
+
+`.dockerignore` keeps `data/`, `vendor/` and the generated parser tables out of
+the build context, so `setup.ts` regenerates the tables from the vendored DTDs
+— `scripts/gen-entities.ts` reads `dtd/` and `cfg/` and needs no git.
+
+Nothing on the build path requires git, so a container build still records
+where it came from: `meta.fonto_rev` and `meta.voko_grundo_rev` fall back to
+the commits in `vendor/SOURCES.json` when there is no repository to ask.
+
+The base image is pinned (`ARG BUN_VERSION`) rather than tracking `oven/bun:1`.
+The passes stream their queries with `Statement.iterate()`, which older Bun
+does not have, so a floating tag makes the build depend on whichever image the
+builder has cached — locally that was a two-year-old 1.1.4. Pin and bump
+deliberately; `test/deploy-pins.test.ts` checks every stage uses the `ARG`.
 
 ## Validation
 
 1. Coverage: XML element counts == table rows; inventory has no unknown markup.
 2. Losslessness: DOM round-trip over every file (`packages/voko-xml/test/corpus.test.ts`).
 3. Parity vs `data/revo.db`: key-set diffs, old-only items zero or explained.
-4. Tools: the test suite runs on both DBs (`bun test`, `REVO_DB=data/voko.db bun test`);
-   `scripts/render-all-articles.ts` renders every headword.
+4. Tools: `bun test`, which reads `data/voko.db`; `scripts/render-all-articles.ts`
+   renders every headword.
 5. Each pass: unit test on hand-picked articles + corpus-level count assertions
    (`test/corpus-build.test.ts` builds the first 120 articles plus `san`, `mal`,
    `ul`, `ej`, `hund`, `lup`; the passes also assert their own counts at build).

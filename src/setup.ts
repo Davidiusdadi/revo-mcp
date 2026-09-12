@@ -11,8 +11,9 @@
 import { existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { buildL2, PASSES } from "./corpus/build";
-import { runPass } from "./corpus/pass";
+
+// src/corpus/build.ts imports the generated cfg tables, so it cannot be loaded
+// until sources() has produced them — hence the dynamic import in main().
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -22,32 +23,49 @@ const DB_PATH = join(DATA_DIR, "voko.db");
 const ARTICLES = join(ROOT, "vendor", "revo-fonto", "revo");
 const ENTITIES = join(ROOT, "packages", "voko-xml", "data", "entities.json");
 
-/**
- * Make sure the XML and the generated parser tables are present. Both are
- * produced by scripts/fonto.sh, which needs git; when the sources are already
- * in place (a Docker build context, say) nothing runs.
- */
-function sources(): void {
-  if (existsSync(ARTICLES) && existsSync(ENTITIES)) {
-    console.log("XML sources and parser tables present.");
-    return;
-  }
-  console.log("Checking out the source submodules...");
-  const proc = Bun.spawnSync(["sh", join(ROOT, "scripts", "fonto.sh")], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  if (proc.exitCode !== 0) {
-    throw new Error(
-      "scripts/fonto.sh failed. It needs git and the submodules; in a build " +
-        "context without them, check out vendor/revo-fonto and vendor/voko-grundo first."
-    );
-  }
+function run(cmd: string[], whatFailed: string): void {
+  const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });
+  if (proc.exitCode !== 0) throw new Error(whatFailed);
 }
 
-function main(): void {
+/**
+ * Make sure the XML and the generated parser tables are both present.
+ *
+ * Two ways in, because only one of them has git: a fresh clone checks out the
+ * submodules and generates the tables in one go, while a container build gets
+ * the XML from outside (the Dockerfile's `sources` stage) and needs nothing but
+ * the DTDs to generate the tables.
+ */
+function sources(): void {
+  if (!existsSync(ARTICLES)) {
+    console.log("Checking out the source submodules...");
+    run(
+      ["sh", join(ROOT, "scripts", "fonto.sh")],
+      "scripts/fonto.sh failed. It needs git and the submodules; in a build " +
+        "context without them, put the sources at vendor/revo-fonto and " +
+        "vendor/voko-grundo first."
+    );
+    return;
+  }
+  if (!existsSync(ENTITIES)) {
+    // The XML is here but the generated tables are not, so the sources arrived
+    // without git. gen-entities.ts only reads vendor/voko-grundo/{dtd,cfg}.
+    console.log("Generating the parser's entity and cfg tables...");
+    run(
+      ["bun", "run", join(ROOT, "scripts", "gen-entities.ts")],
+      "scripts/gen-entities.ts failed — is vendor/voko-grundo present?"
+    );
+    return;
+  }
+  console.log("XML sources and parser tables present.");
+}
+
+async function main(): Promise<void> {
   mkdirSync(DATA_DIR, { recursive: true });
   sources();
+
+  const { buildL2, PASSES } = await import("./corpus/build");
+  const { runPass } = await import("./corpus/pass");
 
   console.log(`Building ${DB_PATH} ...`);
   const t0 = Date.now();
@@ -62,4 +80,4 @@ function main(): void {
   console.log("Run `bun run start` to start the MCP server.");
 }
 
-main();
+await main();

@@ -115,7 +115,15 @@ function main() {
     console.log(`cfg/${dst}: ${rows.length} rows`);
   }
 
-  const rev = Bun.spawnSync(["git", "-C", GRUNDO, "rev-parse", "--short", "HEAD"]).stdout.toString().trim();
+  // Best-effort provenance line: a container build has the DTDs but neither
+  // git nor a .git directory to ask.
+  let rev = "(revision unknown — no git here)";
+  try {
+    const p = Bun.spawnSync(["git", "-C", GRUNDO, "rev-parse", "--short", "HEAD"]);
+    if (p.exitCode === 0) rev = p.stdout.toString().trim();
+  } catch {
+    // git is not installed; the pin is recorded by the caller instead.
+  }
   console.log(`from voko-grundo ${rev}`);
 }
 
