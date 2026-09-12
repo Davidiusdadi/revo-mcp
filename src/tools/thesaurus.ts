@@ -24,7 +24,8 @@ export const thesaurusInputSchema = z.object({
     .describe(
       "Restrict to these relation types: sin (synonym), ant (antonym), vid (see also), " +
         "super (is a kind of), sub (has kind), prt (has part), malprt (belongs to), " +
-        "hom (homonym), lst (list). Defaults to all."
+        "hom (homonym), lst (list). Defaults to all. ReVo marks antonyms on few articles " +
+        "and often files opposites under vid, so ask for vid too when looking for opposites."
     ),
 });
 
@@ -45,8 +46,12 @@ export function handleThesaurus(args: ThesaurusInput): string {
     : `## Relations: ${result.headword} (${result.article})`;
 
   if (groups.length === 0) {
+    // ReVo marks antonyms on about 800 of 13,000 articles, so an empty filter
+    // must not read as "the word has none" (bela has malbela, marked nowhere).
     return relations?.length
-      ? `${title}\n\nNo ${relations.join("/")} relations recorded for "${result.headword}".`
+      ? `${title}\n\nNo ${relations.join("/")} relations recorded for "${result.headword}". ` +
+          "ReVo marks only some relations (antonyms rarely; opposites often appear under `vid`), " +
+          "so this means none is marked, not that none exists."
       : `${title}\n\nNo relations recorded for "${result.headword}".`;
   }
 
