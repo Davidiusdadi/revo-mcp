@@ -20,8 +20,9 @@ let db: Database;
 // hand-picked on top of the first 120 (which include a subdrv in `a` and a subart in `acx`):
 // mal~ulejo needs san plus the mal/ul/ej affix articles; hund prt lup for the ref graph;
 // unu and li each hold a <trdgrp> nested inside a translation's <klr>; cxeval writes
-// some of its tildes with lit="Ĉ", which is where a wrong root pin came from
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval"];
+// some of its tildes with lit="Ĉ", which is where a wrong root pin came from;
+// aidos has a <var> whose kap carries a <fnt> and a <uzo> next to it
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -106,6 +107,24 @@ describe("corpus build", () => {
     // and they reach the compat view, so lookup answers with them
     for (const r of nested) {
       expect(one("SELECT 1 FROM traduko WHERE lng = ? AND trd = ?", r.lng, r.txt)).toBeTruthy();
+    }
+  });
+
+  test("what stands beside a <var> is filed under the variant headword", () => {
+    // aidos: <var><kap>aideso <fnt>SPIV</fnt></kap><uzo>ARK</uzo></var> — the
+    // <fnt> inside the variant kap used to be taken for the variant itself
+    const u = one<{ txt: string; kap: string | null }>(
+      `SELECT u.txt, (SELECT k.txt FROM kap k WHERE k.id = u.owner_id) kap
+         FROM uzo u WHERE u.owner_kind = 'var' AND u.txt = 'ARK'
+          AND u.owner_id IN (SELECT k.id FROM kap k JOIN node n ON n.id = k.node_id
+                              WHERE n.art_id = (SELECT id FROM art WHERE file = 'aidos'))`);
+    expect(u.kap).toBe("aideso");
+
+    // and no var owner anywhere points at something that is not a headword
+    for (const t of ["uzo", "ekz", "ref", "fnt", "trd"]) {
+      expect(one<{ c: number }>(
+        `SELECT COUNT(*) c FROM ${t} WHERE owner_kind = 'var'
+          AND owner_id NOT IN (SELECT id FROM kap)`).c).toBe(0);
     }
   });
 

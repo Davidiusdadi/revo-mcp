@@ -274,7 +274,8 @@ function extract(el: Element, ctx: Ctx): void {
   }
 }
 
-function insertKap(kap: Element, ctx: Ctx, parentKapId: number | null): void {
+/** Writes the headword and everything under it; returns its kap.id. */
+function insertKap(kap: Element, ctx: Ctx, parentKapId: number | null): number {
   const forms = kapForms(kap, ctx.roots);
   const radVar = [...descendants(kap, "rad")].find((r) => r.attrs.var !== undefined && !insideVar(r, kap));
   ctx.st.kap.run(
@@ -287,13 +288,16 @@ function insertKap(kap: Element, ctx: Ctx, parentKapId: number | null): void {
     if (c.type !== "element") continue;
     if (c.name === "var") {
       const vk = firstChild(c, "kap");
-      if (vk) insertKap(vk, ctx, kapId);
-      const vctx = withOwner(ctx, "var", vk ? lastId(ctx.db) : kapId);
+      // the variant's own id, not last_insert_rowid(): the call above writes
+      // whatever the variant kap holds (aidos has a <fnt> in one), so the last
+      // row inserted is not the kap
+      const vctx = withOwner(ctx, "var", vk ? insertKap(vk, ctx, kapId) : kapId);
       for (const vc of c.children) if (vc.type === "element" && vc !== vk) extract(vc, vctx);
     } else if (c.name !== "rad" && c.name !== "ofc" && c.name !== "tld") {
       extract(c, inner);
     }
   }
+  return kapId;
 }
 
 function insideVar(el: Element, until: Element): boolean {
