@@ -207,6 +207,35 @@ export function lookupEsperanto(
 /**
  * Look up a word in a specific translation language.
  */
+// ReVo files a translation under its <ind> headword, so a query also matches
+// idioms that merely contain it: "Hund" finds hundo and "vor die Hunde gehen"
+// (degradiĝi) alike. Without an order the older row won. A translation that is
+// the query outranks one filed under it; among the rest, shorter text first.
+const TRD_RANK =
+  "ORDER BY (COALESCE(txt, trd) = ? COLLATE NOCASE) DESC, length(COALESCE(txt, trd)), rowid";
+
+// The same order for rows gathered one by one (the FTS path).
+function rankTrds(trds: TradukoRow[], normalized: string): TradukoRow[] {
+  const text = (t: TradukoRow) => t.txt ?? t.trd ?? "";
+  const exact = (t: TradukoRow) => (text(t).toLowerCase() === normalized ? 0 : 1);
+  return trds.sort((a, b) => exact(a) - exact(b) || text(a).length - text(b).length);
+}
+
+// The translation row behind a result. Rows are keyed by the nearest marked
+// node, often a sense ("degrad.0igxi.FIG"), while results carry the derivation
+// ("degrad.0igxi"); trds is ranked, so the first fitting row is the best one.
+function trdFor(trds: TradukoRow[], mrk: string): TradukoRow | undefined {
+  return trds.find((t) => t.mrk === mrk || t.mrk.startsWith(mrk + "."));
+}
+
+// "translation:de:Hund" names what matched; when the translation says more
+// than its index form, show it, so an idiom is not read as the word's meaning.
+function translationVia(lng: string, t: TradukoRow | undefined, query: string): string {
+  if (!t) return `translation:${lng}:${query}`;
+  const more = t.txt && t.txt.toLowerCase() !== (t.trd ?? "").toLowerCase() ? ` (${t.txt})` : "";
+  return `translation:${lng}:${t.trd}${more}`;
+}
+
 export function lookupTranslation(
   query: string,
   lang: string,
@@ -219,10 +248,10 @@ export function lookupTranslation(
 
   // 1. Exact match (uses idx_traduko_lng_trd COLLATE NOCASE on trd)
   let trds = db
-    .query<TradukoRow, [string, string]>(
-      "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd = ? COLLATE NOCASE LIMIT 50"
+    .query<TradukoRow, [string, string, string]>(
+      `SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd = ? COLLATE NOCASE ${TRD_RANK} LIMIT 50`
     )
-    .all(lang, normalized);
+    .all(lang, normalized, normalized);
 
   if (trds.length === 0) {
     // 2. FTS match
@@ -245,6 +274,7 @@ export function lookupTranslation(
             .get(rowid, lang);
           if (row) trds.push(row);
         }
+        rankTrds(trds, normalized);
       }
     } catch {
       // FTS query might fail — ignore
@@ -254,10 +284,10 @@ export function lookupTranslation(
   if (trds.length === 0) {
     // 3. LIKE partial match
     trds = db
-      .query<TradukoRow, [string, string]>(
-        "SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd LIKE '%' || ? || '%' COLLATE NOCASE LIMIT 50"
+      .query<TradukoRow, [string, string, string]>(
+        `SELECT mrk, lng, trd, txt FROM traduko WHERE lng = ? AND trd LIKE '%' || ? || '%' COLLATE NOCASE ${TRD_RANK} LIMIT 50`
       )
-      .all(lang, normalized);
+      .all(lang, normalized, normalized);
   }
 
   if (trds.length === 0) return [];
@@ -276,8 +306,7 @@ export function lookupTranslation(
 
   const results = assembleResults(allNodes, limit);
   for (const r of results) {
-    const matched = trds.find((t) => t.mrk === r.mrk);
-    r.matchedVia = `translation:${lang}:${matched?.trd ?? query}`;
+    r.matchedVia = translationVia(lang, trdFor(trds, r.mrk), query);
   }
   return results;
 }
@@ -297,23 +326,26 @@ export function lookupAllLanguages(
 
   // Search translations across all languages
   let trds = db
-    .query<TradukoRow, [string]>(
-      "SELECT mrk, lng, trd, txt FROM traduko WHERE trd = ? COLLATE NOCASE LIMIT 100"
+    .query<TradukoRow, [string, string]>(
+      `SELECT mrk, lng, trd, txt FROM traduko WHERE trd = ? COLLATE NOCASE ${TRD_RANK} LIMIT 100`
     )
-    .all(normalized);
+    .all(normalized, normalized);
 
   if (trds.length === 0) {
     // FTS fallback
     try {
-      trds = db
-        .query<TradukoRow, [string]>(
-          `SELECT t.mrk, t.lng, t.trd, t.txt
-           FROM fts_trd f
-           JOIN traduko t ON f.rowid = t.rowid
-           WHERE f.trd MATCH '"' || ? || '"'
-           LIMIT 100`
-        )
-        .all(normalized);
+      trds = rankTrds(
+        db
+          .query<TradukoRow, [string]>(
+            `SELECT t.mrk, t.lng, t.trd, t.txt
+             FROM fts_trd f
+             JOIN traduko t ON f.rowid = t.rowid
+             WHERE f.trd MATCH '"' || ? || '"'
+             LIMIT 100`
+          )
+          .all(normalized),
+        normalized
+      );
     } catch {
       // ignore FTS errors
     }
@@ -332,8 +364,8 @@ export function lookupAllLanguages(
 
   const trdResults = assembleResults(allNodes, limit);
   for (const r of trdResults) {
-    const matched = trds.find((t) => t.mrk === r.mrk);
-    r.matchedVia = `translation:${matched?.lng ?? "?"}:${matched?.trd ?? query}`;
+    const matched = trdFor(trds, r.mrk);
+    r.matchedVia = translationVia(matched?.lng ?? "?", matched, query);
   }
 
   // Merge eo results + translation results, dedup by mrk
