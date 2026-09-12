@@ -51,6 +51,23 @@ describe("lookupTranslation", () => {
     const results = lookupTranslation("Hund", "de", 1);
     expect(results.length).toBe(1);
     expect(results[0].headword).toBe("hundo");
+    expect(results[0].matchedVia).toBe("translation:de:Hund");
+  });
+
+  test("names the idiom a hit is only filed under", () => {
+    // "vor die Hunde gehen" is <trd><ind>Hund</ind>…</trd> under degradiĝi
+    const results = lookupTranslation("Hund", "de", 10);
+    const degr = results.find((r) => r.headword.startsWith("degradiĝ"));
+    expect(degr).toBeDefined();
+    expect(degr!.matchedVia).toBe("translation:de:Hund (vor die Hunde gehen)");
+  });
+
+  test("a translation with a pronunciation is not reported as more than itself", () => {
+    // trd 犬 carries <pr>いぬ</pr>, which the traduko view appends to txt
+    const results = lookupTranslation("犬", "ja", 1);
+    expect(results.length).toBe(1);
+    expect(results[0].headword).toBe("hundo");
+    expect(results[0].matchedVia).toBe("translation:ja:犬");
   });
 
   test("finds 'chien' in French", () => {

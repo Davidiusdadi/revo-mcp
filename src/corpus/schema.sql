@@ -192,8 +192,11 @@ CREATE VIEW traduko AS
   -- rowid = trd.id = fts_trd.rowid, so db.ts's fts_trd→traduko joins work unchanged.
   -- trd = the <ind> (index form) when the translation marks one, as upstream:
   -- "nőstény <ind>méh</ind>" is found as "méh"; txt keeps the full text.
+  -- ind is exposed as well: a row that has one is filed *under* its index form
+  -- rather than being it, which is what ranking a search hit turns on.
   SELECT t.id AS rowid, n.mrk_near AS mrk, t.lng AS lng, COALESCE(t.ind, t.txt) AS trd,
-         CASE WHEN t.pr IS NULL THEN t.txt ELSE t.txt || ' ' || t.pr END AS txt
+         CASE WHEN t.pr IS NULL THEN t.txt ELSE t.txt || ' ' || t.pr END AS txt,
+         t.ind AS ind
   FROM trd t JOIN node n ON n.id = t.node_id
   -- upstream leaves out translations of example sentences (proverbs etc.);
   -- they stay in trd for tools that want them
