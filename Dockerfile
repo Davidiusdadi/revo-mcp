@@ -8,12 +8,17 @@ COPY package.json bun.lock ./
 COPY packages/ ./packages/
 RUN bun install --frozen-lockfile
 
-# Copy source
+# Copy source and everything the corpus build reads. vendor/ holds the VOKO XML
+# and the DTDs as git submodules: the build context must already have them
+# checked out (clone with --recurse-submodules, or run `bun run fonto`), since
+# there is no git metadata in the image for the checkout to happen here.
 COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY corpus/ ./corpus/
+COPY vendor/ ./vendor/
 COPY tsconfig.json ./
 
-# Download the Reta Vortaro database and build FTS indexes
-RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
+# Build data/voko.db from the XML (L2 + every enrichment pass)
 RUN bun run setup
 
 ENV PORT=3000

@@ -3,12 +3,12 @@
  * Hardening script: renders every Esperanto headword through the lookup +
  * format pipeline and reports any failures. Parallelized over Bun Workers.
  * Run with: bun run scripts/render-all-articles.ts
- *   Env: REVO_DB_PATH=path/to.db, REVO_WORKERS=8, REVO_BATCH=200
+ *   Env: REVO_DB=path/to.db, REVO_WORKERS=8, REVO_BATCH=200
  */
 import { Database } from "bun:sqlite";
 import { availableParallelism } from "node:os";
 
-const DB_PATH = process.env.REVO_DB_PATH ?? "data/revo.db";
+const DB_PATH = process.env.REVO_DB ?? process.env.REVO_DB_PATH ?? "data/voko.db";
 const NUM_WORKERS = Number(process.env.REVO_WORKERS) || Math.max(2, availableParallelism() - 1);
 const BATCH_SIZE = Number(process.env.REVO_BATCH) || 200;
 

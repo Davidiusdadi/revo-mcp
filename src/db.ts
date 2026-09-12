@@ -24,9 +24,9 @@ import {
 } from "./db-voko";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// REVO_DB points the server at an alternative database (e.g. the XML-built
-// data/voko.db); default stays the upstream release DB.
-const DB_PATH = process.env.REVO_DB ?? join(__dirname, "..", "data", "revo.db");
+// The XML-built corpus is the database the server reads; `bun run setup`
+// builds it. REVO_DB points at a different file (e.g. an older revo.db).
+const DB_PATH = process.env.REVO_DB ?? join(__dirname, "..", "data", "voko.db");
 
 export interface NodoRow {
   mrk: string;

@@ -51,30 +51,37 @@ https://revo-mcp-production-b460.up.railway.app/mcp
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Davidiusdadi/revo-mcp)
 
-The `bun run setup` step runs automatically on first deploy via the Railway start command.
+The image builds the dictionary database from the XML sources at build time, so
+the build context needs the submodules checked out (`git clone
+--recurse-submodules`). Expect a slow first build and a large image.
 
 ---
 
 ## Prerequisites
 
 - [Bun](https://bun.sh/) 1.0+
+- git, and ~1 GB of free disk space for the sources and the built database
 
 ## Setup
 
 ```bash
+git clone --recurse-submodules https://github.com/Davidiusdadi/revo-mcp.git
 cd revo-mcp
 
 # Install dependencies
 bun install
 
-# Download the Revo dictionary database (~43 MB download, ~280 MB extracted)
-# and create search indexes
+# Check out the XML sources and build the dictionary database (~2 min, ~460 MB)
 bun run setup
 ```
 
-The setup script downloads the latest daily release of `revo.db` from [revuloj/revo-fonto releases](https://github.com/revuloj/revo-fonto/releases) and augments it with FTS5 full-text search indexes.
+`bun run setup` checks out the two source submodules, generates the parser's
+entity and name tables from them, then parses all 13,011 VOKO articles into
+`data/voko.db` and runs the enrichment passes. The database is not committed —
+it is built from the XML, and rebuilding is one command.
 
-The database can also be built from ReVo's VOKO XML sources instead of the prebuilt release, which keeps the structure that upstream's rendered HTML flattens — see [docs/corpus.md](docs/corpus.md).
+See [docs/corpus.md](docs/corpus.md) for the layers, the schema and the passes.
+`REVO_DB=path/to.db` points the server at a different database.
 
 ## Usage
 
@@ -145,13 +152,14 @@ Lists all 174 available languages with translation counts. Takes no parameters.
 ## Testing
 
 ```bash
-# Run all tests (requires revo.db — run `bun run setup` first)
+# Run all tests (requires data/voko.db — run `bun run setup` first)
 bun test
 ```
 
 The test suite includes:
-- Unit tests for the Esperanto stemmer and HTML extraction
+- Unit tests for the Esperanto stemmer and the morphology
 - Integration tests for the database query layer
+- A corpus build over a slice of the XML, checking the schema and every pass
 - 100 real-world usage scenarios covering beginner learners, advanced users, x-system input, stemming, multi-language search, and edge cases
 
 ## Architecture
@@ -160,28 +168,28 @@ The test suite includes:
 revo-mcp/
 ├── src/
 │   ├── index.ts           # MCP server entry point (stdio transport)
+│   ├── server.ts          # Tool registration
 │   ├── db.ts              # SQLite queries (headword, translation, FTS search)
-│   ├── setup.ts           # Database download and FTS index creation
+│   ├── setup.ts           # Builds data/voko.db from the XML
 │   ├── stemmer.ts         # Esperanto stemmer, x-system, normalization
-│   ├── html-extract.ts    # Extract definitions/examples from article HTML
+│   ├── morph.ts           # Morphology: dictionary forms, segmentation
 │   ├── formatter.ts       # Format results as Markdown
-│   └── tools/
-│       ├── lookup.ts      # lookup tool handler
-│       └── languages.ts   # languages tool handler
+│   ├── corpus/            # XML → voko.db: schema, build, enrichment passes
+│   └── tools/             # One handler per MCP tool
+├── packages/voko-xml/     # The VOKO XML parser (lossless DOM + walkers)
+├── vendor/                # Source submodules: revo-fonto, voko-grundo
 ├── test/
-│   ├── stemmer.test.ts
-│   ├── html-extract.test.ts
-│   ├── lookup.test.ts
-│   └── scenarios.test.ts  # 100 usage scenarios
 └── data/
-    └── revo.db            # Downloaded database (gitignored)
+    └── voko.db            # Built by `bun run setup` (gitignored)
 ```
 
-The server uses the pre-built SQLite database from the Revo daily releases, which contains:
-- 48,000+ headword entries
-- 801,000+ translations across 174 languages
-- 13,000+ full article definitions as HTML
-- Cross-references, usage domains, and variant spellings
+`data/voko.db` is parsed from the VOKO XML rather than downloaded, so it keeps
+the structure the rendered HTML flattens:
+- 64,000+ headword entries, senses kept as senses
+- 539,000+ translations across 174 languages, with `ind`/`baz`/`pr` intact
+- 13,011 articles, stored as XML
+- A typed reference graph, morphological segmentation, and full-text indexes
+  over headwords, translations, examples and definitions
 
 ## License
 

@@ -1,255 +1,65 @@
 #!/usr/bin/env bun
 /**
- * Setup script: downloads the pre-built Revo SQLite database from GitHub releases
- * and augments it with FTS5 indexes for fast lookup.
+ * Setup: build data/voko.db from ReVo's VOKO XML.
+ *
+ * Checks out the source submodules and generates the parser's tables first if
+ * that has not happened yet (scripts/fonto.sh), then runs the L2 build and
+ * every enrichment pass — the same work as `bun run corpus:build`, so a fresh
+ * clone reaches a serving database in one command.
  */
 
-import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { extractAllExamples } from "./html-extract";
+import { buildL2, PASSES } from "./corpus/build";
+import { runPass } from "./corpus/pass";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "data");
-const DB_PATH = join(DATA_DIR, "revo.db");
-const REPO = "revuloj/revo-fonto";
+const ROOT = join(__dirname, "..");
+const DATA_DIR = join(ROOT, "data");
+const DB_PATH = join(DATA_DIR, "voko.db");
 
-async function getLatestReleaseDbUrl(): Promise<string> {
-  const resp = await fetch(
-    `https://api.github.com/repos/${REPO}/releases/latest`
-  );
-  if (!resp.ok) throw new Error(`GitHub API error: ${resp.status}`);
-  const data = (await resp.json()) as {
-    assets: { name: string; browser_download_url: string }[];
-  };
-  const asset = data.assets.find((a) => a.name.startsWith("revosql_") && a.name.endsWith(".zip"));
-  if (!asset) throw new Error("No revosql_*.zip found in latest release");
-  return asset.browser_download_url;
-}
+const ARTICLES = join(ROOT, "vendor", "revo-fonto", "revo");
+const ENTITIES = join(ROOT, "packages", "voko-xml", "data", "entities.json");
 
-async function downloadAndExtract(url: string): Promise<void> {
-  console.log(`Downloading ${url}...`);
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
-  const zipData = await resp.arrayBuffer();
-  const zipPath = join(DATA_DIR, "revosql.zip");
-  await Bun.write(zipPath, zipData);
-  console.log(`Downloaded ${(zipData.byteLength / 1024 / 1024).toFixed(1)} MB`);
-
-  console.log("Extracting...");
-  const proc = Bun.spawnSync(["unzip", "-o", zipPath, "-d", DATA_DIR]);
-  if (proc.exitCode !== 0) {
-    throw new Error(`unzip failed: ${proc.stderr.toString()}`);
-  }
-
-  // The zip contains revo.db
-  const extractedPath = join(DATA_DIR, "revo.db");
-  if (!existsSync(extractedPath)) {
-    throw new Error("revo.db not found after extraction");
-  }
-
-  // Clean up zip
-  await Bun.write(zipPath, ""); // truncate
-  const { unlinkSync } = await import("fs");
-  unlinkSync(zipPath);
-  console.log("Extracted revo.db");
-}
-
-function augmentWithIndexes(dbPath: string): void {
-  console.log("Augmenting database with FTS5 indexes...");
-  const db = new Database(dbPath);
-
-  // Standard indexes for common queries
-  db.run("CREATE INDEX IF NOT EXISTS idx_nodo_kap ON nodo(kap COLLATE NOCASE)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_nodo_art ON nodo(art)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_traduko_mrk ON traduko(mrk)");
-  db.run(
-    "CREATE INDEX IF NOT EXISTS idx_traduko_lng_trd ON traduko(lng, trd COLLATE NOCASE)"
-  );
-  db.run("CREATE INDEX IF NOT EXISTS idx_var_kap ON var(kap COLLATE NOCASE)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_referenco_mrk ON referenco(mrk)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_uzo_mrk ON uzo(mrk)");
-  console.log("  Standard indexes created.");
-
-  // Unicode-aware case-folded headword column. SQLite's NOCASE collation only
-  // folds ASCII; Esperanto's Ĉ Ĝ Ĥ Ĵ Ŝ Ŭ need full Unicode case folding.
-  // We pre-compute kap.toLowerCase() (Unicode-aware in JS) into kap_norm and
-  // index it, so runtime queries do plain BINARY index lookups.
-  for (const table of ["nodo", "var"] as const) {
-    const cols = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
-    if (!cols.some((c) => c.name === "kap_norm")) {
-      db.run(`ALTER TABLE ${table} ADD COLUMN kap_norm TEXT`);
-    }
-    const todo = db
-      .query<{ rowid: number; kap: string }, []>(
-        `SELECT rowid, kap FROM ${table} WHERE kap_norm IS NULL`
-      )
-      .all();
-    if (todo.length > 0) {
-      const upd = db.prepare(`UPDATE ${table} SET kap_norm = ? WHERE rowid = ?`);
-      const tx = db.transaction((rows: typeof todo) => {
-        for (const r of rows) upd.run(r.kap?.toLowerCase() ?? null, r.rowid);
-      });
-      tx(todo);
-    }
-    db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_kap_norm ON ${table}(kap_norm)`);
-  }
-  console.log("  Unicode-normalized kap_norm columns + indexes created.");
-
-  // FTS5 for headword search
-  const ftsKapExists = db
-    .query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_kap'"
-    )
-    .get();
-  if (!ftsKapExists) {
-    db.run(`
-      CREATE VIRTUAL TABLE fts_kap USING fts5(
-        kap,
-        tokenize='unicode61 remove_diacritics 2'
-      )
-    `);
-    db.run("INSERT INTO fts_kap(rowid, kap) SELECT rowid, kap FROM nodo");
-    // Include variant headwords
-    db.run(`
-      INSERT INTO fts_kap(kap)
-        SELECT v.kap FROM var v
-    `);
-    console.log("  FTS5 headword index created.");
-  } else {
-    console.log("  FTS5 headword index already exists.");
-  }
-
-  // FTS5 for translation search
-  const ftsTrdExists = db
-    .query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_trd'"
-    )
-    .get();
-  if (!ftsTrdExists) {
-    db.run(`
-      CREATE VIRTUAL TABLE fts_trd USING fts5(
-        trd,
-        tokenize='unicode61 remove_diacritics 2'
-      )
-    `);
-    db.run("INSERT INTO fts_trd(rowid, trd) SELECT rowid, trd FROM traduko");
-    console.log("  FTS5 translation index created.");
-  } else {
-    console.log("  FTS5 translation index already exists.");
-  }
-
-  // Example-sentence corpus: one row per <i class="ekz">, rendered to
-  // markdown, with FTS5 so inflected forms / compounds / proper names that
-  // only appear inside example text become searchable.
-  buildEkzemploCorpus(db);
-
-  db.close();
-  console.log("Database augmentation complete.");
-}
-
-function buildEkzemploCorpus(db: Database): void {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS ekzemplo (
-      rowid INTEGER PRIMARY KEY,
-      art       TEXT NOT NULL,
-      drv_mrk   TEXT NOT NULL,
-      sense_mrk TEXT,
-      ekz_md    TEXT NOT NULL,
-      position  INTEGER NOT NULL
-    )
-  `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_ekzemplo_drv ON ekzemplo(drv_mrk)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_ekzemplo_art ON ekzemplo(art)");
-
-  // Trigram tokenizer: indexes every 3-char window so substring searches
-  // ('ema' finds manĝema, 'nulejo' finds malsanulejo) work as well as
-  // whole-word matches. remove_diacritics folds Ĉ↔c, ĝ↔g, etc., so an
-  // ASCII-only query like 'songo' matches 'sonĝo'.
-  const existingFts = db
-    .query<{ sql: string }, []>(
-      "SELECT sql FROM sqlite_master WHERE type='table' AND name='fts_ekz'"
-    )
-    .get();
-  const hasTrigram = existingFts?.sql?.includes("trigram") ?? false;
-  let ftsNeedsRebuild = false;
-  if (existingFts && !hasTrigram) {
-    console.log("  Migrating fts_ekz to trigram tokenizer...");
-    db.run("DROP TABLE fts_ekz");
-    ftsNeedsRebuild = true;
-  } else if (!existingFts) {
-    ftsNeedsRebuild = true;
-  }
-  db.run(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS fts_ekz USING fts5(
-      ekz_md,
-      content='ekzemplo',
-      content_rowid='rowid',
-      tokenize='trigram case_sensitive 0 remove_diacritics 1'
-    )
-  `);
-
-  const existing = db.query<{ c: number }, []>("SELECT COUNT(*) c FROM ekzemplo").get();
-  if (existing && existing.c > 0) {
-    // Probe the FTS index with a cheap query to detect whether it's actually
-    // populated. An external-content FTS5 table can exist but contain no
-    // tokens (e.g. after a DROP+CREATE without rebuild).
-    const probe = db
-      .query<{ c: number }, []>("SELECT COUNT(*) AS c FROM fts_ekz WHERE fts_ekz MATCH 'the'")
-      .get();
-    const indexEmpty = !probe || probe.c === 0;
-    if (ftsNeedsRebuild || indexEmpty) {
-      console.log("  Rebuilding fts_ekz index from existing ekzemplo rows...");
-      const t0 = Date.now();
-      db.run("INSERT INTO fts_ekz(fts_ekz) VALUES('rebuild')");
-      console.log(`    done in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
-    }
-    console.log(`  Example corpus ready (${existing.c} rows).`);
+/**
+ * Make sure the XML and the generated parser tables are present. Both are
+ * produced by scripts/fonto.sh, which needs git; when the sources are already
+ * in place (a Docker build context, say) nothing runs.
+ */
+function sources(): void {
+  if (existsSync(ARTICLES) && existsSync(ENTITIES)) {
+    console.log("XML sources and parser tables present.");
     return;
   }
-
-  const arts = db
-    .query<{ mrk: string; txt: Buffer }, []>("SELECT mrk, txt FROM artikolo")
-    .all();
-  console.log(`  Extracting examples from ${arts.length} articles...`);
-
-  const insert = db.prepare(
-    "INSERT INTO ekzemplo (art, drv_mrk, sense_mrk, ekz_md, position) VALUES (?, ?, ?, ?, ?)"
-  );
-  let total = 0;
-  const t0 = Date.now();
-  const tx = db.transaction((rows: typeof arts) => {
-    for (const art of rows) {
-      const examples = extractAllExamples(art.txt, art.mrk);
-      for (const e of examples) {
-        insert.run(art.mrk, e.drvMrk, e.senseMrk ?? null, e.ekzMd, e.position);
-        total++;
-      }
-    }
+  console.log("Checking out the source submodules...");
+  const proc = Bun.spawnSync(["sh", join(ROOT, "scripts", "fonto.sh")], {
+    stdout: "inherit",
+    stderr: "inherit",
   });
-  tx(arts);
-
-  db.run("INSERT INTO fts_ekz(fts_ekz) VALUES('rebuild')");
-  const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`  Example corpus built: ${total} rows in ${elapsed}s.`);
-}
-
-async function main() {
-  mkdirSync(DATA_DIR, { recursive: true });
-
-  if (existsSync(DB_PATH)) {
-    console.log("revo.db already exists. Re-augmenting indexes...");
-  } else {
-    const url = await getLatestReleaseDbUrl();
-    await downloadAndExtract(url);
+  if (proc.exitCode !== 0) {
+    throw new Error(
+      "scripts/fonto.sh failed. It needs git and the submodules; in a build " +
+        "context without them, check out vendor/revo-fonto and vendor/voko-grundo first."
+    );
   }
-
-  augmentWithIndexes(DB_PATH);
-  console.log("\nSetup complete! Run `bun run start` to start the MCP server.");
 }
 
-main().catch((err) => {
-  console.error("Setup failed:", err);
-  process.exit(1);
-});
+function main(): void {
+  mkdirSync(DATA_DIR, { recursive: true });
+  sources();
+
+  console.log(`Building ${DB_PATH} ...`);
+  const t0 = Date.now();
+  const db = buildL2(DB_PATH); // replaces the file if it is already there
+  for (const pass of PASSES) runPass(db, pass);
+  db.exec("PRAGMA optimize");
+  db.close();
+
+  const mb = (Bun.file(DB_PATH).size / 1024 / 1024).toFixed(0);
+  const s = ((Date.now() - t0) / 1000).toFixed(0);
+  console.log(`\nSetup complete: ${DB_PATH} (${mb} MB) in ${s}s.`);
+  console.log("Run `bun run start` to start the MCP server.");
+}
+
+main();

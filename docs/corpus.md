@@ -6,9 +6,10 @@ lists from `vendor/voko-grundo` (both git submodules); `packages/voko-xml`
 parses it; `src/corpus/` builds and enriches the database.
 
 ```sh
+bun run setup                       # both of the next two steps, for a fresh clone
 bun run fonto                       # check out both submodules, generate the parser's tables
 bun run corpus:build                # XML → data/voko.db, then all passes (~1.5 min, ~460 MB)
-REVO_DB=data/voko.db bun run start  # serve from it; without REVO_DB the server uses data/revo.db
+bun run start                       # serve from data/voko.db; REVO_DB=… overrides the path
 bun run corpus:validate             # parity report against data/revo.db → data/parity.md
 bun run corpus:eval                 # stemming recall on attested word forms
 ```
