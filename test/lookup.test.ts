@@ -1,5 +1,6 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import {
+  getDb,
   lookupEsperanto,
   lookupTranslation,
   lookupAllLanguages,
@@ -101,5 +102,13 @@ describe("getLanguages", () => {
     const en = langs.find((l) => l.lng === "en");
     expect(en).toBeDefined();
     expect(en!.count).toBeGreaterThan(10000);
+  });
+
+  test("counts the translations a lookup can reach", () => {
+    // not the ones under an example sentence, which the traduko view drops
+    const total = getLanguages().reduce((sum, l) => sum + l.count, 0);
+    const view = (getDb().query("SELECT COUNT(*) c FROM traduko").get() as { c: number }).c;
+    expect(total).toBeGreaterThanOrEqual(view);
+    expect(total - view).toBeLessThan(100);
   });
 });

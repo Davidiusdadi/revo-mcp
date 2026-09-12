@@ -1,8 +1,9 @@
 /**
  * Database connection and query functions for the Revo dictionary.
  *
- * Queries the pre-built revo.db (augmented with FTS5 indexes by setup.ts).
- * Supports:
+ * Queries the corpus `bun run setup` builds from the VOKO XML (data/voko.db):
+ * the L2 tables through the compatibility views, and the FTS5 indexes the
+ * `fts` pass writes. Supports:
  * - Esperanto headword lookup (exact, prefix, stemmed, FTS)
  * - Translation lookup by language (exact, FTS)
  * - Cross-language search
@@ -686,9 +687,12 @@ export function getLanguages(): { lng: string; count: number }[] {
   const db = getDb();
   return db
     .query<{ lng: string; count: number }, []>(
-      // Count the trd table directly — through the traduko view the join makes
-      // this ~4 s, and the view only hides ~140 mrk-less rows anyway.
-      `SELECT lng, COUNT(*) as count FROM trd GROUP BY lng ORDER BY count DESC`
+      // Counted on trd rather than through the traduko view, whose join costs
+      // ~4 s. The view's other condition has to be repeated here, though:
+      // translations of example sentences are 12,143 rows that no lookup
+      // reaches. What is left out are the ~8 rows under no marked node.
+      `SELECT lng, COUNT(*) as count FROM trd WHERE owner_kind <> 'ekz'
+        GROUP BY lng ORDER BY count DESC`
     )
     .all();
 }
