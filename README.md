@@ -164,8 +164,8 @@ but no definitions or examples.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `query` | string | (required) | A root (`san`) or any word form of it (`sana`) |
-| `show_languages` | string[] | `["en","de","fr"]` | Which translation languages to display |
+| `root` | string | (required) | A root (`san`, `ĉeval` or `cxeval`) or any word form of it (`sana`) |
+| `show_languages` | string[] | `["en","de","fr","es","ru"]` | Which translation languages to display |
 
 ### `examples`
 
