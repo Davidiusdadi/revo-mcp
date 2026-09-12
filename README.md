@@ -84,7 +84,7 @@ bun run setup
 ```
 
 `bun run setup` checks out the two source submodules, generates the parser's
-entity and name tables from them, then parses all 13,011 VOKO articles into
+entity and name tables from them, then parses all 13,079 VOKO articles into
 `data/voko.db` and runs the enrichment passes. The database is not committed —
 it is built from the XML, and rebuilding is one command.
 
@@ -237,8 +237,8 @@ revo-mcp/
 `data/voko.db` is parsed from the VOKO XML rather than downloaded, so it keeps
 the structure the rendered HTML flattens:
 - 64,000+ headword entries, senses kept as senses
-- 539,000+ translations across 174 languages, with `ind`/`baz`/`pr` intact
-- 13,011 articles, stored as XML
+- 550,000+ translations across 174 languages, with `ind`/`baz`/`pr` intact
+- 13,079 articles, stored as XML
 - A typed reference graph, morphological segmentation, and full-text indexes
   over headwords, translations, examples and definitions
 

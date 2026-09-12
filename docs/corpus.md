@@ -76,13 +76,14 @@ scripts/eval-stemming.ts     stemming recall on attested tilde forms (bun run co
 - `<art mrk>` is a CVS `$Id:` stamp, not an ID. Article key = file name;
   `parseArtId()` yields revision and date.
 - ~10k of 40.4k `<snc>` have no `mrk`; `subart` (194) and `subdrv` exist.
-- The submodule is pinned to the fork's `master` (`b15014fc`, 2026-02-28), the
-  snapshot the compared `data/revo.db` was built from, so parity is like-for-like.
+- The submodule is pinned to `c088349` (2026-09-11). The parity run below was
+  measured at the earlier `b15014fc` (2026-02-28), the snapshot `data/revo.db`
+  was built from, so that comparison is like-for-like.
 - All 565 entity names used in the corpus resolve; 836 are defined. `&FE;`-style
   macros expand to text and are not re-encodable; single-codepoint entities are.
 - Every article has comments; 4 use single-quoted attributes; 12k use numeric
-  char refs. 85 files re-serialize byte-identically in `entities` mode; all
-  13,011 round-trip losslessly at the DOM level (the guarantee we rely on).
+  char refs. 79 files re-serialize byte-identically in `entities` mode; all
+  13,079 round-trip losslessly at the DOM level (the guarantee we rely on).
 - `dardanel.xml` is the only article whose root is `<rad var="j">` only.
 - ReVo already has full affix articles (`ar`, `et`, `fi`, `ul`, `ej`, …); no
   overlay is needed for them.

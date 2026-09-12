@@ -19,7 +19,12 @@ describe("san.xml", () => {
   });
 
   test("CVS id yields file/rev/date", () => {
-    expect(parseArtId(art.attrs.mrk)).toEqual({ file: "san.xml", rev: "1.112", date: "2026-01-17 10:34:34" });
+    // san.xml is read from the submodule, so its revision moves with every sync:
+    // assert what parseArtId decomposes, not the revision of the day.
+    const id = parseArtId(art.attrs.mrk);
+    expect(id.file).toBe("san.xml");
+    expect(id.rev).toMatch(/^\d+\.\d+$/);
+    expect(id.date).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   test("root and article headword", () => {
