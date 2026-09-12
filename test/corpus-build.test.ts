@@ -10,7 +10,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { buildL2, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
-import { sensesOf } from "../src/db-voko";
+import { sensesOf, thesaurusOf, searchDefinitions } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
 import { parse, descendants } from "voko-xml";
 
@@ -262,5 +262,61 @@ describe("pass morph", () => {
       `SELECT t.norm, k.norm lemma FROM x_token t JOIN kap k ON k.id = t.lemma_kap_id WHERE t.how = 'infl'`);
     expect(infl.length).toBeGreaterThan(50);
     for (const r of infl) expect(lemmaCandidates(r.norm).map((c) => c.lemma)).toContain(r.lemma);
+  });
+});
+
+// The reads behind the thesaurus and reverse_lookup tools. They only work on a
+// corpus with the x_* tables, so they are exercised here on the slice rather
+// than through db.ts, which is bound to whichever DB REVO_DB names.
+describe("enrichment reads", () => {
+  test("thesaurus groups a word's relations by type", () => {
+    const t = thesaurusOf(db, "hundo")!;
+    expect(t.headword).toBe("hundo");
+    expect(t.article).toBe("hund");
+    expect(t.groups.length).toBeGreaterThan(0);
+    // every entry names a real article, and groups carry the ontology's label
+    for (const g of t.groups) {
+      expect(g.label.length).toBeGreaterThan(0);
+      for (const e of g.entries) expect(e.article.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("thesaurus reports links the word's own article never states", () => {
+    const entries = thesaurusOf(db, "hundo")!.groups.flatMap((g) => g.entries);
+    expect(entries.map((e) => e.headword)).toContain("lupo");
+    // lup states the relation; hund gets it as the entailed inverse
+    expect(entries.some((e) => e.inferred)).toBe(true);
+  });
+
+  test("a word is not listed as related to itself, but its derivations are", () => {
+    const entries = thesaurusOf(db, "hundo")!.groups.flatMap((g) => g.entries);
+    expect(entries.map((e) => e.headword)).not.toContain("hundo");
+    // refs between senses of hund resolve to 'hundo'; other hund headwords stay
+    expect(entries.some((e) => e.article === "hund")).toBe(true);
+  });
+
+  test("thesaurus accepts an inflected form", () => {
+    const t = thesaurusOf(db, "hundojn")!;
+    expect(t.headword).toBe("hundo");
+    expect(t.matchedVia).toBe("stem:hundo");
+  });
+
+  test("thesaurus returns null when nothing matches", () => {
+    expect(thesaurusOf(db, "zzzvxq")).toBeNull();
+  });
+
+  test("reverse lookup finds a word from its definition", () => {
+    const hits = searchDefinitions(db, "dombesto lupo");
+    expect(hits.map((h) => h.headword)).toContain("hundo");
+    expect(hits[0].snippet).toContain("**"); // the matched terms are marked
+  });
+
+  test("reverse lookup needs every term in one definition", () => {
+    expect(searchDefinitions(db, "dombesto zzzvxq")).toEqual([]);
+    expect(searchDefinitions(db, "   ")).toEqual([]);
+  });
+
+  test("reverse lookup treats FTS operators as text", () => {
+    expect(() => searchDefinitions(db, 'besto OR "x')).not.toThrow();
   });
 });

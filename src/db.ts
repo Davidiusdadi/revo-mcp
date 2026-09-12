@@ -14,7 +14,14 @@ import { fileURLToPath } from "url";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { lemmaCandidates } from "./morph";
 import { extractArticle, extractByMrk, type DrvEntry } from "./html-extract";
-import { isVokoDb, sensesOf } from "./db-voko";
+import {
+  isVokoDb,
+  sensesOf,
+  thesaurusOf,
+  searchDefinitions as searchDefinitionsIn,
+  type ThesaurusResult,
+  type DefinitionHit,
+} from "./db-voko";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // REVO_DB points the server at an alternative database (e.g. the XML-built
@@ -69,6 +76,25 @@ export function closeDb(): void {
     _db.close();
     _db = null;
   }
+}
+
+/**
+ * True when the configured DB is the XML-built corpus. The enrichment-backed
+ * tools only exist there; upstream's revo.db has no x_* tables or fts_dif.
+ */
+export function isCorpusDb(): boolean {
+  getDb();
+  return _voko;
+}
+
+/** Reference graph around a word, grouped by relation (voko.db only). */
+export function lookupThesaurus(word: string): ThesaurusResult | null {
+  return thesaurusOf(getDb(), word);
+}
+
+/** Reverse dictionary: words whose definition matches a description (voko.db only). */
+export function searchDefinitions(query: string, limit: number = 20): DefinitionHit[] {
+  return searchDefinitionsIn(getDb(), query, limit);
 }
 
 /**
