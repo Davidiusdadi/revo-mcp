@@ -18,16 +18,19 @@ export interface Pass {
 export function runPass(db: Database, pass: Pass, log: (msg: string) => void = console.log): void {
   const t0 = Date.now();
   log(`pass ${pass.name} v${pass.version}`);
-  for (const t of pass.tables) db.run(`DROP TABLE IF EXISTS ${t}`);
   let rows = 0;
+  // Dropping the old tables and recording the run belong to the same
+  // transaction as the run itself: a pass that throws half-way then leaves the
+  // previous result in place, instead of a database with its tables gone and a
+  // meta_pass row that still claims they are there.
   db.transaction(() => {
+    for (const t of pass.tables) db.run(`DROP TABLE IF EXISTS ${t}`);
     rows = pass.run(db, (m) => log(`  ${m}`));
+    db.run(
+      `INSERT OR REPLACE INTO meta_pass (pass, version, input_hash, rows, ms, at)
+       VALUES (?, ?, NULL, ?, ?, datetime('now'))`,
+      [pass.name, pass.version, rows, Date.now() - t0]
+    );
   })();
-  const ms = Date.now() - t0;
-  db.run(
-    `INSERT OR REPLACE INTO meta_pass (pass, version, input_hash, rows, ms, at)
-     VALUES (?, ?, NULL, ?, ?, datetime('now'))`,
-    [pass.name, pass.version, rows, ms]
-  );
-  log(`  ${rows} rows in ${(ms / 1000).toFixed(1)}s`);
+  log(`  ${rows} rows in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 }
