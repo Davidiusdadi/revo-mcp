@@ -6,9 +6,8 @@
 import { Database } from "bun:sqlite";
 import { lookupEsperanto, closeDb, getDb } from "../src/db";
 import { formatResults } from "../src/formatter";
-import { extractByMrk } from "../src/html-extract";
 
-const DB_PATH = process.env.REVO_DB_PATH ?? "data/revo.db";
+const DB_PATH = process.env.REVO_DB ?? process.env.REVO_DB_PATH ?? "data/voko.db";
 const SAMPLE = 200;
 
 const db = new Database(DB_PATH, { readonly: true });
@@ -25,7 +24,6 @@ lookupEsperanto(sample[0].kap, 1);
 
 let tLookup = 0n;
 let tFormat = 0n;
-let tParseOnly = 0n;
 let tSqlOnly = 0n;
 const ns = (a: bigint, b: bigint) => Number(b - a) / 1e6;
 
@@ -44,18 +42,7 @@ for (const row of sample) {
   const f1 = process.hrtime.bigint();
   tFormat += f1 - f0;
 
-  // Phase C: parse-only cost (re-fetch artikolo blob, force a fresh parse without cache)
-  const artRow = liveDb
-    .query<{ txt: Buffer }, [string]>(`SELECT txt FROM artikolo WHERE mrk = ?`)
-    .get(row.art);
-  if (artRow?.txt) {
-    const p0 = process.hrtime.bigint();
-    extractByMrk(artRow.txt, row.mrk); // no cacheKey → forces fresh parse
-    const p1 = process.hrtime.bigint();
-    tParseOnly += p1 - p0;
-  }
-
-  // Phase D: SQL-only cost (the exact-match query that lookupEsperanto starts with)
+  // Phase C: SQL-only cost (the exact-match query that lookupEsperanto starts with)
   const s0 = process.hrtime.bigint();
   liveDb
     .query<{ mrk: string; art: string; kap: string; num: number }, [string]>(
@@ -71,10 +58,8 @@ closeDb();
 const n = sample.length;
 console.log(`Profile over ${n} random headwords (avg per call):`);
 console.log(`  lookupEsperanto + format:  ${(ns(0n, tLookup) / n).toFixed(2)} ms (${ns(0n, tFormat / BigInt(n)).toFixed(2)} of which is format)`);
-console.log(`  parse-only (cold):         ${(ns(0n, tParseOnly) / n).toFixed(2)} ms`);
 console.log(`  exact-match SQL only:      ${(ns(0n, tSqlOnly) / n).toFixed(2)} ms`);
 console.log();
 console.log(`Total wall:`);
 console.log(`  lookup:  ${(ns(0n, tLookup) / 1000).toFixed(2)} s`);
-console.log(`  parse:   ${(ns(0n, tParseOnly) / 1000).toFixed(2)} s`);
 console.log(`  sql:     ${(ns(0n, tSqlOnly) / 1000).toFixed(2)} s`);

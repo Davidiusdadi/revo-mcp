@@ -5,7 +5,7 @@ import { lookupRootInputSchema, handleLookupRoot } from "./tools/root";
 import { examplesInputSchema, handleExamples } from "./tools/examples";
 import { thesaurusInputSchema, handleThesaurus } from "./tools/thesaurus";
 import { reverseLookupInputSchema, handleReverseLookup } from "./tools/reverse";
-import { closeDb, isCorpusDb } from "./db";
+import { closeDb } from "./db";
 
 function toolResponse(tool: string, args: Record<string, unknown>, fn: () => string) {
   const argsStr = Object.entries(args)
@@ -68,31 +68,26 @@ export function createMcpServer(): McpServer {
     async (args) => toolResponse("examples", args as Record<string, unknown>, () => handleExamples(args as any))
   );
 
-  // Enrichment-backed tools. They query the x_* tables and fts_dif, which only
-  // the XML-built corpus has, so on upstream's revo.db they are not advertised
-  // rather than failing when called.
-  if (isCorpusDb()) {
-    server.tool(
-      "thesaurus",
-      "Show how an Esperanto word relates to others in the Reta Vortaro: synonyms, antonyms, " +
-        "broader and narrower terms ('is a kind of' / 'has kind'), parts and wholes, and see-also links. " +
-        "Includes inverse links stated by the other article (e.g. 'hundo' lists breeds that declare " +
-        "themselves a kind of dog), which do not appear in the article's own text. " +
-        "Use it to explore a semantic field; use `lookup` for the word's definition.",
-      thesaurusInputSchema.shape,
-      async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => handleThesaurus(args as any))
-    );
+  server.tool(
+    "thesaurus",
+    "Show how an Esperanto word relates to others in the Reta Vortaro: synonyms, antonyms, " +
+      "broader and narrower terms ('is a kind of' / 'has kind'), parts and wholes, and see-also links. " +
+      "Includes inverse links stated by the other article (e.g. 'hundo' lists breeds that declare " +
+      "themselves a kind of dog), which do not appear in the article's own text. " +
+      "Use it to explore a semantic field; use `lookup` for the word's definition.",
+    thesaurusInputSchema.shape,
+    async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => handleThesaurus(args as any))
+  );
 
-    server.tool(
-      "reverse_lookup",
-      "Find an Esperanto word from a description of its meaning, by searching the text of the " +
-        "definitions themselves (e.g. 'granda birdo' → ŝubekulo, epiornito, strigo, emuo). " +
-        "The description must be in Esperanto. Use this when you know what something is but not " +
-        "what it is called; `lookup` searches headwords and translations instead.",
-      reverseLookupInputSchema.shape,
-      async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => handleReverseLookup(args as any))
-    );
-  }
+  server.tool(
+    "reverse_lookup",
+    "Find an Esperanto word from a description of its meaning, by searching the text of the " +
+      "definitions themselves (e.g. 'granda birdo' → ŝubekulo, epiornito, strigo, emuo). " +
+      "The description must be in Esperanto. Use this when you know what something is but not " +
+      "what it is called; `lookup` searches headwords and translations instead.",
+    reverseLookupInputSchema.shape,
+    async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => handleReverseLookup(args as any))
+  );
 
   return server;
 }

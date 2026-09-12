@@ -13,7 +13,6 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { lemmaCandidates } from "./morph";
-import { extractArticle, extractByMrk, type DrvEntry } from "./html-extract";
 import {
   isVokoDb,
   sensesOf,
@@ -59,14 +58,19 @@ export interface LookupResult {
 }
 
 let _db: Database | null = null;
-// true when DB_PATH is the XML-built corpus (meta.schema = 'voko')
-let _voko = false;
 
 export function getDb(): Database {
   if (!_db) {
     _db = new Database(DB_PATH, { readonly: true });
     _db.exec("PRAGMA cache_size = -64000"); // 64MB cache
-    _voko = isVokoDb(_db);
+    // Fail here rather than on a missing table further in: everything below
+    // reads the XML-built schema (or the compat views over it).
+    if (!isVokoDb(_db)) {
+      throw new Error(
+        `${DB_PATH} is not an XML-built corpus (meta.schema is not 'voko'). ` +
+          "Run `bun run setup` to build data/voko.db."
+      );
+    }
   }
   return _db;
 }
@@ -78,16 +82,7 @@ export function closeDb(): void {
   }
 }
 
-/**
- * True when the configured DB is the XML-built corpus. The enrichment-backed
- * tools only exist there; upstream's revo.db has no x_* tables or fts_dif.
- */
-export function isCorpusDb(): boolean {
-  getDb();
-  return _voko;
-}
-
-/** Reference graph around a word, grouped by relation (voko.db only). */
+/** Reference graph around a word, grouped by relation. */
 export function lookupThesaurus(word: string): ThesaurusResult | null {
   return thesaurusOf(getDb(), word);
 }
@@ -477,20 +472,8 @@ function assembleResults(
   for (const [drvMrk, node] of drvNodes) {
     if (results.length >= limit) break;
 
-    // Senses: read from the dif/ekz tables on voko.db; scraped back out of
-    // the rendered article HTML on the upstream revo.db.
-    let senses: LookupResult["senses"] = [];
-    if (_voko) {
-      senses = sensesOf(db, drvMrk);
-    } else {
-      const artRow = db
-        .query<{ txt: Buffer }, [string]>(
-          "SELECT txt FROM artikolo WHERE mrk = ?"
-        )
-        .get(node.art);
-      const entry = artRow?.txt ? extractByMrk(artRow.txt, drvMrk, node.art) : null;
-      if (entry) senses = entry.senses;
-    }
+    // Senses, numbering and their examples come from the node/dif/ekz tables.
+    const senses: LookupResult["senses"] = sensesOf(db, drvMrk);
 
     // Fetch translations for this mrk
     const translations = db
@@ -539,7 +522,7 @@ function assembleResults(
     // Fetch usage domains (range form — see senseTranslations note).
     const uzoj = db
       .query<{ uzo: string }, [string, string, string]>(
-        `SELECT DISTINCT uzo FROM ${_voko ? "uzo_compat" : "uzo"} WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')`
+        `SELECT DISTINCT uzo FROM uzo_compat WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')`
       )
       .all(drvMrk, drvMrk, drvMrk);
     const usageDomains = uzoj.map((u) => u.uzo);
@@ -664,9 +647,9 @@ export function getLanguages(): { lng: string; count: number }[] {
   const db = getDb();
   return db
     .query<{ lng: string; count: number }, []>(
-      // voko.db: count the trd table directly — through the traduko view the
-      // join makes this ~4 s; the view only hides ~140 mrk-less rows anyway.
-      `SELECT lng, COUNT(*) as count FROM ${_voko ? "trd" : "traduko"} GROUP BY lng ORDER BY count DESC`
+      // Count the trd table directly — through the traduko view the join makes
+      // this ~4 s, and the view only hides ~140 mrk-less rows anyway.
+      `SELECT lng, COUNT(*) as count FROM trd GROUP BY lng ORDER BY count DESC`
     )
     .all();
 }

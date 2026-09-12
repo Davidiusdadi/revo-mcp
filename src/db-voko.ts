@@ -1,16 +1,24 @@
 /**
- * Reads specific to the XML-built corpus (data/voko.db, meta.schema = 'voko').
+ * Reads that go at the XML-built schema directly (data/voko.db).
  *
- * db.ts keeps one lookup cascade for both databases: the compat views in
- * src/corpus/schema.sql answer its nodo/var/traduko/referenco queries. The one
- * thing a view can't stand in for is the old HTML scrape of senses — here they
- * come straight from the node/dif/ekz tables.
+ * Most of db.ts's lookup cascade runs on the compat views in
+ * src/corpus/schema.sql, which answer its nodo/var/traduko/referenco queries.
+ * What a view can't express lives here: senses assembled from the node/dif/ekz
+ * tree, and the L3 enrichment reads at the bottom of the file.
  */
 
 import type { Database } from "bun:sqlite";
-import type { SenseEntry } from "./html-extract";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
+
+/** One sense of a derivation, as `lookup` renders it under a headword. */
+export interface SenseEntry {
+  mrk?: string;
+  num?: string;
+  definition: string;
+  examples: string[];
+  domain?: string;
+}
 
 export function isVokoDb(db: Database): boolean {
   try {
@@ -112,8 +120,8 @@ function senseAt(db: Database, nodeId: number, mrk: string | undefined): SenseEn
 }
 
 // ---------------------------------------------------------------------------
-// Enrichment reads (L3). These answer from the x_* tables and fts_dif, which
-// only the XML-built corpus has — see isVokoDb.
+// Enrichment reads (L3): the x_* tables and fts_dif, written by the passes in
+// src/corpus/passes and recorded in meta_pass.
 // ---------------------------------------------------------------------------
 
 export interface ThesaurusEntry {

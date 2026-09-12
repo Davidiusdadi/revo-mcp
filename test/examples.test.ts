@@ -2,35 +2,8 @@ import { describe, test, expect, afterAll } from "bun:test";
 import { searchExamples, closeDb } from "../src/db";
 import { handleExamples } from "../src/tools/examples";
 import { handleLookup } from "../src/tools/lookup";
-import { extractAllExamples } from "../src/html-extract";
-import { Database } from "bun:sqlite";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DB_PATH = join(__dirname, "..", "data", "revo.db");
 
 afterAll(() => closeDb());
-
-describe("extractAllExamples", () => {
-  test("extracts examples from a real article with expected markdown shape", () => {
-    const db = new Database(DB_PATH, { readonly: true });
-    const row = db
-      .query<{ txt: Buffer }, [string]>("SELECT txt FROM artikolo WHERE mrk = ?")
-      .get("abel");
-    db.close();
-    expect(row).toBeDefined();
-    const examples = extractAllExamples(row!.txt, "abel");
-    expect(examples.length).toBeGreaterThan(0);
-    // At least one example should mention 'abelojn' (accusative plural)
-    const hasAbelojn = examples.some((e) => e.ekzMd.includes("abelojn"));
-    expect(hasAbelojn).toBe(true);
-    // All entries must have a drvMrk
-    for (const e of examples) {
-      expect(e.drvMrk.length).toBeGreaterThan(0);
-    }
-  });
-});
 
 describe("searchExamples", () => {
   test("finds inflected form 'abelojn' in examples", () => {

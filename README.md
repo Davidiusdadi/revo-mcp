@@ -149,6 +149,49 @@ Search the Esperanto dictionary.
 
 Lists all 174 available languages with translation counts. Takes no parameters.
 
+### `lookup_root`
+
+All derived forms of one root (`rav` → ravi, rava, rave, ravado…), with translations
+but no definitions or examples.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | (required) | A root (`san`) or any word form of it (`sana`) |
+| `show_languages` | string[] | `["en","de","fr"]` | Which translation languages to display |
+
+### `examples`
+
+Full-text search over the example sentences of every article. Finds inflected forms,
+compounds and proper nouns that are not headwords — `examples({ query: "abelojn" })`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | (required) | Words to find in example sentences |
+| `limit` | number | `10` | Max sentences (1-50) |
+
+### `thesaurus`
+
+The reference graph around a word, grouped by relation: synonyms, antonyms, broader
+and narrower terms, parts and wholes, see-also. Includes the inverse links the other
+article states — `thesaurus({ word: "hundo" })` lists the breeds that declare
+themselves a kind of dog, which the `hund` article itself never mentions.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `word` | string | (required) | Esperanto word; inflected forms are stemmed |
+| `relations` | string[] | (all) | Keep only these relation types, e.g. `["sin","ant"]` |
+
+### `reverse_lookup`
+
+Reverse dictionary: searches the text of the definitions, so a description finds the
+word — `reverse_lookup({ description: "granda birdo" })`. The description must be in
+Esperanto, since that is the language the definitions are written in.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `description` | string | (required) | Esperanto description of the meaning |
+| `limit` | number | `15` | Max results (1-50) |
+
 ## Testing
 
 ```bash

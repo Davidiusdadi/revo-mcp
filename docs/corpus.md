@@ -17,15 +17,15 @@ bun run corpus:eval                 # stemming recall on attested word forms
 ## Background
 
 `data/revo.db` (upstream's daily `revosql_*.zip`) is Cetonio's *search index*:
-articles are rendered HTML blobs and `src/html-extract.ts` scrapes structure
+articles are rendered HTML blobs, and the server used to scrape their structure
 back out. Senses, citations, translation sub-structure (`ind`/`baz`/`pr`),
 morphology (`<tld/>`, the `0` slot in `mrk`) and the typed `ref` graph are
-flattened or lost. Building from the XML keeps all of it, and enrichment passes
-add what the XML only implies (word forms, morphology, inverse links).
+flattened or lost there. Building from the XML keeps all of it, and enrichment
+passes add what the XML only implies (word forms, morphology, inverse links).
 
 Design rules: the XML stays in upstream's format, so edits can go to
-`revuloj/revo-fonto` as PRs; the MCP tools answer the same queries on both
-databases.
+`revuloj/revo-fonto` as PRs; L2 holds only what the XML states, and everything
+inferred belongs to a versioned pass.
 
 ## Layers
 
