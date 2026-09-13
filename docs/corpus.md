@@ -179,6 +179,12 @@ not already read a longer root there (`sekvestracio` in `sekvestr`).
   tied to a headword of the same article when one of its dictionary forms is one
   (84 %, `how` = `kap` / `infl` / `class` / `ptcp`).
 
+Without a pin, the segmenter puts the marked root in the right place for
+98.1 % of the 68,578 root-marked words (headwords 98.4 %, example forms
+97.9 %); `bun run corpus:eval-segment` measures it and lists the misses, and
+scores separately the third of the words whose derivational relatives are
+kept away from anything the segmenter learns from the corpus (97.9 % today).
+
 **Stemming in the tools.** `lemmaCandidates()` (grammar-driven: the ending says
 the dictionary form, then other word classes, then participle → verb) runs
 before `generateStems()` in step 3 of `lookupEsperanto` and `lookupFamily`, on
