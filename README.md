@@ -242,6 +242,12 @@ inventory and each part is glossed from its own article, so `-end-` is quoted, n
 paraphrased. Where a long root hides a second reading both are given: `legenda` is
 `legendo` + `-a` *and* `leg|end|a`.
 
+The segmenter only guesses for words the dictionary does not have. A headword, an
+inflection of one, or a form written in the examples is split the way the corpus
+stored it, following ReVo's own root marks (`hufofero` is `huf|o|fer|o`, not
+`huf|ofer|o`), and a word filed under two articles keeps both readings: `resumi` is
+`resum|i` under `resum` and `re|sum|i` under `sum`.
+
 A word can be well formed and still be a typo — `finsita` is a real compound of `fin`
 and `sit` — so derivations are checked for real words one letter away too, ranked by
 how well the corpus attests them.

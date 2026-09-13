@@ -166,16 +166,49 @@ describe("gloss: Esperanto audit", () => {
     expect(t.seg).toBe("ĉirkaŭ|ir|ad|o"); // ir is two letters and the word is fine
   });
 
-  test("drops a reading that needs a one-letter root", () => {
-    // brit|e|lir|o: "e" is a root in the inventory (the letter's own article),
+  test("drops a guess that needs a one-letter root", () => {
+    // ŝip|e|lir|o: "e" is a root in the inventory (the letter's own article),
     // and a reading built on it is not one anybody meant
-    const t = classify(getDb(), "briteliro", inventoryOf(getDb()));
-    expect(t.verdict).toBe("attested");
+    const t = classify(getDb(), "ŝipeliro", inventoryOf(getDb()));
+    expect(t.verdict).toBe("unknown");
     expect(t.seg).toBeUndefined();
     // whereas el|ir|ej|oj is a reading worth reporting
     const u = classify(getDb(), "elirejoj", inventoryOf(getDb()));
     expect(u.headword).toBe("elirejo");
     expect(u.seg).toBe("el|ir|ej|oj");
+  });
+
+  test("a word the corpus has is split the way the corpus stored it", () => {
+    // hufofero is filed under fer with no root mark; the segmenter alone
+    // would read huf|ofer|o (an offering), the build pinned huf|o|fer|o
+    const t = classify(getDb(), "hufofero", inventoryOf(getDb()));
+    expect(t.verdict).toBe("headword");
+    expect(t.seg).toBe("huf|o|fer|o");
+    expect(t.readings?.map((r) => r.art)).toEqual(["fer"]);
+    // an inflection carries the headword's split, with its own ending
+    const u = classify(getDb(), "hufoferojn", inventoryOf(getDb()));
+    expect(u.verdict).toBe("inflection");
+    expect(u.seg).toBe("huf|o|fer|ojn");
+    expect(u.kinds).toBe("RLRE");
+    // a participle: the suffix sits between the stem and the ending
+    expect(classify(getDb(), "ŝanĝita", inventoryOf(getDb())).seg).toBe("ŝanĝ|it|a");
+  });
+
+  test("a word filed under two articles keeps both readings, longest root first", () => {
+    const t = classify(getDb(), "resumi", inventoryOf(getDb()));
+    expect(t.readings?.map((r) => [r.seg, r.art])).toEqual([["resum|i", "resum"], ["re|sum|i", "sum"]]);
+    expect(t.seg).toBe("resum|i");
+    // the second reading is glossed from its own article
+    expect(t.readings![1].parts.find((p) => p.m === "sum")?.gloss).toBe("sumo");
+  });
+
+  test("a stored one-letter root between two roots is read as the linking vowel", () => {
+    // the build files artefarita as art|e|far|it|a with e a root (the letter's article)
+    const t = classify(getDb(), "artefarita", inventoryOf(getDb()));
+    expect(t.verdict).toBe("attested");
+    expect(t.seg).toBe("art|e|far|it|a");
+    expect(t.kinds).toBe("RLRSE");
+    expect(t.parts!.find((p) => p.m === "e")?.gloss).toBeUndefined();
   });
 
   test("a legal compound that is one letter from a real word says so", () => {
