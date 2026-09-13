@@ -142,7 +142,7 @@ Order matters: `morph` reads `x_tld_occ`.
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 933,800 | 8 s |
 | `tld-links` | `x_tld_occ` | 173,285 | 12 s |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 111,733 | 1 s |
-| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 | 5 s |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 | 11 s |
 
 **`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35k, `ekz`
 115k, `dif` 14k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
@@ -177,10 +177,10 @@ derivations cost a little less, a one- or two-letter root, a prefix after a
 root and an endingless word inside a word cost more. The words with a pinned
 root are split first, and the morphemes written on either side of the pin
 (`dis`+`port`, `port`+`ist` — only those two, not the rest of the split, which
-is the segmenter's own reading) are counted into `x_pair`. The words without
-a pin are split with that evidence: a pair the corpus writes is cheaper, one
-it never writes dearer, which is how `montaro` becomes `mont|ar|o` and not
-`mon|tar|o` (money, tare).
+is the segmenter's own reading) are counted into `x_pair`. Then every word,
+pinned or not, is split with that evidence: a pair the corpus writes is
+cheaper, one it never writes dearer, which is how `montaro` becomes
+`mont|ar|o` and not `mon|tar|o` (money, tare).
 
 - `x_morpheme`: the inventory; for roots, the article and its number of
   derivations.

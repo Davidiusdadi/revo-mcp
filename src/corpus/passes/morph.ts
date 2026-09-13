@@ -12,8 +12,8 @@
  * - x_pair: which morphemes the corpus writes next to a marked root, and how
  *   often — evidence for the words that have no mark.
  *
- * The words with a mark are split first; the pairs read off them then price
- * the splits of the words without one.
+ * The words with a mark are split first, without evidence, to read the pairs
+ * off them; then every word is split and stored with the pairs in hand.
  */
 import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
@@ -25,7 +25,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 4,
+  version: 5,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -36,8 +36,8 @@ export const morphPass: Pass = {
     const toks = attestedTokens(db, inv, pairs, log);
     const nPair = writePairs(db, pairs, log);
     inv.pairs = pairs.counts;
-    const nMorph = heads.free(inv);
-    const nTok = toks.free(inv);
+    const nMorph = heads.write(inv);
+    const nTok = toks.write(inv);
     return nInv + nMorph + nTok + nPair;
   },
 };
@@ -182,9 +182,9 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
 const pins = (form: string, fixed?: { word: string; at: number; root: string }) =>
   !!fixed && [...form.matchAll(WORD)].some(([w]) => w === fixed.word && pinFits(w, fixed));
 
-/** The rows a segmenting function put off until the pairs exist. */
+/** A segmenting function's rows, written once the pairs exist. */
 interface Deferred {
-  free(inv: Inventory): number;
+  write(inv: Inventory): number;
 }
 
 function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
@@ -208,10 +208,11 @@ function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: s
   }
   const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
   type Kap = { id: number; node_id: number; art_id: number; norm: string; tilde: string; rad: string };
-  const later: Kap[] = [];
+  type Pin = { word: string; at: number; root: string };
+  const rows: { k: Kap; pin?: Pin }[] = [];
   let n = 0, ok = 0, pinned = 0;
-  const write = (k: Kap, inv: Inventory, pin?: { word: string; at: number; root: string }) => {
-    const r = segmentForm(k.norm, inv, pin, pairs);
+  const write = (k: Kap, inv: Inventory, pin?: Pin) => {
+    const r = segmentForm(k.norm, inv, pin);
     ins.run(k.id, k.node_id, k.art_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);
     n++;
     if (r.ok) ok++;
@@ -245,12 +246,13 @@ function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: s
         if (!longer) pin = cand;
       }
     }
-    if (pins(k.norm, pin)) write(k, inv, pin);
-    else later.push(k);
+    // first round, evidence-free: the neighbours of the pinned root are the pairs
+    if (pins(k.norm, pin)) segmentForm(k.norm, inv, pin, pairs);
+    rows.push({ k, pin });
   }
   return {
-    free(inv) {
-      for (const k of later) write(k, inv);
+    write(inv) {
+      for (const { k, pin } of rows) write(k, inv, pin);
       log(`x_morph: ${n} headwords, ${ok} fully segmented (${pct(ok, n)}), root pinned in ${pinned}`);
       return n;
     },
@@ -294,10 +296,10 @@ function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: str
   }
   const ins = db.prepare("INSERT INTO x_token (norm, art_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
   type Tok = { norm: string; art_id: number; n: number; pre: string; rad: string };
-  const later: Tok[] = [];
+  const rows: Tok[] = [];
   let n = 0, ok = 0, lemma = 0;
-  const write = (t: Tok, inv: Inventory, pin?: { word: string; at: number; root: string }) => {
-    const s = segmentForm(t.norm, inv, pin, pairs);
+  const write = (t: Tok, inv: Inventory, pin: { word: string; at: number; root: string }) => {
+    const s = segmentForm(t.norm, inv, pin);
     const h = heads.get(t.art_id);
     let kap: number | undefined, how: string | null = null;
     if (h?.has(t.norm)) [kap, how] = [h.get(t.norm), "kap"];
@@ -311,12 +313,12 @@ function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: str
   };
   for (const t of db.query<Tok, []>(TOKEN_GROUPS).iterate()) {
     const pin = { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() };
-    if (pins(t.norm, pin)) write(t, inv, pin);
-    else later.push(t);
+    if (pins(t.norm, pin)) segmentForm(t.norm, inv, pin, pairs); // first round, see segmentHeadwords
+    rows.push(t);
   }
   return {
-    free(inv) {
-      for (const t of later) write(t, inv);
+    write(inv) {
+      for (const t of rows) write(t, inv, { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() });
       db.run("CREATE INDEX idx_x_token_norm ON x_token(norm)");
       log(`x_token: ${n} attested forms, ${ok} fully segmented (${pct(ok, n)}), ${lemma} tied to a headword (${pct(lemma, n)})`);
       return n;
