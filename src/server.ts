@@ -7,6 +7,11 @@ import { thesaurusInputSchema, handleThesaurus } from "./tools/thesaurus";
 import { reverseLookupInputSchema, handleReverseLookup } from "./tools/reverse";
 import { closeDb } from "./db";
 
+/**
+ * Runs a tool handler and logs the call. The log goes to stderr: stdout is the
+ * stdio transport's JSON-RPC stream, and a plain-text line in it is a parse
+ * error at the client.
+ */
 function toolResponse(tool: string, args: Record<string, unknown>, fn: () => string) {
   const argsStr = Object.entries(args)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
@@ -15,7 +20,7 @@ function toolResponse(tool: string, args: Record<string, unknown>, fn: () => str
   try {
     const text = fn();
     const ms = (performance.now() - t0).toFixed(0);
-    console.log(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
+    console.error(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
     return { content: [{ type: "text" as const, text }] };
   } catch (err) {
     const ms = (performance.now() - t0).toFixed(0);
