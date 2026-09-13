@@ -110,6 +110,13 @@ describe("gloss: Esperanto audit", () => {
     expect(t.also?.parts.find((p) => p.m === "leg")?.gloss).toBe("legi");
   });
 
+  test("a second reading needs grounds, not just pieces", () => {
+    // dol|ar|oj (a collection of pains) and kok|et|e are legal and meaningless:
+    // the corpus never joins the root and suffix, and -ar/-et are not verbal
+    expect(word(eo("Dolaroj kokete."), "dolaroj")?.also).toBeUndefined();
+    expect(word(eo("Dolaroj kokete."), "kokete")?.also).toBeUndefined();
+  });
+
   test("counts an attested form rather than calling it merely buildable", () => {
     const t = word(eo("Libro leginda."), "leginda")!;
     expect(t.verdict).toBe("attested");

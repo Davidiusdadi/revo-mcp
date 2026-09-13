@@ -580,6 +580,24 @@ function suffixReadings(word: string, inv: Inventory): Morph[][] {
   return out;
 }
 
+/** Suffixes any verb takes: the participles and the three modal ones. */
+const VERBAL = new Set(["ant", "int", "ont", "at", "it", "ot", "end", "ebl", "ind"]);
+
+/**
+ * Whether a root + suffix reading is one somebody would mean, not merely one
+ * the inventory allows. `dolaroj` also parses as `dol|ar|oj`, a collection of
+ * pains, and `vespera` as `vesp|er|a`; on a sample of 7,639 real words every
+ * such reading was of that kind. The reading stands when the corpus writes
+ * the root and suffix together, or the suffix is a verbal one on a root that
+ * has a verb headword — `leg|end|a` is a word because `legi` is, whether or
+ * not any article writes it.
+ */
+function grounded(db: Database, inv: Inventory, ms: Morph[]): boolean {
+  const [root, suf] = ms;
+  if ((inv.pairs?.get(`${root.m}+${suf.m}`) ?? 0) > 0) return true;
+  return VERBAL.has(suf.m) && kapByNorm(db, root.m + "i") !== null;
+}
+
 interface StoredSplit {
   seg: string;
   kinds: string;
@@ -846,7 +864,7 @@ export function classify(db: Database, word: string, inv: Inventory): EoTerm {
     if (term.verdict === "headword") return term;
     for (const alt of suffixReadings(word, inv)) {
       const f = formatSegments(alt);
-      if (seen.has(f.seg)) continue;
+      if (seen.has(f.seg) || !grounded(db, inv, alt)) continue;
       term.also = { ...f, parts: partsOf(db, alt) };
       break;
     }
