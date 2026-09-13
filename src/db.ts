@@ -14,6 +14,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { lemmaCandidates } from "./morph";
+import { glossEsperanto, glossSource, type EoGloss, type GlossOptions, type SourceGloss } from "./gloss";
 import {
   isVokoDb,
   sensesOf,
@@ -94,6 +95,15 @@ export function closeDb(): void {
 /** Reference graph around a word, grouped by relation. */
 export function lookupThesaurus(word: string): ThesaurusResult | null {
   return thesaurusOf(getDb(), word);
+}
+
+/**
+ * Bulk gloss of a whole text: source language in for an Esperanto glossary,
+ * `lang: "eo"` in for an audit of an Esperanto draft.
+ */
+export function glossText(text: string, opts: GlossOptions = {}): SourceGloss | EoGloss {
+  const db = getDb();
+  return (opts.lang ?? "en") === "eo" ? glossEsperanto(db, text, opts) : glossSource(db, text, opts);
 }
 
 /** Reverse dictionary: words whose definition matches a description (voko.db only). */
