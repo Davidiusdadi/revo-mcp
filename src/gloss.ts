@@ -264,19 +264,28 @@ function rootsByLength(db: Database): Map<number, string[]> {
 }
 
 /**
- * An article's own primary headword — what its root means on its own.
+ * The primary headword of the article a root belongs to — what the root means
+ * on its own — and that article's name.
  *
- * A plain word wins over the affix spelling: the `end` article leads with the
- * headword `-end`, but `endi` is what names the root.
+ * The root is looked up through the morpheme inventory, not by article file
+ * name: the files are x-system (`sxangx` for `ŝanĝ`) and homonyms are numbered
+ * (`tar1`), so the morph itself names no file. A root shared by several
+ * articles goes to the one with the most derivations. A plain word wins over
+ * the affix spelling: the `end` article leads with the headword `-end`, but
+ * `endi` is what names the root.
  */
-function rootHeadword(db: Database, art: string): string | null {
+function rootHeadword(db: Database, morph: string): { txt: string; art: string } | null {
   const row = db
-    .query<{ txt: string }, [string]>(
-      `SELECT k.txt FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-        WHERE a.file = ?
-        ORDER BY (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
-    .get(art);
-  return row?.txt ?? null;
+    .query<{ txt: string; art: string }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art
+         FROM x_morpheme x
+         JOIN art a ON a.id = x.art_id
+         JOIN node n ON n.art_id = a.id
+         JOIN kap k ON k.node_id = n.id
+        WHERE x.morph = ? AND x.kind IN ('R', 'W')
+        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
+    .get(morph);
+  return row ? { txt: row.txt, art: fromXSystem(row.art) } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,8 +567,8 @@ function partsOf(db: Database, ms: Morph[]): Part[] {
     } else if (m.k === "R" || m.k === "W") {
       const head = rootHeadword(db, m.m);
       if (head) {
-        part.art = m.m;
-        part.gloss = head;
+        part.art = head.art;
+        part.gloss = head.txt;
       }
     }
     return part;

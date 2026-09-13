@@ -147,6 +147,14 @@ describe("gloss: Esperanto audit", () => {
     expect(gloss).not.toBe("kiu");
   });
 
+  test("a root spelled with a hat still reaches its article", () => {
+    // the article file is x-system (sxangx); the part is glossed all the same
+    const t = classify(getDb(), "ŝanĝita", inventoryOf(getDb()));
+    const root = t.parts!.find((p) => p.m === "ŝanĝ")!;
+    expect(root.gloss).toBe("ŝanĝi");
+    expect(root.art).toBe("ŝanĝ");
+  });
+
   test("x-system input is folded before anything else", () => {
     const t = word(eo("La cxevalo kuras."), "ĉevalo")!;
     expect(t.verdict).toBe("headword");
