@@ -20,7 +20,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 2,
+  version: 3,
   tables: ["x_morpheme", "x_morph", "x_token"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -122,7 +122,7 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
       seg     TEXT NOT NULL,         -- "mal|san|ul|ej|o", words separated by " "
       kinds   TEXT NOT NULL,         -- "PRSSE" per word; "?" where the inventory could not cover it
       roots   TEXT NOT NULL,         -- the R morphemes, space-separated
-      source  TEXT NOT NULL,         -- tilde: root pinned by the kap · free: inventory only
+      source  TEXT NOT NULL,         -- tilde: root pinned by the kap (or found once in it) · free: inventory only
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
   // the kap's own <tld/> tells where the root sits
@@ -133,8 +133,8 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
   }
   const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
   let n = 0, ok = 0, pinned = 0;
-  for (const k of db.query<{ id: number; node_id: number; art_id: number; norm: string; tilde: string }, []>(
-    "SELECT k.id, k.node_id, n.art_id, k.norm, k.tilde FROM kap k JOIN node n ON n.id = k.node_id").iterate()) {
+  for (const k of db.query<{ id: number; node_id: number; art_id: number; norm: string; tilde: string; rad: string }, []>(
+    "SELECT k.id, k.node_id, n.art_id, k.norm, k.tilde, a.rad FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id").iterate()) {
     let pin = pins.get(k.id);
     // article kap "san/a": the root ends at the "/"
     const slash = k.tilde.indexOf("/");
@@ -142,6 +142,24 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
       const root = k.tilde.slice(0, slash).toLowerCase().replace(/^-/, "");
       const word = k.norm.match(WORD)?.find((w) => w.startsWith(root));
       if (word) pin = { word, at: 0, root };
+    }
+    // a kap written out in full ("hufofero" in fer): the article's root, where it
+    // occurs exactly once — twice ("ferfero") would leave the choice to the segmenter
+    const root = k.rad.toLowerCase();
+    if (!pin && root) {
+      const at = k.norm.indexOf(root);
+      const word = at >= 0 && k.norm.indexOf(root, at + 1) < 0 ? k.norm.match(WORD)?.find((w) => w.includes(root)) : undefined;
+      if (word && word !== root) {
+        const cand = { word, at: word.indexOf(root), root };
+        // a longer root starting there is a word of its own (sekvestraci over sekvestr, hej over he)
+        let off = 0;
+        const longer = segment(word, inv)?.some((m) => {
+          const hit = (m.k === "R" || m.k === "W") && off === cand.at && m.m.length > root.length;
+          off += m.m.length;
+          return hit;
+        });
+        if (!longer) pin = cand;
+      }
     }
     const r = segmentForm(k.norm, inv, pin);
     ins.run(k.id, k.node_id, k.art_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);

@@ -167,10 +167,13 @@ classes with costs) over an inventory built from the corpus itself: 13.5k roots
 (`art.rad` and `<rad var>`), 80 prefixes and 57 suffixes from the affix
 articles (`mal-`, `-ul`; the grammatical endings excluded), 303 endingless
 words (`ĉar`, `kiu`) from drv headwords with a bare tilde. A `<tld/>` pins the
-root span, so the segmenter only has to place affixes around a known root.
+root span, so the segmenter only has to place affixes around a known root. A
+headword written out in full (`hufofero` in `fer`) is pinned where the
+article's root occurs, if it occurs exactly once and the free segmentation does
+not already read a longer root there (`sekvestracio` in `sekvestr`).
 
-- `x_morph`: every headword (48,845): `mal|san|ul|ej|o` / `PRSSE`, roots,
-  `source` = `tilde` (root pinned, 48,274) or `free`; 99.2 % fully segmented.
+- `x_morph`: every headword (49,489): `mal|san|ul|ej|o` / `PRSSE`, roots,
+  `source` = `tilde` (root pinned, 48,957) or `free`; 99.2 % fully segmented.
 - `x_token`: every distinct attested word form per article (66,183 from
   `x_tld_occ` outside headwords), segmented with the root pinned (99.3 %), and
   tied to a headword of the same article when one of its dictionary forms is one

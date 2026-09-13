@@ -22,8 +22,10 @@ let db: Database;
 // unu and li each hold a <trdgrp> nested inside a translation's <klr>; cxeval writes
 // some of its tildes with lit="Ĉ", which is where a wrong root pin came from;
 // aidos has a <var> whose kap carries a <fnt> and a <uzo> next to it; in bel the
-// synonyms belong to malbeligi and plibeligi, not to bela (figur and ornam hold them)
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam"];
+// synonyms belong to malbeligi and plibeligi, not to bela (figur and ornam hold them);
+// fer writes the headword hufofero without a tilde, and ofer is the root that
+// swallows the linking o when nothing pins fer
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -300,6 +302,13 @@ describe("pass morph", () => {
     expect(one<{ seg: string; kinds: string; source: string }>(
       "SELECT seg, kinds, source FROM x_morph WHERE form = 'malsanulejo'")).toEqual(
       { seg: "mal|san|ul|ej|o", kinds: "PRSSE", source: "tilde" });
+  });
+
+  test("a headword written out in full is pinned on its article's root", () => {
+    // <kap>hufofero</kap> in fer: free, the segmenter prefers huf|ofer|o
+    expect(one<{ seg: string; source: string }>(
+      "SELECT seg, source FROM x_morph WHERE form = 'hufofero'")).toEqual(
+      { seg: "huf|o|fer|o", source: "tilde" });
   });
 
   test("every root in a segmentation is a root the inventory knows", () => {
