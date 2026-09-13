@@ -202,6 +202,18 @@ describe("gloss: Esperanto audit", () => {
     expect(t.readings![1].parts.find((p) => p.m === "sum")?.gloss).toBe("sumo");
   });
 
+  test("a headword written under another article with a root mark keeps that reading too", () => {
+    // turdedoj is a headword on the root turded (the thrush family) and is
+    // written in the turd article as turd|ed|oj: both are ReVo's
+    const t = classify(getDb(), "turdedoj", inventoryOf(getDb()));
+    expect(t.verdict).toBe("headword");
+    expect(t.readings?.map((r) => [r.seg, r.art])).toEqual([["turded|oj", "turded"], ["turd|ed|oj", "turd"]]);
+    // and an inflection: distordata is distordi + -at-, and dis|tord|at|a under tord
+    const u = classify(getDb(), "distordata", inventoryOf(getDb()));
+    expect(u.verdict).toBe("inflection");
+    expect(u.readings?.map((r) => r.seg)).toEqual(["distord|at|a", "dis|tord|at|a"]);
+  });
+
   test("a stored one-letter root between two roots is read as the linking vowel", () => {
     // the build files artefarita as art|e|far|it|a with e a root (the letter's article)
     const t = classify(getDb(), "artefarita", inventoryOf(getDb()));
