@@ -9,6 +9,11 @@
  * - x_token: every distinct word written with a `<tld/>` outside headwords,
  *   with the article whose root it carries (author-marked), its segmentation,
  *   and the headword of that article it inflects, when there is one.
+ * - x_pair: which morphemes the corpus writes next to a marked root, and how
+ *   often — evidence for the words that have no mark.
+ *
+ * The words with a mark are split first; the pairs read off them then price
+ * the splits of the words without one.
  */
 import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
@@ -20,32 +25,45 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 3,
-  tables: ["x_morpheme", "x_morph", "x_token"],
+  version: 4,
+  tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
     const nInv = writeInventory(db, inv);
     log(`x_morpheme: ${inv.roots.size} roots, ${inv.prefixes.size} prefixes, ${inv.suffixes.size} suffixes, ${inv.words.size} endingless words`);
-    const nMorph = segmentHeadwords(db, inv, log);
-    const nTok = attestedTokens(db, inv, log);
-    return nInv + nMorph + nTok;
+    const pairs = new Pairs();
+    const heads = segmentHeadwords(db, inv, pairs, log);
+    const toks = attestedTokens(db, inv, pairs, log);
+    const nPair = writePairs(db, pairs, log);
+    inv.pairs = pairs.counts;
+    const nMorph = heads.free(inv);
+    const nTok = toks.free(inv);
+    return nInv + nMorph + nTok + nPair;
   },
 };
 
 interface Built extends Inventory {
   rootArts: Map<string, number[]>;
+  /** derivations per article */
+  drv: Map<number, number>;
 }
 
 export function buildInventory(db: Database): Built {
   const roots = new Set<string>(), prefixes = new Set<string>(), suffixes = new Set<string>(), words = new Set<string>();
   const rootArts = new Map<string, number[]>();
+  const drv = new Map<number, number>();
+  const rootWeight = new Map<string, number>();
+  for (const r of db.query<{ art_id: number; n: number }, []>(
+    "SELECT art_id, COUNT(*) n FROM node WHERE kind IN ('drv','subdrv') GROUP BY art_id").iterate()) drv.set(r.art_id, r.n);
   const addRoot = (r: string, art: number) => {
     r = r.toLowerCase();
     if (!r) return;
     roots.add(r);
     const a = rootArts.get(r) ?? [];
-    if (!a.includes(art)) a.push(art);
+    if (a.includes(art)) return;
+    a.push(art);
     rootArts.set(r, a);
+    rootWeight.set(r, (rootWeight.get(r) ?? 0) + (drv.get(art) ?? 0));
   };
   for (const a of db.query<{ id: number; rad: string; xml: string }, []>("SELECT id, rad, xml FROM art").iterate()) {
     addRoot(a.rad, a.id);
@@ -66,7 +84,7 @@ export function buildInventory(db: Database): Built {
      WHERE n.kind IN ('drv','subdrv') AND k.tilde = '~'`).iterate()) {
     if (/^\p{L}+$/u.test(k.norm)) words.add(k.norm);
   }
-  return { roots, prefixes, suffixes, words, rootArts };
+  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight };
 }
 
 function writeInventory(db: Database, inv: Built): number {
@@ -74,20 +92,67 @@ function writeInventory(db: Database, inv: Built): number {
     CREATE TABLE x_morpheme (
       morph  TEXT NOT NULL,
       kind   TEXT NOT NULL,      -- R root · P prefix · S suffix · E ending · W endingless word
-      art_id INTEGER             -- for roots: the article (homonym articles share a root)
+      art_id INTEGER,            -- for roots: the article (homonym articles share a root)
+      drv    INTEGER             -- for roots: derivations in that article
     )`);
-  const ins = db.prepare("INSERT INTO x_morpheme VALUES (?,?,?)");
+  const ins = db.prepare("INSERT INTO x_morpheme VALUES (?,?,?,?)");
   let n = 0;
-  for (const [r, arts] of inv.rootArts) for (const a of arts) { ins.run(r, "R", a); n++; }
+  for (const [r, arts] of inv.rootArts) for (const a of arts) { ins.run(r, "R", a, inv.drv.get(a) ?? 0); n++; }
   for (const [kind, set] of [["P", inv.prefixes], ["S", inv.suffixes], ["E", ENDINGS], ["W", inv.words]] as const) {
-    for (const m of set) { ins.run(m, kind, null); n++; }
+    for (const m of set) { ins.run(m, kind, null, null); n++; }
   }
   db.run("CREATE INDEX idx_x_morpheme ON x_morpheme(morph, kind)");
   return n;
 }
 
+/**
+ * Counts of the morphemes written on either side of a marked root: "dis"
+ * before "port", "ist" after it. Only those two neighbours, because the rest
+ * of a pinned split is the segmenter's own guess, and its guesses must not
+ * become its evidence (a wrong "mon|tar" in montarĉeno would teach it to split
+ * montaro the same way). A derivation and its inflections count once.
+ */
+export class Pairs {
+  readonly counts = new Map<string, number>();
+  private readonly seen = new Set<string>();
+  add(ms: Morph[], at: number) {
+    const core = ms.filter((m) => m.k !== "E");
+    const stem = core.map((m) => m.m).join("|");
+    if (this.seen.has(stem)) return;
+    this.seen.add(stem);
+    let off = 0;
+    for (let i = 0; i < core.length; off += core[i++].m.length) {
+      if (off !== at) continue;
+      if (i > 0) this.bump(core[i - 1].m, core[i].m);
+      if (i + 1 < core.length) this.bump(core[i].m, core[i + 1].m);
+      return;
+    }
+  }
+  private bump(a: string, b: string) {
+    const k = `${a}+${b}`;
+    this.counts.set(k, (this.counts.get(k) ?? 0) + 1);
+  }
+}
+
+function writePairs(db: Database, pairs: Pairs, log: (m: string) => void): number {
+  db.run(`
+    CREATE TABLE x_pair (
+      a TEXT NOT NULL,            -- the morpheme before
+      b TEXT NOT NULL,            -- the morpheme after
+      n INTEGER NOT NULL          -- pinned splits (one per derivation) that write them side by side
+    )`);
+  const ins = db.prepare("INSERT INTO x_pair VALUES (?,?,?)");
+  for (const [k, n] of pairs.counts) {
+    const [a, b] = k.split("+");
+    ins.run(a, b, n);
+  }
+  db.run("CREATE INDEX idx_x_pair ON x_pair(a, b)");
+  log(`x_pair: ${pairs.counts.size} morpheme pairs next to a marked root`);
+  return pairs.counts.size;
+}
+
 /** Segment every word of `form`; the word equal to `fixed.word` gets its root pinned. */
-function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: number; root: string }) {
+function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: number; root: string }, pairs?: Pairs) {
   const segs: string[] = [], kinds: string[] = [], roots: string[] = [];
   let ok = true;
   let pinned = false;
@@ -104,6 +169,7 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
       kinds.push("?");
       continue;
     }
+    if (pin) pairs?.add(s, pin.at);
     const f = formatSegments(s);
     segs.push(f.seg);
     kinds.push(f.kinds);
@@ -112,7 +178,16 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
   return { seg: segs.join(" "), kinds: kinds.join(" "), roots: roots.join(" "), ok, pinned };
 }
 
-function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void): number {
+/** Does `fixed` pin a word of `form`? Mirrors what segmentForm will do with it. */
+const pins = (form: string, fixed?: { word: string; at: number; root: string }) =>
+  !!fixed && [...form.matchAll(WORD)].some(([w]) => w === fixed.word && pinFits(w, fixed));
+
+/** The rows a segmenting function put off until the pairs exist. */
+interface Deferred {
+  free(inv: Inventory): number;
+}
+
+function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
   db.run(`
     CREATE TABLE x_morph (
       kap_id  INTEGER PRIMARY KEY,
@@ -126,16 +201,25 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
   // the kap's own <tld/> tells where the root sits
-  const pins = new Map<number, { word: string; at: number; root: string }>();
+  const marked = new Map<number, { word: string; at: number; root: string }>();
   for (const o of db.query<{ owner_id: number; pre: string; rad: string; norm: string }, []>(
     "SELECT owner_id, pre, rad, norm FROM x_tld_occ WHERE owner_kind = 'kap' ORDER BY owner_id, ord").iterate()) {
-    if (!pins.has(o.owner_id)) pins.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
+    if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
   }
   const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
+  type Kap = { id: number; node_id: number; art_id: number; norm: string; tilde: string; rad: string };
+  const later: Kap[] = [];
   let n = 0, ok = 0, pinned = 0;
-  for (const k of db.query<{ id: number; node_id: number; art_id: number; norm: string; tilde: string; rad: string }, []>(
+  const write = (k: Kap, inv: Inventory, pin?: { word: string; at: number; root: string }) => {
+    const r = segmentForm(k.norm, inv, pin, pairs);
+    ins.run(k.id, k.node_id, k.art_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);
+    n++;
+    if (r.ok) ok++;
+    if (r.pinned) pinned++;
+  };
+  for (const k of db.query<Kap, []>(
     "SELECT k.id, k.node_id, n.art_id, k.norm, k.tilde, a.rad FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id").iterate()) {
-    let pin = pins.get(k.id);
+    let pin = marked.get(k.id);
     // article kap "san/a": the root ends at the "/"
     const slash = k.tilde.indexOf("/");
     if (!pin && slash > 0 && !k.tilde.slice(0, slash).includes(" ")) {
@@ -161,14 +245,16 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
         if (!longer) pin = cand;
       }
     }
-    const r = segmentForm(k.norm, inv, pin);
-    ins.run(k.id, k.node_id, k.art_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);
-    n++;
-    if (r.ok) ok++;
-    if (r.pinned) pinned++;
+    if (pins(k.norm, pin)) write(k, inv, pin);
+    else later.push(k);
   }
-  log(`x_morph: ${n} headwords, ${ok} fully segmented (${pct(ok, n)}), root pinned in ${pinned}`);
-  return n;
+  return {
+    free(inv) {
+      for (const k of later) write(k, inv);
+      log(`x_morph: ${n} headwords, ${ok} fully segmented (${pct(ok, n)}), root pinned in ${pinned}`);
+      return n;
+    },
+  };
 }
 
 /**
@@ -186,7 +272,7 @@ function segmentHeadwords(db: Database, inv: Inventory, log: (m: string) => void
 export const TOKEN_GROUPS = `SELECT norm, art_id, COUNT(*) n, pre, rad, MIN(id) AS first_id
     FROM x_tld_occ WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, art_id`;
 
-function attestedTokens(db: Database, inv: Inventory, log: (m: string) => void): number {
+function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
   db.run(`
     CREATE TABLE x_token (
       id      INTEGER PRIMARY KEY,
@@ -207,10 +293,11 @@ function attestedTokens(db: Database, inv: Inventory, log: (m: string) => void):
     heads.set(k.art_id, m);
   }
   const ins = db.prepare("INSERT INTO x_token (norm, art_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
+  type Tok = { norm: string; art_id: number; n: number; pre: string; rad: string };
+  const later: Tok[] = [];
   let n = 0, ok = 0, lemma = 0;
-  for (const t of db.query<{ norm: string; art_id: number; n: number; pre: string; rad: string }, []>(
-    TOKEN_GROUPS).iterate()) {
-    const s = segmentForm(t.norm, inv, { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() });
+  const write = (t: Tok, inv: Inventory, pin?: { word: string; at: number; root: string }) => {
+    const s = segmentForm(t.norm, inv, pin, pairs);
     const h = heads.get(t.art_id);
     let kap: number | undefined, how: string | null = null;
     if (h?.has(t.norm)) [kap, how] = [h.get(t.norm), "kap"];
@@ -221,10 +308,20 @@ function attestedTokens(db: Database, inv: Inventory, log: (m: string) => void):
     n++;
     if (s.ok) ok++;
     if (kap !== undefined) lemma++;
+  };
+  for (const t of db.query<Tok, []>(TOKEN_GROUPS).iterate()) {
+    const pin = { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() };
+    if (pins(t.norm, pin)) write(t, inv, pin);
+    else later.push(t);
   }
-  db.run("CREATE INDEX idx_x_token_norm ON x_token(norm)");
-  log(`x_token: ${n} attested forms, ${ok} fully segmented (${pct(ok, n)}), ${lemma} tied to a headword (${pct(lemma, n)})`);
-  return n;
+  return {
+    free(inv) {
+      for (const t of later) write(t, inv);
+      db.run("CREATE INDEX idx_x_token_norm ON x_token(norm)");
+      log(`x_token: ${n} attested forms, ${ok} fully segmented (${pct(ok, n)}), ${lemma} tied to a headword (${pct(lemma, n)})`);
+      return n;
+    },
+  };
 }
 
 const pct = (a: number, b: number) => `${((100 * a) / Math.max(1, b)).toFixed(1)}%`;

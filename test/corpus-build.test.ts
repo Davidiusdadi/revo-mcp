@@ -311,6 +311,15 @@ describe("pass morph", () => {
       { seg: "huf|o|fer|o", source: "tilde" });
   });
 
+  test("x_pair counts the neighbours of a marked root", () => {
+    // mal|san|ul|ej|o, san pinned: mal before it, ul after it; ul+ej is the
+    // segmenter's own reading and not evidence
+    const pair = (a: string, b: string) => one<{ n: number } | null>("SELECT n FROM x_pair WHERE a = ? AND b = ?", a, b)?.n;
+    expect(pair("mal", "san")).toBeGreaterThan(0);
+    expect(pair("san", "ul")).toBeGreaterThan(0);
+    expect(pair("ul", "ej")).toBeUndefined();
+  });
+
   test("every root in a segmentation is a root the inventory knows", () => {
     // The pinned root used to be assembled from two different <tld/> rows (an
     // offset from one, a root from another), which stamped spans like "ĉeva"

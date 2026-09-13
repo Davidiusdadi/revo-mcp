@@ -16,6 +16,7 @@
  */
 import { Database } from "bun:sqlite";
 import { segment, formatSegments, ENDINGS, type Inventory, type Morph } from "../src/morph";
+import { Pairs } from "../src/corpus/passes/morph";
 
 const args = process.argv.slice(2);
 const opt = (name: string, dflt: string) => {
@@ -25,10 +26,13 @@ const opt = (name: string, dflt: string) => {
 const db = new Database(opt("--db", "data/voko.db"), { readonly: true });
 const show = Number(opt("--show", "20"));
 
-const inv: Inventory = { roots: new Set(), prefixes: new Set(), suffixes: new Set(), words: new Set() };
-for (const r of db.query<{ morph: string; kind: string }, []>("SELECT DISTINCT morph, kind FROM x_morpheme").iterate()) {
+const rootWeight = new Map<string, number>();
+const inv: Inventory = { roots: new Set(), prefixes: new Set(), suffixes: new Set(), words: new Set(), rootWeight };
+for (const r of db.query<{ morph: string; kind: string; drv: number }, []>(
+  "SELECT morph, kind, SUM(drv) drv FROM x_morpheme GROUP BY morph, kind").iterate()) {
   const set = { R: inv.roots, P: inv.prefixes, S: inv.suffixes, W: inv.words }[r.kind] as Set<string> | undefined;
   set?.add(r.morph);
+  if (r.kind === "R") rootWeight.set(r.morph, r.drv);
 }
 const affixy = (rad: string) => inv.prefixes.has(rad) || inv.suffixes.has(rad) || ENDINGS.has(rad) || rad === "j" || rad === "n";
 
@@ -61,6 +65,15 @@ for (const o of db.query<{ owner_kind: "kap" | "ekz"; pre: string; rad: string; 
 }
 const all = [...cases.values()];
 
+// pair evidence, as the build derives it, but from the evidence part only
+const pairs = new Pairs();
+for (const c of all) {
+  if (c.part !== "evidence") continue;
+  const ms = segment(c.word, inv, { at: c.at, root: c.root });
+  if (ms) pairs.add(ms, c.at);
+}
+inv.pairs = pairs.counts;
+
 // ---- scoring ---------------------------------------------------------------
 
 type Verdict = "right" | "no split" | "swallowed" | "cut up" | "shifted";
@@ -91,7 +104,7 @@ function table(label: string, set: Case[]) {
 table("headwords", all.filter((c) => c.owner === "kap"));
 table("marked words in examples", all.filter((c) => c.owner === "ekz"));
 table("all", all);
-table("report part (no relative seen)", all.filter((c) => c.part === "report"));
+table(`report part (no relative among the ${pairs.counts.size} evidence pairs)`, all.filter((c) => c.part === "report"));
 
 const misses = all.filter((c) => c.part === "report" && verdicts.get(c) !== "right");
 const step = show > 0 ? Math.max(1, Math.floor(misses.length / show)) : 0;
