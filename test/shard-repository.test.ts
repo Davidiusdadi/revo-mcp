@@ -29,4 +29,12 @@ describe("ShardRepository", () => {
     const result = await repository.search({ query: "amikojn", languages: ["en"], limit: 5 });
     expect(result.results[0].entry.headword).toBe("amiko");
   });
+
+  test("loads a stable entry URL target by ReVo mark", async () => {
+    const repository = new ShardRepository("https://dictionary.invalid/", localFetch as typeof fetch);
+    const entry = await repository.lookup("nic.0o", ["en", "de"]);
+    expect(entry.headword).toBe("Nico");
+    expect(entry.usageDomains).toEqual(["GEOG", "POL"]);
+    expect(entry.translations.map(({ trd }) => trd)).toContain("Nice");
+  });
 });

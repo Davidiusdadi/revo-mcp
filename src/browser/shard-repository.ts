@@ -52,6 +52,15 @@ export class ShardRepository {
       });
   }
 
+  async lookup(mark: string, languages: string[]): Promise<LookupResult> {
+    const selected = [...new Set(languages.filter((language) => language !== "eo"))];
+    const entry = await this.entry(mark);
+    return {
+      ...entry,
+      translations: entry.translations.filter(({ lng }) => selected.includes(lng)),
+    };
+  }
+
   async search(input: SearchInput): Promise<SearchOutput> {
     const query = hasXSystem(input.query) ? fromXSystem(input.query) : input.query;
     const normalized = normalizeQuery(query);
@@ -90,14 +99,14 @@ export class ShardRepository {
         a[1].label.localeCompare(b[1].label, "eo"))
       .slice(0, input.limit);
     const entries = await Promise.all(ordered.map(async ([mark, match]) => ({
-      entry: await this.entry(mark),
+      entry: await this.lookup(mark, languages),
       matchReasons: match.reasons,
     })));
     return {
       query,
       languages,
       results: entries.map(({ entry, matchReasons }) => ({
-        entry: { ...entry, translations: entry.translations.filter(({ lng }) => languages.includes(lng)) },
+        entry,
         matchReasons,
       })),
     };

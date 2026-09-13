@@ -119,7 +119,7 @@ The export contains:
 Applications can precache the Worker, manifest, language metadata, and selected
 language indexes, then runtime-cache entry buckets as users open definitions.
 `ShardRepository` is the browser-neutral dictionary API;
-`createShardMcpServer` exposes it through the real MCP `search` and `languages`
+`createShardMcpServer` exposes it through the real MCP `search`, `entry`, and `languages`
 tools. `MessagePortTransport` and `connectWorkerServer` connect that server to a
 Web Worker without relying on Node or Bun globals.
 
