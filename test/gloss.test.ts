@@ -174,8 +174,8 @@ describe("gloss: Esperanto audit", () => {
   });
 
   test("drops a guess that needs a one-letter root", () => {
-    // kelk|e|foj|e: "e" is in the inventory (the letter's own article), and a
-    // reading built on it is not one anybody meant
+    // kelk|e|foj|e: the corpus never writes e before foj, so the e can only be
+    // the letter's own article, and a reading built on that is not one anybody meant
     const t = classify(getDb(), "kelkefoje", inventoryOf(getDb()));
     expect(t.verdict).toBe("unknown");
     expect(t.seg).toBeUndefined();
@@ -183,6 +183,20 @@ describe("gloss: Esperanto audit", () => {
     const u = classify(getDb(), "elirejoj", inventoryOf(getDb()));
     expect(u.headword).toBe("elirejo");
     expect(u.seg).toBe("el|ir|ej|oj");
+  });
+
+  test("a piece may keep its ending inside a compound", () => {
+    // mi|a|grad|e: the a is the adjective ending kept inside the compound, as
+    // in certagrade, not the letter a; the corpus writes a before grad
+    const t = classify(getDb(), "miagrade", inventoryOf(getDb()));
+    expect(t.verdict).toBe("derived");
+    expect(t.seg).toBe("mi|a|grad|e");
+    expect(t.kinds).toBe("RLRE");
+    // ĉio|n|vid|a: an endingless word keeps its -n
+    const u = classify(getDb(), "ĉionvida", inventoryOf(getDb()));
+    expect(u.verdict).toBe("derived");
+    expect(u.seg).toBe("ĉio|n|vid|a");
+    expect(u.kinds).toBe("WLRE");
   });
 
   test("a one-letter root does not beat two short pieces the corpus writes together", () => {

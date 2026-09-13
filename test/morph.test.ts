@@ -104,6 +104,20 @@ describe("segment", () => {
     expect(seg("ĉiutaga")?.seg).toBe("ĉiu|tag|a");
   });
 
+  test("a piece keeps its ending inside a compound", () => {
+    // an endingless word keeps its -n: ĉio|n|pov|a, si|n|defend|o
+    const pron: Inventory = { ...inv, roots: new Set([...inv.roots, "pov", "defend"]), words: new Set([...inv.words, "ĉio", "si"]) };
+    expect(formatSegments(segment("ĉionpova", pron)!)).toEqual({ seg: "ĉio|n|pov|a", kinds: "WLRE" });
+    expect(formatSegments(segment("sindefendo", pron)!)).toEqual({ seg: "si|n|defend|o", kinds: "WLRE" });
+    // a root keeps its a/e only before a root the corpus writes after that vowel
+    const grade: Inventory = { ...inv, roots: new Set([...inv.roots, "cert", "grad", "agr"]), suffixes: new Set([...inv.suffixes, "ad"]) };
+    expect(formatSegments(segment("certagrade", { ...grade, pairs: new Map([["a+grad", 3]]) })!)).toEqual({ seg: "cert|a|grad|e", kinds: "RLRE" });
+    expect(formatSegments(segment("certagrade", { ...grade, pairs: new Map([["mal+san", 5]]) })!).seg).toBe("cert|agr|ad|e");
+    // so brit|e|lir|o (the lira) cannot undercut brit|el|ir|o
+    const exits: Inventory = { ...inv, roots: new Set([...inv.roots, "brit", "el", "ir", "lir"]), pairs: new Map([["el+ir", 7]]) };
+    expect(formatSegments(segment("briteliro", exits)!).seg).toBe("brit|el|ir|o");
+  });
+
   test("a pinned root is kept", () => {
     expect(seg("malsanulejo", { at: 3, root: "san" })).toEqual({ seg: "mal|san|ul|ej|o", kinds: "PRSSE" });
     // pinning an unknown root still segments around it
