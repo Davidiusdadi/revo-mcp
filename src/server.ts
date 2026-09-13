@@ -6,6 +6,7 @@ import { examplesInputSchema, handleExamples } from "./tools/examples";
 import { thesaurusInputSchema, handleThesaurus } from "./tools/thesaurus";
 import { reverseLookupInputSchema, handleReverseLookup } from "./tools/reverse";
 import { searchInputSchema, searchOutputSchema, executeSearch } from "./tools/search";
+import { glossInputSchema, handleGloss } from "./tools/gloss";
 import {
   getLanguages,
   lookupFamily,
@@ -24,17 +25,20 @@ const languagesOutputSchema = z.object({
 function toolResponse(
   tool: string,
   args: Record<string, unknown>,
-  fn: () => { text: string; structuredContent: Record<string, unknown> },
+  fn: () => string | { text: string; structuredContent: Record<string, unknown> },
 ) {
   const argsStr = Object.entries(args)
     .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
     .join(" ");
   const t0 = performance.now();
   try {
-    const { text, structuredContent } = fn();
+    const result = fn();
+    const text = typeof result === "string" ? result : result.text;
     const ms = (performance.now() - t0).toFixed(0);
-    console.log(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
-    return { content: [{ type: "text" as const, text }], structuredContent };
+    console.error(`[tool] ${tool} ${argsStr} → ${text.length} chars (${ms}ms)`);
+    return typeof result === "string"
+      ? { content: [{ type: "text" as const, text }] }
+      : { content: [{ type: "text" as const, text }], structuredContent: result.structuredContent };
   } catch (err) {
     const ms = (performance.now() - t0).toFixed(0);
     const message = err instanceof Error ? err.message : String(err);
@@ -144,6 +148,21 @@ export function createMcpServer(): McpServer {
     text: handleReverseLookup(args),
     structuredContent: { kind: "reverse_lookup", data: searchDefinitions(args.description, args.limit) },
   })));
+
+  server.tool(
+    "gloss",
+    "Gloss a whole text against the dictionary in one call — pass a paragraph or a passage, " +
+      "not a single word. With a source language (lang='en'/'de'/…) it returns, for every " +
+      "content word and multi-word phrase, the Esperanto roots available for it, so a long " +
+      "translation can be planned before it is written and the words with no entry at all are " +
+      "visible up front. With lang='eo' it audits an Esperanto draft instead: each word comes " +
+      "back as a headword, an inflection, a form attested in the examples, a regular derivation " +
+      "no article lists (farenda = far/end/a), or unknown — with the nearest real word named. " +
+      "Use it at the start of a translation and again on the draft; use `lookup` for one word's " +
+      "definition and senses.",
+    glossInputSchema.shape,
+    async (args) => toolResponse("gloss", args as Record<string, unknown>, () => handleGloss(args as any))
+  );
 
   return server;
 }

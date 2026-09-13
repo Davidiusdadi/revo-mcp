@@ -68,6 +68,23 @@ describe("segment", () => {
     expect(seg("malo")).toEqual({ seg: "mal|o", kinds: "RE" });
   });
 
+  test("pair evidence decides between two readings the inventory allows", () => {
+    // montaro: mont|ar|o (mountain range) or mon|tar|o (money + tare); both are
+    // roots, and on their own the two splits cost the same
+    const both: Inventory = { ...inv, roots: new Set([...inv.roots, "mont", "mon", "tar"]), suffixes: new Set([...inv.suffixes, "ar"]) };
+    const seg = (pairs: Map<string, number>) => formatSegments(segment("montaro", { ...both, pairs })!).seg;
+    expect(seg(new Map([["mont+ar", 3]]))).toBe("mont|ar|o");
+    expect(seg(new Map([["mon+tar", 3]]))).toBe("mon|tar|o");
+  });
+
+  test("a pair the corpus never writes is dearer, not forbidden", () => {
+    const pairs = new Map([["mal+san", 5]]);
+    expect(formatSegments(segment("malsanulejo", { ...inv, pairs })!).seg).toBe("mal|san|ul|ej|o");
+    // hund|o|ŝip|o: none of its pairs are in the evidence, it still gets its linking vowel
+    const ships: Inventory = { ...inv, roots: new Set([...inv.roots, "ŝip"]), pairs };
+    expect(formatSegments(segment("hundoŝipo", ships)!).seg).toBe("hund|o|ŝip|o");
+  });
+
   test("compounds and the linking vowel", () => {
     expect(seg("ĉashundo")).toEqual({ seg: "ĉas|hund|o", kinds: "RRE" });
     expect(seg("vivodaŭro")).toEqual({ seg: "viv|o|daŭr|o", kinds: "RLRE" });

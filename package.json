@@ -21,7 +21,8 @@
     "web:export-shards": "bun run src/web/export-shards.ts",
     "browser:build": "bun run scripts/build-browser-worker.ts",
     "browser:smoke:build": "bun run scripts/build-browser-smoke.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "corpus:eval-segment": "bun run scripts/eval-segment.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

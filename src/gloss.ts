@@ -1,0 +1,695 @@
+/**
+ * Bulk glossing: a whole text goes in, corpus-backed suggestions come out.
+ *
+ * Two directions, chosen by the language of the text:
+ *
+ * - A **source** text (en, de, …) is glossed *into* Esperanto. Every content
+ *   word, and every two- or three-word phrase, is looked up in the 730k
+ *   translations, so a translator sees which roots exist before writing a
+ *   line — one call instead of one `lookup` per word.
+ * - An **Esperanto** text is *audited*. Each word is classed as a headword, an
+ *   inflection of one, a form attested in the examples, a regular derivation
+ *   the dictionary never lists (`farenda`, `legita`), or unknown — with the
+ *   nearest real word named where there is one.
+ *
+ * The regular-derivation class is what makes the audit usable. ReVo lists
+ * `legi` and the suffix `-end` but never `legenda`, so a checker that knows
+ * only headwords flags every correctly built word in a real text. Here the
+ * segmenter (`src/morph.ts`) rebuilds the word from the morpheme inventory and
+ * the affix articles supply each part's own definition, so what comes back is
+ * assembled from the corpus rather than invented.
+ */
+
+import type { SqlReader } from "./sql";
+import { fromXSystem, normalizeQuery } from "./stemmer";
+import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "./morph";
+
+// ---------------------------------------------------------------------------
+// shapes
+// ---------------------------------------------------------------------------
+
+export interface Candidate {
+  /** The Esperanto headword. */
+  eo: string;
+  /** The root it is built on (`ardez` for `ardezo`), with x-system file names decoded. */
+  art: string;
+  /** The translation as ReVo writes it, when that is not the term itself ("female friend"). */
+  src?: string;
+}
+
+export interface SourceTerm {
+  term: string;
+  /** Occurrences in the text. */
+  n: number;
+  /** The form that actually matched, when it is not the term ("friends" → "friend"). */
+  via?: string;
+  candidates: Candidate[];
+  /** Candidates beyond the per-term cap. */
+  more: number;
+}
+
+export interface SourceGloss {
+  mode: "source";
+  lang: string;
+  words: number;
+  phrases: SourceTerm[];
+  terms: SourceTerm[];
+  missing: { term: string; n: number }[];
+  /** Distinct content words left out by `maxWords`. */
+  truncated: number;
+}
+
+export type Verdict = "headword" | "inflection" | "attested" | "derived" | "unknown";
+
+export interface Part {
+  m: string;
+  k: string;
+  /** For an affix, its ReVo definition; for a root, the article's own headword. */
+  gloss?: string;
+  art?: string;
+}
+
+export interface EoTerm {
+  word: string;
+  n: number;
+  verdict: Verdict;
+  /** headword / inflection: the dictionary form. */
+  headword?: string;
+  art?: string;
+  /** How the dictionary form was reached: infl · class · ptcp. */
+  how?: string;
+  /** attested: occurrences in the example corpus. */
+  attested?: number;
+  seg?: string;
+  kinds?: string;
+  parts?: Part[];
+  /**
+   * The reading is built on a different root than the matched headword, so it
+   * is a second sense rather than the same word taken apart.
+   */
+  altReading?: boolean;
+  /**
+   * A second morphological reading, from stripping a known suffix off the
+   * stem. The segmenter returns one cheapest split, and a long root shadows
+   * the root-plus-suffix reading of the same letters: `legenda` segments as
+   * `legend|a` (of a legend) and also reads as `leg|end|a` (that must be
+   * read). Both are correct Esperanto, and only the context decides.
+   */
+  also?: { seg: string; kinds: string; parts: Part[] };
+  /**
+   * Words one letter away that the dictionary does have. Set on `unknown`, and
+   * on `derived` too: a word can be built correctly and still not be the one
+   * that was meant.
+   */
+  near?: string[];
+}
+
+export interface EoGloss {
+  mode: "eo";
+  words: number;
+  terms: EoTerm[];
+  counts: Record<Verdict, number>;
+  truncated: number;
+}
+
+export interface GlossOptions {
+  lang?: string;
+  /** Max candidates listed per term. */
+  perTerm?: number;
+  /** Max distinct terms reported. */
+  maxWords?: number;
+}
+
+// ---------------------------------------------------------------------------
+// tokenizing
+// ---------------------------------------------------------------------------
+
+/** Letters, plus the apostrophes and hyphens that sit inside words ("don't", "far-off"). */
+const SRC_WORD = /\p{L}[\p{L}\p{M}'’-]*/gu;
+const EO_WORD = /[\p{L}\p{M}]+/gu;
+
+/**
+ * Words carrying no lexical choice. ReVo translates few of them anyway — "the"
+ * reaches one article — so this mainly keeps the output short. Particles that
+ * do carry meaning inside a phrase ("give up") are still caught by the phrase
+ * pass, which runs before this filter.
+ */
+const FUNCTION_WORDS: Record<string, ReadonlySet<string>> = {
+  en: new Set(["a", "an", "the", "and", "or", "but", "if", "of", "to", "in", "on", "at", "by", "for", "with",
+    "from", "as", "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did", "have", "has",
+    "had", "will", "would", "can", "could", "shall", "should", "may", "might", "must", "not", "no", "it", "its",
+    "he", "him", "his", "she", "her", "they", "them", "their", "we", "us", "our", "you", "your", "i", "me", "my",
+    "this", "that", "these", "those", "there", "then", "than", "so", "too", "very", "s", "t",
+    "up", "down", "out", "off", "over", "back", "into", "onto", "upon", "about", "through",
+    "which", "who", "whom", "whose", "what", "how", "why", "when", "where", "while",
+    "all", "any", "some", "each", "both", "such", "other", "own", "same", "more", "most"]),
+  de: new Set(["der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
+    "und", "oder", "aber", "wenn", "von", "zu", "in", "im", "an", "am", "auf", "bei", "für", "mit", "aus",
+    "als", "ist", "sind", "war", "waren", "sein", "bin", "hat", "haben", "hatte", "hatten", "wird", "werden",
+    "wurde", "wurden", "kann", "können", "soll", "sollen", "muss", "müssen", "nicht", "kein", "keine", "es",
+    "er", "ihn", "ihm", "sie", "ihr", "ihre", "wir", "uns", "ich", "mich", "mir", "du", "dich", "dir",
+    "dieser", "diese", "dieses", "da", "dann", "so", "auch", "sehr", "nur", "noch", "schon", "man", "sich"]),
+};
+
+/**
+ * Regular reductions to try when the word as written is not in the dictionary.
+ * A wrong guess simply fails to match, so these stay deliberately plain; the
+ * form that hit is reported, never silently substituted.
+ */
+const REDUCTIONS: Record<string, readonly (readonly [RegExp, string])[]> = {
+  en: [[/ies$/, "y"], [/ves$/, "f"], [/ves$/, "fe"], [/([sxz]|ch|sh)es$/, "$1"], [/s$/, ""],
+    [/([bdgklmnprt])\1(ed|ing)$/, "$1"], [/ied$/, "y"], [/ed$/, ""], [/ed$/, "e"],
+    [/ing$/, ""], [/ing$/, "e"], [/est$/, ""], [/er$/, ""], [/ly$/, ""], [/n$/, ""]],
+  de: [[/nen$/, "n"], [/en$/, ""], [/ern$/, "er"], [/es$/, ""], [/er$/, ""], [/e$/, ""], [/n$/, ""], [/s$/, ""]],
+};
+
+// ---------------------------------------------------------------------------
+// cached corpus reads
+// ---------------------------------------------------------------------------
+
+const invCache = new WeakMap<SqlReader, Inventory>();
+const affixCache = new WeakMap<SqlReader, Map<string, { txt: string; gloss: string; art: string }>>();
+const byLenCache = new WeakMap<SqlReader, Map<number, string[]>>();
+
+/** The morpheme inventory the `morph` pass wrote, as `segment` wants it. */
+export function inventoryOf(db: SqlReader): Inventory {
+  const hit = invCache.get(db);
+  if (hit) return hit;
+  const sets: Record<string, Set<string>> = { R: new Set(), P: new Set(), S: new Set(), W: new Set() };
+  const rootWeight = new Map<string, number>();
+  for (const r of db.query<{ morph: string; kind: string; drv: number }, []>(
+    "SELECT morph, kind, SUM(drv) drv FROM x_morpheme WHERE kind IN ('R','P','S','W') GROUP BY morph, kind").all()) {
+    sets[r.kind].add(r.morph);
+    if (r.kind === "R") rootWeight.set(r.morph, r.drv);
+  }
+  const pairs = new Map<string, number>();
+  for (const p of db.query<{ a: string; b: string; n: number }, []>("SELECT a, b, n FROM x_pair").all()) pairs.set(`${p.a}+${p.b}`, p.n);
+  const inv: Inventory = { roots: sets.R, prefixes: sets.P, suffixes: sets.S, words: sets.W, pairs, rootWeight };
+  invCache.set(db, inv);
+  return inv;
+}
+
+/**
+ * An affix definition cut down to the phrase that says what it means.
+ *
+ * ReVo opens nearly every one the same way ("Sufikso esprimanta …",
+ * "Prefikso montranta …"); dropping that leaves the content, and one clause of
+ * it is all a per-word line can carry.
+ */
+function affixGloss(txt: string): string {
+  let s = txt.replace(/\s+/g, " ").trim();
+  s = s.replace(
+    /^(sufikso|prefikso|vortero|finaĵo)\s*(esprimanta|montranta|almetebla|signifanta|markanta|uzata|de|kiu)?\s*[,:;]?\s*/i,
+    ""
+  );
+  const cut = s.search(/[:;]| — /);
+  if (cut > 12) s = s.slice(0, cut);
+  if (s.length > 72) s = s.slice(0, 70).replace(/[\s,]+\S*$/, "") + "…";
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/**
+ * Every affix article's own definition, keyed by the bare morpheme.
+ *
+ * The `-ul` headword itself usually only says "same meaning as the standalone
+ * word", so the gloss is taken from the first substantial definition anywhere
+ * in the article.
+ */
+function affixesOf(db: SqlReader): Map<string, { txt: string; gloss: string; art: string }> {
+  const hit = affixCache.get(db);
+  if (hit) return hit;
+  const out = new Map<string, { txt: string; gloss: string; art: string }>();
+  // several candidate definitions per article: the first is sometimes only a
+  // colon and a connective ("Sufikso, kiu:"), with the content in the next one
+  const difs = db.query<{ txt: string }, [number]>(
+    `SELECT d.txt FROM dif d JOIN node dn ON dn.id = d.node_id
+      WHERE dn.art_id = ? AND length(d.txt) > 8
+        AND d.txt NOT LIKE 'Samsignifa%' AND d.txt NOT LIKE 'Uzata memstare%'
+        AND d.txt NOT LIKE 'Vortero%'
+      ORDER BY dn.id, d.ord LIMIT 5`
+  );
+  for (const r of db.query<{ txt: string; art: string; art_id: number }, []>(
+    `SELECT k.txt AS txt, a.file AS art, n.art_id AS art_id
+       FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
+      WHERE (k.txt LIKE '-%' OR k.txt LIKE '%-') AND k.txt NOT LIKE '% %'
+      ORDER BY k.id`).all()) {
+    const m = r.txt.toLowerCase().replace(/^-|-$/g, "");
+    if (!m || out.has(m)) continue;
+    let gloss = "";
+    for (const d of difs.all(r.art_id)) {
+      const g = affixGloss(d.txt);
+      if (g.length >= 12) {
+        gloss = g;
+        break;
+      }
+    }
+    out.set(m, { txt: r.txt, gloss, art: r.art });
+  }
+  affixCache.set(db, out);
+  return out;
+}
+
+/** Inventory roots grouped by length, for the near-miss scan. */
+function rootsByLength(db: SqlReader): Map<number, string[]> {
+  const hit = byLenCache.get(db);
+  if (hit) return hit;
+  const out = new Map<number, string[]>();
+  for (const r of inventoryOf(db).roots) {
+    const a = out.get(r.length) ?? [];
+    a.push(r);
+    out.set(r.length, a);
+  }
+  byLenCache.set(db, out);
+  return out;
+}
+
+/**
+ * An article's own primary headword — what its root means on its own.
+ *
+ * A plain word wins over the affix spelling: the `end` article leads with the
+ * headword `-end`, but `endi` is what names the root.
+ */
+function rootHeadword(db: SqlReader, art: string): string | null {
+  const row = db
+    .query<{ txt: string }, [string]>(
+      `SELECT k.txt FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
+        WHERE a.file = ?
+        ORDER BY (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
+    .get(art);
+  return row?.txt ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// source text → Esperanto
+// ---------------------------------------------------------------------------
+
+interface TrdRow {
+  eo: string;
+  art: string;
+  txt: string;
+}
+
+/** Translations whose index form is one of `forms`, exact on the indexed expression. */
+function trdByForm(db: SqlReader, lang: string, forms: string[]): TrdRow[] {
+  if (forms.length === 0) return [];
+  const qs = forms.map(() => "?").join(",");
+  return db
+    .query<TrdRow, []>(
+      `SELECT k.txt AS eo, a.file AS art, t.txt AS txt
+         FROM trd t
+         JOIN node n ON n.id = t.node_id
+         JOIN art a ON a.id = n.art_id
+         JOIN kap k ON k.id = n.kap_id
+        WHERE t.lng = ? AND COALESCE(t.ind, t.txt) COLLATE NOCASE IN (${qs})
+        ORDER BY t.id`)
+    .all(...([lang, ...forms] as unknown as []));
+}
+
+/** Case variants to try before any reduction: as written, lowercased, capitalised. */
+function caseForms(term: string): string[] {
+  const lower = term.toLowerCase();
+  const title = lower.charAt(0).toUpperCase() + lower.slice(1);
+  return [...new Set([term, lower, title])];
+}
+
+function reductionsOf(term: string, lang: string): string[] {
+  const rules = REDUCTIONS[lang] ?? [];
+  const out: string[] = [];
+  const lower = term.toLowerCase();
+  for (const [re, rep] of rules) {
+    if (!re.test(lower)) continue;
+    const form = lower.replace(re, rep);
+    if (form.length >= 3 && form !== lower && !out.includes(form)) out.push(form);
+  }
+  return out;
+}
+
+/**
+ * Candidates for one term: the word as written first, then regular reductions
+ * until something hits. Direct translations lead, sub-sense ones follow, so
+ * "friend" gives `amiko` before `amikino` ("female friend") — whose own
+ * wording is kept, so the difference stays visible.
+ */
+function candidatesFor(
+  db: SqlReader, lang: string, term: string, perTerm: number
+): { candidates: Candidate[]; more: number; via?: string } | null {
+  const tries: { forms: string[]; via?: string }[] = [{ forms: caseForms(term) }];
+  for (const f of reductionsOf(term, lang)) tries.push({ forms: caseForms(f), via: f });
+
+  for (const t of tries) {
+    const rows = trdByForm(db, lang, t.forms);
+    if (rows.length === 0) continue;
+    const wanted = new Set(t.forms.map((f) => f.toLowerCase()));
+    const direct = (r: TrdRow) => (wanted.has(r.txt.toLowerCase()) ? 0 : 1);
+    rows.sort((a, b) => direct(a) - direct(b));
+    const seen = new Set<string>();
+    const candidates: Candidate[] = [];
+    for (const r of rows) {
+      if (seen.has(r.eo)) continue;
+      seen.add(r.eo);
+      const c: Candidate = { eo: r.eo, art: fromXSystem(r.art) };
+      if (direct(r) === 1) c.src = r.txt;
+      candidates.push(c);
+    }
+    return {
+      candidates: candidates.slice(0, perTerm),
+      more: Math.max(0, candidates.length - perTerm),
+      via: t.via,
+    };
+  }
+  return null;
+}
+
+export function glossSource(db: SqlReader, text: string, opts: GlossOptions = {}): SourceGloss {
+  const lang = opts.lang ?? "en";
+  const perTerm = opts.perTerm ?? 4;
+  const maxWords = opts.maxWords ?? 80;
+  const stop = FUNCTION_WORDS[lang] ?? new Set<string>();
+
+  const tokens = [...text.matchAll(SRC_WORD)].map((m) => m[0]);
+
+  // phrases first: a multi-word entry ("give up", "naked eye") is the hit that
+  // cannot be reconstructed from the single words
+  const phrases: SourceTerm[] = [];
+  const phraseSeen = new Set<string>();
+  for (let i = 0; i < tokens.length; i++) {
+    for (const len of [3, 2]) {
+      if (i + len > tokens.length) continue;
+      const slice = tokens.slice(i, i + len);
+      if (slice.every((w) => stop.has(w.toLowerCase()))) continue;
+      const term = slice.join(" ").toLowerCase();
+      if (phraseSeen.has(term)) continue;
+      const hit = candidatesFor(db, lang, term, perTerm);
+      if (!hit) continue;
+      phraseSeen.add(term);
+      phrases.push({ term, n: countOf(text, term), ...hit });
+      break; // longest match at this position wins
+    }
+  }
+
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const w of tokens) {
+    const k = w.toLowerCase();
+    if (!counts.has(k)) order.push(k);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
+  const content = order.filter((t) => !stop.has(t) && t.length >= 2);
+  const terms: SourceTerm[] = [];
+  const missing: { term: string; n: number }[] = [];
+  for (const term of content.slice(0, maxWords)) {
+    const hit = candidatesFor(db, lang, term, perTerm);
+    if (hit) terms.push({ term, n: counts.get(term)!, ...hit });
+    else missing.push({ term, n: counts.get(term)! });
+  }
+
+  return {
+    mode: "source",
+    lang,
+    words: tokens.length,
+    phrases,
+    terms,
+    missing,
+    truncated: Math.max(0, content.length - maxWords),
+  };
+}
+
+function countOf(text: string, phrase: string): number {
+  const re = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+"), "gi");
+  return (text.match(re) ?? []).length || 1;
+}
+
+// ---------------------------------------------------------------------------
+// Esperanto text → audit
+// ---------------------------------------------------------------------------
+
+function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string } | null {
+  const row = db
+    .query<{ txt: string; art: string }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art
+         FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
+        WHERE k.norm = ? ORDER BY k.id LIMIT 1`)
+    .get(norm);
+  return row ?? null;
+}
+
+/** A form written with a `<tld/>` somewhere in the examples, with its count. */
+function tokenByNorm(db: SqlReader, norm: string): { n: number; art: string; headword: string | null } | null {
+  // one row per article the form was written under; the most frequent one names it
+  const rows = db
+    .query<{ n: number; art: string; headword: string | null }, [string]>(
+      `SELECT t.n AS n, a.file AS art, k.txt AS headword
+         FROM x_token t
+         JOIN art a ON a.id = t.art_id
+         LEFT JOIN kap k ON k.id = t.lemma_kap_id
+        WHERE t.norm = ? ORDER BY t.n DESC, t.id`)
+    .all(norm);
+  if (rows.length === 0) return null;
+  return { n: rows.reduce((s, r) => s + r.n, 0), art: rows[0].art, headword: rows[0].headword };
+}
+
+/**
+ * Words one letter away from `word` that the dictionary actually has, best
+ * evidence first.
+ *
+ * Two kinds of slip are covered. A *substituted* letter is found by putting
+ * every root within one edit of a prefix of the word in its place — this is
+ * where the diacritic confusions land, `ĉanĝiĝis` → `ŝanĝiĝis`. A *dropped or
+ * doubled* letter is found by deleting each character in turn, which is what
+ * separates `finsita` from `finita`.
+ *
+ * Candidates that the corpus does not have are dropped, and the rest are
+ * ranked by how well attested they are, not by the order the scan found them:
+ * `finsita` leads with `finita`, a headword written ten times in the examples,
+ * ahead of `fiksita`, which is only an inflection of one. An invented compound
+ * like `makilaĵfaranto` gets no suggestion at all rather than a
+ * plausible-looking one nobody has ever written.
+ */
+function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
+  const scored = new Map<string, { tier: number; n: number }>();
+  let checked = 0;
+  const take = (guess: string) => {
+    if (guess === word || scored.has(guess) || ++checked > 40) return;
+    const ev = evidence(db, guess);
+    if (ev) scored.set(guess, ev);
+  };
+
+  const byLen = rootsByLength(db);
+  for (let len = Math.min(word.length - 1, 9); len >= 3; len--) {
+    const pre = word.slice(0, len);
+    for (const cand of byLen.get(len) ?? []) {
+      if (cand !== pre && differsByOne(pre, cand)) take(cand + word.slice(len));
+    }
+  }
+  for (let i = 0; i < word.length; i++) take(word.slice(0, i) + word.slice(i + 1));
+
+  return [...scored.entries()]
+    .sort((a, b) => a[1].tier - b[1].tier || b[1].n - a[1].n)
+    .slice(0, limit)
+    .map(([w]) => w);
+}
+
+/** True when the two equal-length strings differ in exactly one position. */
+function differsByOne(a: string, b: string): boolean {
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i] && ++diff > 1) return false;
+  }
+  return diff === 1;
+}
+
+/**
+ * How well the corpus backs this exact spelling: tier 0 a headword, tier 1 a
+ * form the examples attest (`n` times), tier 2 a grammatical form of a
+ * headword, null nothing at all.
+ *
+ * `class` candidates do not count as forms — `lemmaCandidates` offers `brula`
+ * for `brulao` because they share a stem, but nobody writes `brulao`, and
+ * counting it let that spelling be suggested as a real word.
+ */
+function evidence(db: SqlReader, word: string): { tier: number; n: number } | null {
+  if (kapByNorm(db, word)) {
+    const tok = tokenByNorm(db, word);
+    return { tier: 0, n: tok?.n ?? 0 };
+  }
+  const tok = tokenByNorm(db, word);
+  if (tok) return { tier: 1, n: tok.n };
+  for (const c of lemmaCandidates(word)) {
+    if (c.how !== "class" && kapByNorm(db, c.lemma)) return { tier: 2, n: 0 };
+  }
+  return null;
+}
+
+/**
+ * Readings of the form root + suffix + ending that the cheapest segmentation
+ * hides, longest suffix first.
+ *
+ * This is where the regular derivations the dictionary never lists come from:
+ * ReVo has `legi` and the suffix `-end`, so `legenda` is a word even though no
+ * article mentions it.
+ */
+function suffixReadings(word: string, inv: Inventory): Morph[][] {
+  const m = /^(.{3,})(ojn|ajn|oj|aj|on|an|en|as|is|os|us|[oaieu])$/.exec(word);
+  if (!m) return [];
+  const [, stem, ending] = m;
+  const out: Morph[][] = [];
+  const suffixes = [...inv.suffixes].filter((s) => s.length >= 2 && stem.endsWith(s));
+  suffixes.sort((a, b) => b.length - a.length);
+  for (const suf of suffixes) {
+    const base = stem.slice(0, stem.length - suf.length);
+    if (base.length < 3 || !inv.roots.has(base)) continue;
+    out.push([{ m: base, k: "R" }, { m: suf, k: "S" }, { m: ending, k: "E" }]);
+  }
+  return out;
+}
+
+/** The morphemes of a segmentation, each with what the corpus says about it. */
+function partsOf(db: SqlReader, ms: Morph[]): Part[] {
+  const affixes = affixesOf(db);
+  return ms.map((m) => {
+    const part: Part = { m: m.m, k: m.k };
+    if (m.k === "P" || m.k === "S") {
+      const a = affixes.get(m.m);
+      if (a) {
+        part.art = a.art;
+        if (a.gloss) part.gloss = a.gloss;
+      }
+    } else if (m.k === "R" || m.k === "W") {
+      const head = rootHeadword(db, m.m);
+      if (head) {
+        part.art = m.m;
+        part.gloss = head;
+      }
+    }
+    return part;
+  });
+}
+
+/**
+ * Whether a segmentation is a word someone could have written.
+ *
+ * Measured over 72,358 real words (every headword plus every attested form)
+ * and 4,000 one-letter mutations of them, of which 1,731 segment at all:
+ *
+ * | rule                      | real words kept | mutations kept |
+ * |---------------------------|-----------------|----------------|
+ * | anything that segments    | 100%            | 100%           |
+ * | final ending              | 99.8%           | 80.5%          |
+ * | + no 1-letter root        | 99.5%           | 54.9%          |
+ * | + no root under 3 letters | 95.5%           | 26.2%          |
+ *
+ * The third row is the rule used. The numbers predate the pair evidence and
+ * the retuned costs in `segment()`; the rule they justify did not change.
+ * Tightening further costs real words —
+ * `ĉirkaŭ|ir|ad|o` needs its two-letter root — and buys less than it looks,
+ * because most of what survives is *legal*: `fin|sit|a` is a well-formed
+ * compound of two real roots and merely the wrong word. Morphology cannot rule
+ * that out, so the tool does not pretend to. It prints the parts, and names any
+ * real word one letter away.
+ */
+function plausible(ms: Morph[], word: string, inv: Inventory): boolean {
+  const isRoot = (m: Morph) => m.k === "R" || m.k === "W";
+  const roots = ms.filter(isRoot);
+  if (roots.length === 0 || roots.length > 3) return false;
+  if (roots.some((m) => m.m.length < 2)) return false;
+  const last = ms[ms.length - 1];
+  return last.k === "E" || (ms.length === 1 && inv.words.has(word));
+}
+
+export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions = {}): EoGloss {
+  const maxWords = opts.maxWords ?? 120;
+  const inv = inventoryOf(db);
+
+  const tokens = [...text.matchAll(EO_WORD)].map((m) => m[0]);
+  const counts = new Map<string, number>();
+  const order: string[] = [];
+  for (const w of tokens) {
+    const k = normalizeQuery(w);
+    if (!k) continue;
+    if (!counts.has(k)) order.push(k);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
+  const terms: EoTerm[] = [];
+  const tally: Record<Verdict, number> = { headword: 0, inflection: 0, attested: 0, derived: 0, unknown: 0 };
+  for (const word of order.slice(0, maxWords)) {
+    const term = classify(db, word, inv);
+    term.n = counts.get(word)!;
+    tally[term.verdict]++;
+    terms.push(term);
+  }
+
+  return {
+    mode: "eo",
+    words: tokens.length,
+    terms,
+    counts: tally,
+    truncated: Math.max(0, order.length - maxWords),
+  };
+}
+
+/**
+ * One word's standing in the corpus, cheapest evidence first: a headword, an
+ * inflection of one, a form the examples attest, a word the inventory can
+ * build out of known morphemes, or nothing.
+ *
+ * Every verdict but `headword` also carries the morphological reading when
+ * there is a plausible one, since that is what tells a translator whether an
+ * unlisted word is well formed.
+ */
+export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
+  const ms = segment(word, inv);
+  const morph = ms && plausible(ms, word, inv) ? { ms, ...formatSegments(ms) } : null;
+
+  /** Attach the decomposition, plus any reading a long root hides. */
+  const withMorph = (term: EoTerm, art?: string): EoTerm => {
+    if (morph) {
+      term.seg = morph.seg;
+      term.kinds = morph.kinds;
+      term.parts = partsOf(db, morph.ms);
+      const roots = morph.ms.filter((m) => m.k === "R").map((m) => m.m);
+      if (art && roots.length > 0 && !roots.includes(art)) term.altReading = true;
+    }
+    for (const alt of suffixReadings(word, inv)) {
+      const f = formatSegments(alt);
+      if (morph && f.seg === morph.seg) continue;
+      term.also = { ...f, parts: partsOf(db, alt) };
+      break;
+    }
+    return term;
+  };
+
+  const exact = kapByNorm(db, word);
+  if (exact) return { word, n: 1, verdict: "headword", headword: exact.txt, art: exact.art };
+
+  for (const c of lemmaCandidates(word)) {
+    const hit = kapByNorm(db, c.lemma);
+    if (hit) {
+      return withMorph(
+        { word, n: 1, verdict: "inflection", headword: hit.txt, art: hit.art, how: c.how },
+        hit.art
+      );
+    }
+  }
+
+  const tok = tokenByNorm(db, word);
+  if (tok) {
+    const term: EoTerm = { word, n: 1, verdict: "attested", attested: tok.n, art: tok.art };
+    if (tok.headword) term.headword = tok.headword;
+    return withMorph(term, tok.art);
+  }
+
+  if (morph) {
+    // a legal formation can still be a slip of the finger: `finsita` is a real
+    // compound of `fin` and `sit`, and one letter from `finita`
+    const term: EoTerm = {
+      word, n: 1, verdict: "derived", seg: morph.seg, kinds: morph.kinds, parts: partsOf(db, morph.ms),
+    };
+    const near = nearRoots(db, word, 2);
+    if (near.length > 0) term.near = near;
+    return term;
+  }
+
+  return { word, n: 1, verdict: "unknown", near: nearRoots(db, word) };
+}

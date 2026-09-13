@@ -23,7 +23,9 @@ beforeAll(() => {
   const script = join(dir, "ask-twice.ts");
   writeFileSync(
     script,
-    `import { getDb } from ${JSON.stringify(join(ROOT, "src", "db.ts"))};
+    `import { configureBunDatabase } from ${JSON.stringify(join(ROOT, "src", "runtime", "bun-database.ts"))};
+     import { getDb } from ${JSON.stringify(join(ROOT, "src", "db.ts"))};
+     configureBunDatabase();
      const say = (f: () => unknown) => {
        try { f(); return "no error"; } catch (e) { return (e as Error).message; }
      };

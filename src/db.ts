@@ -12,6 +12,7 @@
 import type { SqlReader } from "./sql";
 import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemmer";
 import { lemmaCandidates } from "./morph";
+import { glossEsperanto, glossSource, type EoGloss, type GlossOptions, type SourceGloss } from "./gloss";
 import {
   isVokoDb,
   sensesOf,
@@ -91,6 +92,15 @@ export function closeDb(): void {
 /** Reference graph around a word, grouped by relation. */
 export function lookupThesaurus(word: string): ThesaurusResult | null {
   return thesaurusOf(getDb(), word);
+}
+
+/**
+ * Bulk gloss of a whole text: source language in for an Esperanto glossary,
+ * `lang: "eo"` in for an audit of an Esperanto draft.
+ */
+export function glossText(text: string, opts: GlossOptions = {}): SourceGloss | EoGloss {
+  const db = getDb();
+  return (opts.lang ?? "en") === "eo" ? glossEsperanto(db, text, opts) : glossSource(db, text, opts);
 }
 
 /** Reverse dictionary: words whose definition matches a description (voko.db only). */
@@ -611,7 +621,7 @@ export interface FamilyMember {
 }
 
 export interface FamilyResult {
-  root: string; // resolved root mrk (e.g. "rav")
+  root: string; // the root as the article writes it (e.g. "rav", "ĉeval")
   members: FamilyMember[];
 }
 
@@ -624,42 +634,37 @@ export function lookupFamily(query: string): FamilyResult | null {
   const normalized = normalizeQuery(query);
   if (!normalized) return null;
 
-  // 1. Try treating input as a bare root (exists in artikolo)
-  let root: string | null = null;
-  const artRow = db
-    .query<{ mrk: string }, [string]>("SELECT mrk FROM artikolo WHERE mrk = ?")
+  // The query is in real letters (normalizeQuery turns cx into ĉ), so it is
+  // compared with real letters: the roots the morph pass lists lowercased, and
+  // the headwords' kap_norm. Not with the article's file name, which is in the
+  // x-system (cxeval), nor through SQLite's lower(), which leaves Ĉ as it is.
+  type ArtRow = { file: string; rad: string };
+
+  // 1. Try treating input as a bare root
+  let art = db
+    .query<ArtRow, [string]>(
+      `SELECT a.file, a.rad FROM x_morpheme m JOIN art a ON a.id = m.art_id
+        WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file LIMIT 1`
+    )
     .get(normalized);
-  if (artRow) {
-    root = artRow.mrk;
-  }
 
   // 2. Try as a word form — look up its article
-  if (!root) {
-    const nodoRow = db
-      .query<{ art: string }, [string]>(
-        "SELECT art FROM nodo WHERE lower(kap) = ? LIMIT 1"
-      )
-      .get(normalized);
-    if (nodoRow) root = nodoRow.art;
-  }
+  const byKap = db.query<ArtRow, [string]>(
+    "SELECT a.file, a.rad FROM nodo n JOIN art a ON a.file = n.art WHERE n.kap_norm = ? LIMIT 1"
+  );
+  if (!art) art = byKap.get(normalized);
 
   // 3. Inflected forms, as in lookupEsperanto: dictionary forms first, heuristic after
-  if (!root) {
+  if (!art) {
     const stems = new Set([...lemmaCandidates(normalized).map((c) => c.lemma), ...generateStems(normalized)]);
     for (const stem of stems) {
-      const nodoRow = db
-        .query<{ art: string }, [string]>(
-          "SELECT art FROM nodo WHERE lower(kap) = ? LIMIT 1"
-        )
-        .get(stem);
-      if (nodoRow) {
-        root = nodoRow.art;
-        break;
-      }
+      art = byKap.get(stem);
+      if (art) break;
     }
   }
 
-  if (!root) return null;
+  if (!art) return null;
+  const root = art.rad;
 
   // Get all derivation-level members
   const members = db
@@ -668,7 +673,7 @@ export function lookupFamily(query: string): FamilyResult | null {
        WHERE art = ? AND instr(mrk, '.') > 0
        ORDER BY mrk`
     )
-    .all(root);
+    .all(art.file);
 
   // Deduplicate to drv-level mrks (strip sense suffixes like .1, .2)
   const seen = new Set<string>();

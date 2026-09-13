@@ -21,8 +21,11 @@ let db: Database;
 // mal~ulejo needs san plus the mal/ul/ej affix articles; hund prt lup for the ref graph;
 // unu and li each hold a <trdgrp> nested inside a translation's <klr>; cxeval writes
 // some of its tildes with lit="Ĉ", which is where a wrong root pin came from;
-// aidos has a <var> whose kap carries a <fnt> and a <uzo> next to it
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos"];
+// aidos has a <var> whose kap carries a <fnt> and a <uzo> next to it; in bel the
+// synonyms belong to malbeligi and plibeligi, not to bela (figur and ornam hold them);
+// fer writes the headword hufofero without a tilde, and ofer is the root that
+// swallows the linking o when nothing pins fer
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -301,6 +304,22 @@ describe("pass morph", () => {
       { seg: "mal|san|ul|ej|o", kinds: "PRSSE", source: "tilde" });
   });
 
+  test("a headword written out in full is pinned on its article's root", () => {
+    // <kap>hufofero</kap> in fer: free, the segmenter prefers huf|ofer|o
+    expect(one<{ seg: string; source: string }>(
+      "SELECT seg, source FROM x_morph WHERE form = 'hufofero'")).toEqual(
+      { seg: "huf|o|fer|o", source: "tilde" });
+  });
+
+  test("x_pair counts the neighbours of a marked root", () => {
+    // mal|san|ul|ej|o, san pinned: mal before it, ul after it; ul+ej is the
+    // segmenter's own reading and not evidence
+    const pair = (a: string, b: string) => one<{ n: number } | null>("SELECT n FROM x_pair WHERE a = ? AND b = ?", a, b)?.n;
+    expect(pair("mal", "san")).toBeGreaterThan(0);
+    expect(pair("san", "ul")).toBeGreaterThan(0);
+    expect(pair("ul", "ej")).toBeUndefined();
+  });
+
   test("every root in a segmentation is a root the inventory knows", () => {
     // The pinned root used to be assembled from two different <tld/> rows (an
     // offset from one, a root from another), which stamped spans like "ĉeva"
@@ -373,6 +392,15 @@ describe("enrichment reads", () => {
     expect(entries.map((e) => e.headword)).not.toContain("hundo");
     // refs between senses of hund resolve to 'hundo'; other hund headwords stay
     expect(entries.some((e) => e.article === "hund")).toBe(true);
+  });
+
+  test("a word's relations are not its sibling derivations'", () => {
+    // bel's article kap reads "bela", so the query matches the article node too
+    const bela = thesaurusOf(db, "bela")!;
+    expect(bela.groups.find((g) => g.tip === "sin")).toBeUndefined();
+    // the synonym stays with the derivation that states it
+    const malbeligi = thesaurusOf(db, "malbeligi")!;
+    expect(malbeligi.groups.find((g) => g.tip === "sin")!.entries.map((e) => e.headword)).toContain("misfigurigi");
   });
 
   test("thesaurus accepts an inflected form", () => {

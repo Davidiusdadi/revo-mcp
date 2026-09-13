@@ -166,6 +166,12 @@ function nodesByKap(
  * Includes edges hanging off the headword's senses, not just the headword
  * node, and the inverses the refs pass entailed — so `hundo` lists the breeds
  * that declare themselves a kind of dog, which the `hund` article never states.
+ *
+ * The descent stops at a node with a <kap> of its own: that is the next
+ * headword, and its refs are its own. It matters because an article's own
+ * <kap> reads like its first derivation (bel's is "bela"), so `bela` matches
+ * the article node too — without the stop, malbeligi's synonym misfigurigi
+ * would be reported as a synonym of bela.
  */
 export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | null {
   const normalized = normalizeQuery(query);
@@ -206,6 +212,7 @@ export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | nul
          SELECT id FROM node WHERE id IN (${placeholders})
          UNION
          SELECT n.id FROM node n JOIN src s ON n.parent_id = s.id
+          WHERE NOT EXISTS (SELECT 1 FROM kap k WHERE k.node_id = n.id)
        )
        SELECT e.tip AS tip, e.inferred AS inferred,
               COALESCE(t.label, 'ligilo') AS label,

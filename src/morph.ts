@@ -73,6 +73,15 @@ export interface Inventory {
   suffixes: ReadonlySet<string>;
   /** Words used without an ending (ĉar, hodiaŭ, tiu); they may still take -n/-j. */
   words: ReadonlySet<string>;
+  /**
+   * How often the corpus writes two morphemes side by side next to a marked
+   * root, "dis+port" → n. A split that uses such a pair is cheaper, one that
+   * joins two morphemes the corpus never joins is dearer. Optional: without
+   * it the pieces are priced on their own.
+   */
+  pairs?: ReadonlyMap<string, number>;
+  /** Derivations per root in the corpus; a root with many is a little cheaper. */
+  rootWeight?: ReadonlyMap<string, number>;
 }
 
 export const ENDINGS: ReadonlySet<string> = new Set([
@@ -86,7 +95,7 @@ const MAX_MORPH = 24;
 interface Cell {
   cost: number;
   from: number;
-  fromPh: number;
+  fromKey: string;
   morph: Morph | null;
 }
 
@@ -104,69 +113,98 @@ export function pinFits(word: string, fixed: { at: number; root: string }): bool
   return w.slice(fixed.at, fixed.at + r.length) === r;
 }
 
+// Costs. Measured with `bun run corpus:eval-segment` on the words whose root
+// the corpus marks; each term earned its place there, and a term that lowered
+// the score (a bigger length bonus, a penalty on proper-name roots, linking
+// a/e/i) was left out.
+const LEN_BONUS = 0.005; // × len², so faj|rob|rig loses to fajr|o|brigad
+const DRV_BONUS = 0.02; // × ln(1 + derivations): mont over tar, by a hair
+const LINK = 0.25; // the linking o
+const WORD_LATE = 2; // an endingless word (ĝis) as anything but the first piece
+const PAIR_BONUS = 0.25; // × ln(1 + n) for a pair the corpus writes
+const PAIR_UNSEEN = 0.5; // for a pair it never writes
+
 /**
  * Cheapest split of `word` into morphemes; null if the inventory can't cover
- * it. Cost counts morphemes, with penalties for 1–2 letter roots and words, prefixes
- * after a root and linking vowels, so "mal|san|ul|ej|o" beats readings with
- * more or shorter pieces. Affix articles are roots too (ulo, ejo), so an
- * affix reading is priced just below the root reading of the same string.
- * `fixed` pins a root at a known offset.
+ * it. Each piece costs about one, less for a long one and for a root with many
+ * derivations, more for a 1–2 letter root or word, a prefix after a root, an
+ * endingless word inside the word; so "mal|san|ul|ej|o" beats readings with
+ * more or shorter pieces. With `inv.pairs`, two neighbouring pieces the corpus
+ * writes together (dis+port) are cheaper and two it never joins dearer, which
+ * is why the search keeps the last piece in its state. Affix articles are
+ * roots too (ulo, ejo), so an affix reading is priced just below the root
+ * reading of the same string. `fixed` pins a root at a known offset.
  */
 export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
   const w = word.toLowerCase();
   const n = w.length;
   if (n === 0) return null;
-  const best: (Cell | undefined)[][] = Array.from({ length: n + 1 }, () => []);
-  best[0][0] = { cost: 0, from: -1, fromPh: -1, morph: null };
+  // one cell per (position, phase, last morpheme): the pair term needs the last piece
+  const best: Map<string, Cell>[] = Array.from({ length: n + 1 }, () => new Map());
+  best[0].set("0", { cost: 0, from: -1, fromKey: "", morph: null });
   // A pin the word does not bear is dropped: the span it names would be
   // stamped as a root whatever text happens to sit there, and straddling it
   // is forbidden, so a wrong pin also rules out every correct reading.
   const pin = fixed && pinFits(w, fixed) ? fixed : undefined;
   const fAt = pin ? pin.at : -1;
   const fEnd = pin ? pin.at + pin.root.length : -1;
+  const { pairs, rootWeight } = inv;
 
-  const relax = (i: number, ph: number, j: number, next: number, k: MorphKind, s: string, cost: number) => {
-    const c = best[i][ph]!.cost + cost;
-    const cur = best[j][next];
-    if (!cur || c < cur.cost) best[j][next] = { cost: c, from: i, fromPh: ph, morph: { m: s, k } };
-  };
+  const bonus = (s: string) => LEN_BONUS * s.length * s.length;
+  const rootCost = (s: string) =>
+    (s.length <= 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
 
   for (let i = 0; i < n; i++) {
-    if (!best[i].some(Boolean)) continue;
+    if (best[i].size === 0) continue;
     for (let j = i + 1; j <= Math.min(n, i + MAX_MORPH); j++) {
       const isFixed = i === fAt && j === fEnd;
       if (pin && !isFixed && i < fEnd && j > fAt) continue; // nothing may straddle the fixed root
       const s = w.slice(i, j);
-      for (let ph = 0; ph < 4; ph++) {
-        if (!best[i][ph]) continue;
+      const atEnd = j === n;
+      for (const [key, cell] of best[i]) {
+        const ph = Number(key[0]);
+        const prev = cell.morph;
+        const relax = (next: number, k: MorphKind, cost: number) => {
+          let c = cell.cost + cost;
+          if (pairs && prev && prev.k !== "E" && k !== "E") {
+            const m = pairs.get(`${prev.m}+${s}`);
+            c += m ? -PAIR_BONUS * Math.log1p(m) : PAIR_UNSEEN;
+          }
+          const nk = `${next}${s}`;
+          const cur = best[j].get(nk);
+          if (!cur || c < cur.cost) best[j].set(nk, { cost: c, from: i, fromKey: key, morph: { m: s, k } });
+        };
         if (isFixed) {
-          relax(i, ph, j, 1, "R", s, 0.5);
-          if (inv.words.has(s)) relax(i, ph, j, 3, "W", s, 0.5);
+          relax(1, "R", 0.5);
+          if (inv.words.has(s)) relax(3, "W", 0.5);
           continue;
         }
-        const atEnd = j === n;
-        if (inv.roots.has(s)) relax(i, ph, j, 1, "R", s, s.length <= 2 ? 2.5 : 1);
+        if (inv.roots.has(s)) relax(1, "R", rootCost(s));
         if (ph === 2) continue; // after a linking vowel only a root fits
-        if (inv.words.has(s)) relax(i, ph, j, 3, "W", s, s.length <= 2 ? 2.5 : 1);
-        if (inv.prefixes.has(s)) relax(i, ph, j, 0, "P", s, ph === 0 ? 0.9 : 2.5);
+        if (inv.words.has(s)) relax(3, "W", (s.length <= 2 ? 2.5 : 1) - bonus(s) + (ph === 0 ? 0 : WORD_LATE));
+        if (inv.prefixes.has(s)) relax(0, "P", (ph === 0 ? 0.9 : 2.5) - bonus(s));
         if (ph === 1 || ph === 3) {
-          if (inv.suffixes.has(s)) relax(i, ph, j, 1, "S", s, 0.9);
-          if (atEnd && ENDINGS.has(s)) relax(i, ph, j, 4, "E", s, 0.5);
+          if (inv.suffixes.has(s)) relax(1, "S", 0.9 - bonus(s));
+          if (atEnd && ENDINGS.has(s)) relax(4, "E", 0.5);
         }
-        if (ph === 1 && s === "o" && !atEnd) relax(i, ph, j, 2, "L", s, 1.5);
-        if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(i, ph, j, 4, "E", s, 0.5);
+        if (ph === 1 && s === "o" && !atEnd) relax(2, "L", LINK);
+        if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(4, "E", 0.5);
       }
     }
   }
 
-  const done = [best[n][4], best[n][3]].filter((c): c is Cell => !!c);
-  if (!done.length) return null;
-  let ph = best[n][4] && (!best[n][3] || best[n][4]!.cost <= best[n][3]!.cost) ? 4 : 3;
+  // finished: an ending (phase 4), or an endingless word (phase 3); on a tie the ending
+  let end: { key: string; cell: Cell } | undefined;
+  for (const [key, cell] of best[n]) {
+    if (key[0] !== "4" && key[0] !== "3") continue;
+    if (!end || cell.cost < end.cell.cost || (cell.cost === end.cell.cost && key[0] === "4" && end.key[0] === "3")) end = { key, cell };
+  }
+  if (!end) return null;
   const out: Morph[] = [];
-  for (let i = n; i > 0; ) {
-    const c = best[i][ph]!;
+  for (let i = n, key = end.key; i > 0; ) {
+    const c = best[i].get(key)!;
     out.push(c.morph!);
-    [i, ph] = [c.from, c.fromPh];
+    [i, key] = [c.from, c.fromKey];
   }
   return out.reverse();
 }

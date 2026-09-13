@@ -4,6 +4,7 @@ import {
   lookupEsperanto,
   lookupTranslation,
   lookupAllLanguages,
+  lookupFamily,
   getLanguages,
   closeDb,
 } from "../src/db";
@@ -91,6 +92,26 @@ describe("lookupAllLanguages", () => {
     expect(results.length).toBeGreaterThan(0);
     const hundo = results.find((r) => r.headword === "hundo");
     expect(hundo).toBeDefined();
+  });
+});
+
+describe("lookupFamily", () => {
+  test("finds a root with a hat letter, however it is typed", () => {
+    // the article's file is cxeval; the root is ĉeval
+    for (const q of ["ĉeval", "cxeval", "ĉevalojn"]) {
+      const f = lookupFamily(q)!;
+      expect(f.root).toBe("ĉeval");
+      expect(f.members.map((m) => m.headword)).toContain("ĉevalo");
+    }
+  });
+
+  test("finds a word form whose capital is a hat letter", () => {
+    expect(lookupFamily("ĉado")?.root).toBe("Ĉad");
+  });
+
+  test("still finds a plain root", () => {
+    expect(lookupFamily("san")?.members.map((m) => m.headword)).toContain("malsanulejo");
+    expect(lookupFamily("zzzvxq")).toBeNull();
   });
 });
 

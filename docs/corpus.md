@@ -142,7 +142,7 @@ Order matters: `morph` reads `x_tld_occ`.
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 933,800 | 8 s |
 | `tld-links` | `x_tld_occ` | 173,285 | 12 s |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 111,733 | 1 s |
-| `morph` | `x_morpheme`, `x_morph`, `x_token` | 129,028 | 3 s |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 | 11 s |
 
 **`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35k, `ekz`
 115k, `dif` 14k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
@@ -163,18 +163,43 @@ is an edge or an issue; the only issues are 9 self-references. Deviation from th
 OWL: `hom` is treated as symmetric (the ontology only makes it transitive).
 
 **`morph`** — a lexicon-driven segmenter (`src/morph.ts`, a DP over morpheme
-classes with costs) over an inventory built from the corpus itself: 13.5k roots
-(`art.rad` and `<rad var>`), 80 prefixes and 57 suffixes from the affix
-articles (`mal-`, `-ul`; the grammatical endings excluded), 303 endingless
+classes with costs) over an inventory built from the corpus itself: 13.3k roots
+(`art.rad` and `<rad var>`), 106 prefixes and 58 suffixes from the affix
+articles (`mal-`, `-ul`; the grammatical endings excluded), 304 endingless
 words (`ĉar`, `kiu`) from drv headwords with a bare tilde. A `<tld/>` pins the
-root span, so the segmenter only has to place affixes around a known root.
+root span, so the segmenter only has to place affixes around a known root. A
+headword written out in full (`hufofero` in `fer`) is pinned where the
+article's root occurs, if it occurs exactly once and the free segmentation does
+not already read a longer root there (`sekvestracio` in `sekvestr`).
 
-- `x_morph`: every headword (48,845): `mal|san|ul|ej|o` / `PRSSE`, roots,
-  `source` = `tilde` (root pinned, 48,274) or `free`; 99.2 % fully segmented.
-- `x_token`: every distinct attested word form per article (66,183 from
+Each piece of a split costs about one; a long piece and a root with many
+derivations cost a little less, a one- or two-letter root, a prefix after a
+root and an endingless word inside a word cost more. The words with a pinned
+root are split first, and the morphemes written on either side of the pin
+(`dis`+`port`, `port`+`ist` — only those two, not the rest of the split, which
+is the segmenter's own reading) are counted into `x_pair`. Then every word,
+pinned or not, is split with that evidence: a pair the corpus writes is
+cheaper, one it never writes dearer, which is how `montaro` becomes
+`mont|ar|o` and not `mon|tar|o` (money, tare).
+
+- `x_morpheme`: the inventory; for roots, the article and its number of
+  derivations.
+- `x_morph`: every headword (49,489): `mal|san|ul|ej|o` / `PRSSE`, roots,
+  `source` = `tilde` (root pinned, 48,957) or `free`; 99.2 % fully segmented.
+- `x_token`: every distinct attested word form per article (67,197 from
   `x_tld_occ` outside headwords), segmented with the root pinned (99.3 %), and
   tied to a headword of the same article when one of its dictionary forms is one
   (84 %, `how` = `kap` / `infl` / `class` / `ptcp`).
+- `x_pair`: 21,184 morpheme pairs next to a marked root, each with the number
+  of derivations that write it.
+
+Without a pin, the segmenter puts the marked root in the right place for
+99.3 % of the 68,578 root-marked words (headwords 99.5 %, example forms
+99.2 %); `bun run corpus:eval-segment` measures it and lists the misses. The
+script takes its pair evidence from one third of the words only and scores
+separately the third whose derivational relatives are not in that evidence
+(99.2 %), so the number stands for words the segmenter has not seen a relative
+of.
 
 **Stemming in the tools.** `lemmaCandidates()` (grammar-driven: the ending says
 the dictionary form, then other word classes, then participle → verb) runs

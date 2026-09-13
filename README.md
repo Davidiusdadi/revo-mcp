@@ -198,8 +198,8 @@ but no definitions or examples.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `query` | string | (required) | A root (`san`) or any word form of it (`sana`) |
-| `show_languages` | string[] | `["en","de","fr"]` | Which translation languages to display |
+| `root` | string | (required) | A root (`san`, `ĉeval` or `cxeval`) or any word form of it (`sana`) |
+| `show_languages` | string[] | `["en","de","fr","es","ru"]` | Which translation languages to display |
 
 ### `examples`
 
@@ -216,7 +216,9 @@ compounds and proper nouns that are not headwords — `examples({ query: "abeloj
 The reference graph around a word, grouped by relation: synonyms, antonyms, broader
 and narrower terms, parts and wholes, see-also. Includes the inverse links the other
 article states — `thesaurus({ word: "hundo" })` lists the breeds that declare
-themselves a kind of dog, which the `hund` article itself never mentions.
+themselves a kind of dog, which the `hund` article itself never mentions. The
+relations are those of the entry asked for and its senses; the other derivations in
+the same article keep their own (`bela` does not inherit `malbeligi`'s synonyms).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -233,6 +235,57 @@ Esperanto, since that is the language the definitions are written in.
 |-----------|------|---------|-------------|
 | `description` | string | (required) | Esperanto description of the meaning |
 | `limit` | number | `15` | Max results (1-50) |
+
+### `gloss`
+
+A whole text in, corpus-backed suggestions out — one call instead of one `lookup`
+per word. Two directions, chosen by the language of the text.
+
+With a source language, it glosses the text *into* Esperanto: every content word and
+every two- or three-word phrase, with the Esperanto roots available for it, and a list
+of the words the dictionary has nothing for.
+
+```
+gloss({ text: "He decided to give up on the naked eye.", lang: "en" })
+
+**Phrases** — entries the single words would not give you
+- **give up** — cedi · fordoni (don) · kapitulaci · rezigni
+**Words**
+- **decided** (via decide) — decidi
+- **naked** — nuda
+- **eye** — hokingo · okulo · okulkavo (kav) [cavity of the eye]
+```
+
+With `lang: "eo"` it audits an Esperanto draft instead. Each word comes back as a
+headword, an inflection of one, a form attested in the examples, a *regular derivation*
+no article lists, or unknown — the last with the nearest real word named.
+
+```
+gloss({ text: "La teksto ĉanĝiĝis kaj estas farenda.", lang: "eo" })
+
+**Unknown** — no article, nothing attested, and no reading from known morphemes
+- **ĉanĝiĝis** — did you mean **ŝanĝiĝis**?
+**Attested, not a headword** — written in ReVo's own examples
+- **farenda** (4× in the examples) = `far|end|a` — fari + -end- "kiun oni devas fari" + -a
+```
+
+The derivation class is what makes the audit usable. ReVo lists `legi` and the suffix
+`-end` but never `legenda`, so a checker that knows only headwords flags every
+correctly built word in a real text. The segmenter rebuilds the word from the morpheme
+inventory and each part is glossed from its own article, so `-end-` is quoted, not
+paraphrased. Where a long root hides a second reading both are given: `legenda` is
+`legendo` + `-a` *and* `leg|end|a`.
+
+A word can be well formed and still be a typo — `finsita` is a real compound of `fin`
+and `sit` — so derivations are checked for real words one letter away too, ranked by
+how well the corpus attests them.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `text` | string | (required) | The text to gloss: a sentence, a paragraph, a passage |
+| `lang` | string | `"en"` | Language of `text`; `"eo"` audits an Esperanto draft instead |
+| `per_word` | number | `4` | Esperanto candidates listed per source word (1-10) |
+| `max_words` | number | `80` | Cap on distinct words reported |
 
 ## Testing
 
