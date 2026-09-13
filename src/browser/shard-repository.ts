@@ -11,6 +11,10 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 export interface BrowserLanguage { code: string; name: string; count: number }
 type MatchReason = BrowserSearchOutput["results"][number]["matchReasons"][number];
 type PendingReason = MatchReason & { key: string; rank: Rank };
+interface Ranking {
+  ranked: { mark: string; reasons: PendingReason[]; rank: Rank }[];
+  languageMatches: BrowserSearchOutput["languageMatches"];
+}
 
 function entryBucket(mark: string): string {
   let hash = 2166136261;
@@ -20,6 +24,7 @@ function entryBucket(mark: string): string {
 
 export class ShardRepository {
   private readonly cache = new Map<string, Promise<unknown>>();
+  private ranking?: { key: string; value: Promise<Ranking> };
 
   constructor(
     private readonly baseUrl: string,
@@ -66,11 +71,44 @@ export class ShardRepository {
 
   async search(input: BrowserSearchInput): Promise<BrowserSearchOutput> {
     const query = hasXSystem(input.query) ? fromXSystem(input.query) : input.query;
-    const normalized = normalizeQuery(query);
     // Esperanto is always searched; its position in the request only breaks ties.
     const requested = [...new Set(input.languages)];
     const order = requested.includes("eo") ? requested : ["eo", ...requested];
     const languages = order.filter((language) => language !== "eo");
+    const focus = input.matchLanguage;
+    // Paging asks for the same ranking page after page, so the latest one is kept.
+    const key = JSON.stringify([query, order, focus]);
+    if (this.ranking?.key !== key) {
+      const value = this.rank(query, order, focus);
+      this.ranking = { key, value };
+      value.catch(() => { if (this.ranking?.value === value) this.ranking = undefined; });
+    }
+    const { ranked, languageMatches } = await this.ranking.value;
+    const offset = input.offset ?? 0;
+
+    const results = await Promise.all(ranked.slice(offset, offset + input.limit).map(async ({ mark, reasons }) => {
+      const entry = await this.lookup(mark, languages);
+      // A result is named by the match it is ranked by: the narrowed
+      // language's, or else its strongest. Either way matchReasons[0] is the title.
+      const title = focus ? reasons.findIndex(({ language }) => language === focus) : 0;
+      const named = title > 0 ? [reasons[title], ...reasons.filter((_, index) => index !== title)] : reasons;
+      const matchReasons = named.map(({ key, rank: _rank, ...reason }): MatchReason => {
+        if (reason.language === "eo" || reason.text !== key) return reason;
+        // Direct rows only carry the folded key; restore ReVo's own spelling.
+        const translation = entry.translations.find(({ lng, trd }) =>
+          lng === reason.language && normalizeQuery(trd) === key
+        );
+        if (!translation) return reason;
+        return { ...reason, text: translation.trd, ...(reason.via ? { via: translation.trd } : {}) };
+      });
+      return { entry, matchReasons };
+    }));
+    return { query, languages, results, total: ranked.length, languageMatches };
+  }
+
+  /** Every match of the query, ranked, and how many entries each language matched. */
+  private async rank(query: string, order: string[], focus?: string): Promise<Ranking> {
+    const normalized = normalizeQuery(query);
     const matches = new Map<string, PendingReason[]>();
     const matched = new Map(order.map((language) => [language, new Set<string>()]));
 
@@ -112,10 +150,10 @@ export class ShardRepository {
         if (rows.length) addRows("eo", rows, "stem", candidate, index);
         found ||= rows.length > 0;
       });
-      if (!found) addRows("eo", prefixRows(eoRows, normalized, input.limit + 1), "prefix");
+      if (!found) addRows("eo", prefixRows(eoRows, normalized), "prefix");
     }
 
-    for (const language of languages) {
+    for (const language of order.filter((language) => language !== "eo")) {
       const rows = await this.index(language);
       const exact = exactRows(rows, normalized);
       if (exact.length) {
@@ -126,40 +164,17 @@ export class ShardRepository {
         .map((form) => ({ form, rows: exactRows(rows, normalizeQuery(form)) }))
         .find(({ rows }) => rows.length);
       if (reduction) addRows(language, reduction.rows, "translation-reduced", reduction.form);
-      else addRows(language, prefixRows(rows, normalized, input.limit + 1), "translation-prefix");
+      else addRows(language, prefixRows(rows, normalized), "translation-prefix");
     }
 
-    const focus = input.matchLanguage;
     const ranked = [...matches.entries()].flatMap(([mark, reasons]) => {
       reasons.sort((a, b) => compareRank(a.rank, b.rank));
       // A result narrowed to one language ranks by its match there alone.
       const lead = focus ? reasons.find(({ language }) => language === focus) : reasons[0];
       return lead ? [{ mark, reasons, rank: lead.rank }] : [];
-    }).sort((a, b) => compareRank(a.rank, b.rank)).slice(0, input.limit);
-
-    const results = await Promise.all(ranked.map(async ({ mark, reasons }) => {
-      const entry = await this.lookup(mark, languages);
-      // The narrowed language names the result; otherwise Esperanto does
-      // whenever it matched at all, or else the strongest match. Either way
-      // matchReasons[0] is the title.
-      const title = reasons.findIndex(({ language }) => language === (focus ?? "eo"));
-      if (title > 0) reasons.unshift(...reasons.splice(title, 1));
-      const matchReasons = reasons.map(({ key, rank: _rank, ...reason }): MatchReason => {
-        if (reason.language === "eo" || reason.text !== key) return reason;
-        // Direct rows only carry the folded key; restore ReVo's own spelling.
-        const translation = entry.translations.find(({ lng, trd }) =>
-          lng === reason.language && normalizeQuery(trd) === key
-        );
-        if (!translation) return reason;
-        return { ...reason, text: translation.trd, ...(reason.via ? { via: translation.trd } : {}) };
-      });
-      return { entry, matchReasons };
-    }));
-    const languageMatches = order.map((language) => {
-      const count = matched.get(language)!.size;
-      return { language, count: Math.min(count, input.limit), more: count > input.limit };
-    });
-    return { query, languages, results, languageMatches };
+    }).sort((a, b) => compareRank(a.rank, b.rank));
+    const languageMatches = order.map((language) => ({ language, count: matched.get(language)!.size }));
+    return { ranked, languageMatches };
   }
 }
 
@@ -185,19 +200,9 @@ function exactRows(rows: SearchRow[], key: string): [SearchRow, number][] {
   return found;
 }
 
-/** Prefix rows in corpus order, until they name `marks` distinct entries. */
-function prefixRows(rows: SearchRow[], prefix: string, marks: number): [SearchRow, number][] {
+function prefixRows(rows: SearchRow[], prefix: string): [SearchRow, number][] {
   const found: [SearchRow, number][] = [];
-  const seen = new Set<string>();
-  for (let position = 0; position < rows.length; position++) {
-    const [key, mark] = rows[position];
-    if (!key.startsWith(prefix)) continue;
-    if (!seen.has(mark)) {
-      if (seen.size === marks) break;
-      seen.add(mark);
-    }
-    found.push([rows[position], position]);
-  }
+  rows.forEach((row, position) => { if (row[0].startsWith(prefix)) found.push([row, position]); });
   return found;
 }
 

@@ -123,11 +123,12 @@ key. The reader also accepts schema 1 rows, which lack the expression.
 
 Search always includes Esperanto and ranks exact matches, then reduced or
 inflected forms, then literal prefixes; the request's language order breaks
-ties. A result's first match reason names it: Esperanto whenever it matched,
-otherwise the strongest match.
+ties. A result's first match reason names it: the strongest match, which is
+also the one the result is ranked by.
 
-`languageMatches` counts the entries each searched language matched, in request
-order; a count stops at `limit` and `more` says whether it had to. Passing
+Search never stops at a count: `total` gives every result it found, `limit` is
+the page size, and `offset` pages through them. `languageMatches` counts the
+entries each searched language matched, in request order. Passing
 `matchLanguage` keeps only the results that matched in that language, ranked by
 that match, which then also names each result. An entry that matched in several
 languages appears under each of them.

@@ -15,7 +15,7 @@ const entryOutputSchema = z.object({ entry: z.any() });
 export function createShardMcpServer(repository: ShardRepository): McpServer {
   const server = new McpServer({ name: "revo-vortaro-browser", version: "1.0.0" });
   server.registerTool("search", {
-    description: "Search Esperanto headwords and selected translation languages, counting each language's matches. Each result's first match reason names it: the matchLanguage when one narrows the search, else Esperanto when it matched, otherwise the strongest match in request order.",
+    description: "Search Esperanto headwords and selected translation languages, counting each language's matches and paging through every result with offset and limit. Each result's first match reason names it: the match it is ranked by, in the matchLanguage when one narrows the search, otherwise its strongest match.",
     inputSchema: browserSearchInputSchema,
     outputSchema: browserSearchOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },

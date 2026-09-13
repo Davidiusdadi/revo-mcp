@@ -65,9 +65,9 @@ describe("ShardRepository", () => {
     const result = await repository.search({ query: "nice", languages: ["de", "en", "fr"], limit: 10 });
     const city = result.results.find(({ entry }) => entry.headword === "Nico");
     const adjective = result.results.find(({ entry }) => entry.headword === "plaĉa");
-    // Esperanto names the city even though English matched it more strongly.
-    expect(city?.matchReasons[0]).toMatchObject({ language: "eo", text: "Nico" });
-    expect(city?.matchReasons.some(({ language, text }) => language === "en" && text === "Nice")).toBeTrue();
+    // English matched the city exactly and Esperanto only through a stem, so English names it.
+    expect(city?.matchReasons[0]).toMatchObject({ language: "en", text: "Nice", kind: "translation" });
+    expect(city?.matchReasons.some(({ language, text }) => language === "eo" && text === "Nico")).toBeTrue();
     expect(adjective?.matchReasons[0]).toMatchObject({ language: "en", text: "nice", kind: "translation" });
   });
 
@@ -83,6 +83,24 @@ describe("ShardRepository", () => {
     expect(titles(english)).toMatchObject({ Nico: "en Nice", plaĉa: "en nice" });
     expect(english.languageMatches).toEqual(esperanto.languageMatches);
     expect(english.languageMatches.map(({ language }) => language)).toEqual(["eo", "de", "en"]);
+  });
+
+  test("reaches a late language's matches that a first page leaves out", async () => {
+    const repository = new ShardRepository("https://dictionary.invalid/", localFetch as typeof fetch);
+    const languages = ["eo", "de", "en", "br"];
+    const combined = await repository.search({ query: "mal", languages, limit: 30 });
+    const breton = await repository.search({ query: "mal", languages, limit: 50, matchLanguage: "br" });
+    const count = (language: string) => combined.languageMatches.find((match) => match.language === language)!.count;
+    expect(count("eo")).toBeGreaterThan(30);
+    expect(breton.total).toBe(count("br"));
+    expect(breton.results).toHaveLength(count("br"));
+    // Every entry any language matched is somewhere in the combined ranking.
+    expect(combined.total).toBeGreaterThanOrEqual(Math.max(...languages.map(count)));
+    const last = await repository.search({ query: "mal", languages, limit: 50, offset: combined.total - 50 });
+    const lastMarks = new Set(last.results.map(({ entry }) => entry.mrk));
+    const bretonOnly = breton.results.filter(({ matchReasons }) => matchReasons.every(({ language }) => language === "br"));
+    expect(bretonOnly.length).toBeGreaterThan(0);
+    for (const { entry } of bretonOnly) expect(lastMarks.has(entry.mrk)).toBeTrue();
   });
 
   test("titles a source-language match in ReVo's spelling", async () => {
@@ -159,21 +177,30 @@ describe("ShardRepository ranking and shard rows", () => {
   test("counts each searched language's matches in request order", async () => {
     const result = await repository().search({ query: "palm", languages: ["de", "en", "fr"], limit: 5 });
     expect(result.languageMatches).toEqual([
-      { language: "eo", count: 0, more: false },
-      { language: "de", count: 1, more: false },
-      { language: "en", count: 1, more: false },
-      { language: "fr", count: 1, more: false },
+      { language: "eo", count: 0 },
+      { language: "de", count: 1 },
+      { language: "en", count: 1 },
+      { language: "fr", count: 1 },
     ]);
   });
 
-  test("marks a language whose matches run past the limit", async () => {
+  test("pages through every result, whatever the page size", async () => {
     for (const query of ["verteilen", "verteil"]) {
-      const capped = await repository().search({ query, languages: ["de"], limit: 1 });
-      expect(capped.results).toHaveLength(1);
-      expect(capped.languageMatches).toContainEqual({ language: "de", count: 1, more: true });
-      const complete = await repository().search({ query, languages: ["de"], limit: 2 });
-      expect(complete.languageMatches).toContainEqual({ language: "de", count: 2, more: false });
+      const pages = await Promise.all([0, 1, 2].map((offset) =>
+        repository().search({ query, languages: ["de"], limit: 1, offset })));
+      expect(pages.map(({ results }) => results.map(({ entry }) => entry.headword)))
+        .toEqual([["disdoni"], ["disigi"], []]);
+      for (const page of pages) {
+        expect(page.total).toBe(2);
+        expect(page.languageMatches).toContainEqual({ language: "de", count: 2 });
+      }
     }
+    // Pages of one search share a ranking, so they neither repeat nor skip a result.
+    const repo = repository();
+    const first = await repo.search({ query: "hand", languages: ["de", "en"], limit: 1 });
+    const second = await repo.search({ query: "hand", languages: ["de", "en"], limit: 1, offset: 1 });
+    expect([...first.results, ...second.results].map(({ entry }) => entry.headword)).toEqual(["brako", "mano"]);
+    expect(second.results[0].matchReasons[0]).toMatchObject({ language: "en", text: "hand" });
   });
 
   test("narrows results to one language, ranked and named by that match", async () => {
@@ -187,9 +214,10 @@ describe("ShardRepository ranking and shard rows", () => {
     expect(esperanto.results.map(({ entry }) => entry.headword)).toEqual(["mano"]);
     const unmatched = await repository().search({ query: "mano", languages: ["en"], limit: 5, matchLanguage: "en" });
     expect(unmatched.results).toEqual([]);
+    expect(unmatched.total).toBe(0);
     expect(unmatched.languageMatches).toEqual([
-      { language: "eo", count: 1, more: false },
-      { language: "en", count: 0, more: false },
+      { language: "eo", count: 1 },
+      { language: "en", count: 0 },
     ]);
   });
 });
