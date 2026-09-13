@@ -85,6 +85,14 @@ describe("segment", () => {
     expect(formatSegments(segment("hundoŝipo", ships)!).seg).toBe("hund|o|ŝip|o");
   });
 
+  test("a one-letter root is dearer than a two-letter one", () => {
+    // ŝipeliro: ŝip + e + lir (the lira) or ŝip + el + ir; the letter e is in
+    // the inventory because it has an article of its own
+    const roots = new Set([...inv.roots, "ŝip", "e", "el", "ir", "lir"]);
+    const pairs = new Map([["el+ir", 7]]);
+    expect(formatSegments(segment("ŝipeliro", { ...inv, roots, pairs })!).seg).toBe("ŝip|el|ir|o");
+  });
+
   test("compounds and the linking vowel", () => {
     expect(seg("ĉashundo")).toEqual({ seg: "ĉas|hund|o", kinds: "RRE" });
     expect(seg("vivodaŭro")).toEqual({ seg: "viv|o|daŭr|o", kinds: "RLRE" });

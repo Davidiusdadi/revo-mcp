@@ -117,6 +117,7 @@ export function pinFits(word: string, fixed: { at: number; root: string }): bool
 // the corpus marks; each term earned its place there, and a term that lowered
 // the score (a bigger length bonus, a penalty on proper-name roots, linking
 // a/e/i) was left out.
+const ONE_LETTER = 3; // a one-letter root (the letter's own article): ŝip|el|ir over ŝip|e|lir
 const LEN_BONUS = 0.005; // × len², so faj|rob|rig loses to fajr|o|brigad
 const DRV_BONUS = 0.02; // × ln(1 + derivations): mont over tar, by a hair
 const LINK = 0.25; // the linking o
@@ -152,7 +153,7 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
 
   const bonus = (s: string) => LEN_BONUS * s.length * s.length;
   const rootCost = (s: string) =>
-    (s.length <= 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
+    (s.length === 1 ? ONE_LETTER : s.length === 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
 
   for (let i = 0; i < n; i++) {
     if (best[i].size === 0) continue;

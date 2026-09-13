@@ -167,15 +167,23 @@ describe("gloss: Esperanto audit", () => {
   });
 
   test("drops a guess that needs a one-letter root", () => {
-    // ŝip|e|lir|o: "e" is a root in the inventory (the letter's own article),
-    // and a reading built on it is not one anybody meant
-    const t = classify(getDb(), "ŝipeliro", inventoryOf(getDb()));
+    // kelk|e|foj|e: "e" is in the inventory (the letter's own article), and a
+    // reading built on it is not one anybody meant
+    const t = classify(getDb(), "kelkefoje", inventoryOf(getDb()));
     expect(t.verdict).toBe("unknown");
     expect(t.seg).toBeUndefined();
     // whereas el|ir|ej|oj is a reading worth reporting
     const u = classify(getDb(), "elirejoj", inventoryOf(getDb()));
     expect(u.headword).toBe("elirejo");
     expect(u.seg).toBe("el|ir|ej|oj");
+  });
+
+  test("a one-letter root does not beat two short pieces the corpus writes together", () => {
+    // ŝip + eliro: the letter e plus lir (the lira) used to cost the same as
+    // el + ir and won, and the one-letter guard then left the word unknown
+    const t = classify(getDb(), "ŝipeliro", inventoryOf(getDb()));
+    expect(t.verdict).toBe("derived");
+    expect(t.seg).toBe("ŝip|el|ir|o");
   });
 
   test("a word the corpus has is split the way the corpus stored it", () => {
