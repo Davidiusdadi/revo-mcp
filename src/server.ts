@@ -9,6 +9,7 @@ import { searchInputSchema, searchOutputSchema, executeSearch } from "./tools/se
 import { glossInputSchema, handleGloss } from "./tools/gloss";
 import {
   getLanguages,
+  getHeadwordCount,
   lookupFamily,
   lookupThesaurus,
   searchDefinitions,
@@ -94,7 +95,10 @@ export function createMcpServer(): McpServer {
   }, async () => toolResponse("languages", {}, () => ({
     text: handleLanguages(),
     structuredContent: {
-      languages: getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count })),
+      languages: [
+        { code: "eo", name: "Esperanto", count: getHeadwordCount() },
+        ...getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count })),
+      ],
     },
   })));
 

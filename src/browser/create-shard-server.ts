@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { searchInputSchema, searchOutputSchema } from "../tools/search";
+import { browserSearchInputSchema, browserSearchOutputSchema } from "./search-schema";
 import type { ShardRepository } from "./shard-repository";
 
 const languagesOutputSchema = z.object({
@@ -15,9 +15,9 @@ const entryOutputSchema = z.object({ entry: z.any() });
 export function createShardMcpServer(repository: ShardRepository): McpServer {
   const server = new McpServer({ name: "revo-vortaro-browser", version: "1.0.0" });
   server.registerTool("search", {
-    description: "Search Esperanto headwords and selected translation languages.",
-    inputSchema: searchInputSchema,
-    outputSchema: searchOutputSchema,
+    description: "Search Esperanto headwords and selected translation languages, counting each language's matches. Each result's first match reason names it: the matchLanguage when one narrows the search, else Esperanto when it matched, otherwise the strongest match in request order.",
+    inputSchema: browserSearchInputSchema,
+    outputSchema: browserSearchOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
   }, async (args) => {
     const structuredContent = await repository.search(args);

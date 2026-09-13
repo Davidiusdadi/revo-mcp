@@ -16,6 +16,7 @@ export const matchReasonSchema = z.object({
   language: z.string(),
   text: z.string(),
   kind: z.string(),
+  via: z.string().optional(),
 });
 
 export const searchOutputSchema = z.object({

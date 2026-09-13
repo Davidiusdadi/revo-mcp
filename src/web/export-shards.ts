@@ -6,7 +6,7 @@ import { configureDatabase, getLanguages, lookupMarks, type LookupResult } from 
 import { languageName } from "../formatter";
 import { normalizeQuery } from "../stemmer";
 
-type SearchRow = [key: string, mark: string, label: string, indexed?: 1];
+type SearchRow = [key: string, mark: string, label: string, indexed?: 1, expression?: string];
 
 function entryBucket(mark: string): string {
   let hash = 2166136261;
@@ -29,11 +29,12 @@ function add(
   mark: string,
   label: string,
   indexed = false,
+  expression?: string,
 ): void {
   const normalized = normalizeQuery(key);
   if (!normalized) return;
   const rows = shards.get(language) ?? [];
-  rows.push(indexed ? [normalized, mark, label, 1] : [normalized, mark, label]);
+  rows.push(indexed ? [normalized, mark, label, 1, expression] : [normalized, mark, label]);
   shards.set(language, rows);
 }
 
@@ -63,8 +64,8 @@ export async function exportWebShards(inputArg: string, outputArg: string): Prom
   const marks = [...new Set(nodes.map(({ mrk }) => mrk))];
   for (const { mrk, kap } of nodes) add(shards, "eo", kap, mrk, kap);
 
-  const translations = database.query<{ lng: string; txt: string; mrk: string; kap: string; indexed: number }, []>(
-    `SELECT t.lng, COALESCE(t.ind,t.txt) AS txt, n.mrk_near AS mrk, k.txt AS kap,
+  const translations = database.query<{ lng: string; txt: string; expression: string; mrk: string; kap: string; indexed: number }, []>(
+    `SELECT t.lng, COALESCE(t.ind,t.txt) AS txt, t.txt AS expression, n.mrk_near AS mrk, k.txt AS kap,
             (t.ind IS NOT NULL) AS indexed
        FROM trd t JOIN node n ON n.id=t.node_id
        JOIN node d ON d.mrk=n.mrk_near JOIN kap k ON k.id=d.kap_id
@@ -72,7 +73,7 @@ export async function exportWebShards(inputArg: string, outputArg: string): Prom
       ORDER BY t.lng, txt`,
   );
   for (const row of translations.iterate()) {
-    add(shards, row.lng, row.txt, derivationMark(row.mrk), row.kap, row.indexed === 1);
+    add(shards, row.lng, row.txt, derivationMark(row.mrk), row.kap, row.indexed === 1, row.expression);
   }
 
   const entryBuckets: Record<string, Record<string, LookupResult>> = {};
@@ -96,10 +97,13 @@ export async function exportWebShards(inputArg: string, outputArg: string): Prom
     shardFiles[language] = `${language}.json`;
   }
 
-  const languages = getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count }));
+  const languages = [
+    { code: "eo", name: "Esperanto", count: marks.length },
+    ...getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count })),
+  ];
   await writeJson(`${output}/languages.json`, languages);
   await writeJson(`${output}/manifest.json`, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     corpusRevision: meta.source_revision ?? meta.revision ?? "local",
     source: {
       name: "Reta Vortaro",

@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { MessagePortTransport } from "./message-port-transport";
 import type { RevoWorkerEvent, RevoWorkerInit } from "./protocol";
-import type { SearchInput, SearchOutput } from "../tools/search";
+import type { BrowserSearchInput, BrowserSearchOutput } from "./search-schema";
 
 export interface RevoWorkerLike {
   postMessage(message: unknown, transfer: Transferable[]): void;
@@ -49,10 +49,10 @@ export class RevoBrowserClient {
     return browserClient;
   }
 
-  async search(input: SearchInput): Promise<SearchOutput> {
+  async search(input: BrowserSearchInput): Promise<BrowserSearchOutput> {
     const result = await this.client.callTool({ name: "search", arguments: input });
     if (result.isError) throw new Error((result.content as any[])?.[0]?.text ?? "ReVo search failed.");
-    return result.structuredContent as SearchOutput;
+    return result.structuredContent as BrowserSearchOutput;
   }
 
   async languages(): Promise<{ code: string; name: string; count: number }[]> {

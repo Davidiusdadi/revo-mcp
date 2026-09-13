@@ -112,9 +112,25 @@ bun run browser:build --out ./dist/revo/revo-worker.js
 
 The export contains:
 
-- `manifest.json` and `languages.json` for discovery and attribution metadata
-- one search index per translation language under `index/`
+- `manifest.json` and `languages.json` for discovery and attribution metadata;
+  the catalog lists Esperanto first, counted in headwords
+- one search index for Esperanto and one per translation language under `index/`
 - 256 deterministic entry buckets under `entries/`
+
+Schema 2 index rows are `[key, mark, label]`, or
+`[key, mark, label, 1, expression]` for a translation filed under an `<ind>`
+key. The reader also accepts schema 1 rows, which lack the expression.
+
+Search always includes Esperanto and ranks exact matches, then reduced or
+inflected forms, then literal prefixes; the request's language order breaks
+ties. A result's first match reason names it: Esperanto whenever it matched,
+otherwise the strongest match.
+
+`languageMatches` counts the entries each searched language matched, in request
+order; a count stops at `limit` and `more` says whether it had to. Passing
+`matchLanguage` keeps only the results that matched in that language, ranked by
+that match, which then also names each result. An entry that matched in several
+languages appears under each of them.
 
 Applications can precache the Worker, manifest, language metadata, and selected
 language indexes, then runtime-cache entry buckets as users open definitions.

@@ -715,6 +715,13 @@ export function getLanguages(): { lng: string; count: number }[] {
     .all();
 }
 
+export function getHeadwordCount(): number {
+  return getDb().query<{ count: number }, []>(
+    `SELECT COUNT(DISTINCT mrk) AS count FROM nodo
+      WHERE mrk IS NOT NULL AND instr(mrk, '.') > 0 AND mrk NOT GLOB '*.*.*'`
+  ).get()?.count ?? 0;
+}
+
 export interface ExampleHit {
   art: string;
   drvMrk: string;
