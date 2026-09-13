@@ -23,6 +23,7 @@
 import type { SqlReader } from "./sql";
 import { fromXSystem, normalizeQuery } from "./stemmer";
 import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "./morph";
+import { sourceFormAttempts } from "./source-forms";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -149,18 +150,6 @@ const FUNCTION_WORDS: Record<string, ReadonlySet<string>> = {
     "wurde", "wurden", "kann", "können", "soll", "sollen", "muss", "müssen", "nicht", "kein", "keine", "es",
     "er", "ihn", "ihm", "sie", "ihr", "ihre", "wir", "uns", "ich", "mich", "mir", "du", "dich", "dir",
     "dieser", "diese", "dieses", "da", "dann", "so", "auch", "sehr", "nur", "noch", "schon", "man", "sich"]),
-};
-
-/**
- * Regular reductions to try when the word as written is not in the dictionary.
- * A wrong guess simply fails to match, so these stay deliberately plain; the
- * form that hit is reported, never silently substituted.
- */
-const REDUCTIONS: Record<string, readonly (readonly [RegExp, string])[]> = {
-  en: [[/ies$/, "y"], [/ves$/, "f"], [/ves$/, "fe"], [/([sxz]|ch|sh)es$/, "$1"], [/s$/, ""],
-    [/([bdgklmnprt])\1(ed|ing)$/, "$1"], [/ied$/, "y"], [/ed$/, ""], [/ed$/, "e"],
-    [/ing$/, ""], [/ing$/, "e"], [/est$/, ""], [/er$/, ""], [/ly$/, ""], [/n$/, ""]],
-  de: [[/nen$/, "n"], [/en$/, ""], [/ern$/, "er"], [/es$/, ""], [/er$/, ""], [/e$/, ""], [/n$/, ""], [/s$/, ""]],
 };
 
 // ---------------------------------------------------------------------------
@@ -305,25 +294,6 @@ function trdByForm(db: SqlReader, lang: string, forms: string[]): TrdRow[] {
     .all(...([lang, ...forms] as unknown as []));
 }
 
-/** Case variants to try before any reduction: as written, lowercased, capitalised. */
-function caseForms(term: string): string[] {
-  const lower = term.toLowerCase();
-  const title = lower.charAt(0).toUpperCase() + lower.slice(1);
-  return [...new Set([term, lower, title])];
-}
-
-function reductionsOf(term: string, lang: string): string[] {
-  const rules = REDUCTIONS[lang] ?? [];
-  const out: string[] = [];
-  const lower = term.toLowerCase();
-  for (const [re, rep] of rules) {
-    if (!re.test(lower)) continue;
-    const form = lower.replace(re, rep);
-    if (form.length >= 3 && form !== lower && !out.includes(form)) out.push(form);
-  }
-  return out;
-}
-
 /**
  * Candidates for one term: the word as written first, then regular reductions
  * until something hits. Direct translations lead, sub-sense ones follow, so
@@ -333,10 +303,7 @@ function reductionsOf(term: string, lang: string): string[] {
 function candidatesFor(
   db: SqlReader, lang: string, term: string, perTerm: number
 ): { candidates: Candidate[]; more: number; via?: string } | null {
-  const tries: { forms: string[]; via?: string }[] = [{ forms: caseForms(term) }];
-  for (const f of reductionsOf(term, lang)) tries.push({ forms: caseForms(f), via: f });
-
-  for (const t of tries) {
+  for (const t of sourceFormAttempts(term, lang)) {
     const rows = trdByForm(db, lang, t.forms);
     if (rows.length === 0) continue;
     const wanted = new Set(t.forms.map((f) => f.toLowerCase()));
