@@ -25,10 +25,11 @@ beforeAll(() => {
     script,
     `import { configureBunDatabase } from ${JSON.stringify(join(ROOT, "src", "runtime", "bun-database.ts"))};
      import { getDb } from ${JSON.stringify(join(ROOT, "src", "db.ts"))};
-     configureBunDatabase();
      const say = (f: () => unknown) => {
        try { f(); return "no error"; } catch (e) { return (e as Error).message; }
      };
+     // configureBunDatabase opens the connection eagerly, so it is the first to be refused.
+     say(configureBunDatabase);
      console.log(JSON.stringify({ first: say(getDb), second: say(getDb) }));\n`
   );
 
