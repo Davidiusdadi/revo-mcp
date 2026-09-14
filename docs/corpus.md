@@ -76,7 +76,7 @@ scripts/eval-stemming.ts     stemming recall on attested tilde forms (bun run co
 - `<art mrk>` is a CVS `$Id:` stamp, not an ID. Article key = file name;
   `parseArtId()` yields revision and date.
 - ~10k of 40.4k `<snc>` have no `mrk`; `subart` (194) and `subdrv` exist.
-- The submodule is pinned to the fork's `master` (`d18ad4f`): upstream `c088349`
+- The submodule is pinned to the fork's `master` (`f6da172`): upstream `c088349`
   (2026-09-11) plus the fork's own corrections, which are also submitted to ReVo
   through its edit service. The parity run below was measured at the earlier
   `b15014fc` (2026-02-28), the snapshot `data/revo.db` was built from, so that
