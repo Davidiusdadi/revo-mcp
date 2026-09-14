@@ -30,6 +30,7 @@ import { fromXSystem, normalizeQuery } from "./stemmer";
 import {
   lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph, type MorphKind,
 } from "./morph";
+import { wordClasses } from "./corpus/passes/morph";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -208,7 +209,7 @@ export function inventoryOf(db: Database): Inventory {
   }
   const pairs = new Map<string, number>();
   for (const p of db.query<{ a: string; b: string; n: number }, []>("SELECT a, b, n FROM x_pair").iterate()) pairs.set(`${p.a}+${p.b}`, p.n);
-  const inv: Inventory = { roots: sets.R, prefixes: sets.P, suffixes: sets.S, words: sets.W, pairs, rootWeight };
+  const inv: Inventory = { roots: sets.R, prefixes: sets.P, suffixes: sets.S, words: sets.W, pairs, rootWeight, classes: wordClasses(db) };
   invCache.set(db, inv);
   return inv;
 }

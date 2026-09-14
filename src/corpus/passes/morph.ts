@@ -18,7 +18,7 @@
  */
 import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
-import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph } from "../../morph";
+import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph, type WordClass } from "../../morph";
 
 const WORD = /\p{L}+/gu;
 /** Articles for grammatical endings, not word-building affixes. */
@@ -26,7 +26,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 8,
+  version: 9,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -98,7 +98,25 @@ export function buildInventory(db: Database): Built {
      WHERE n.kind IN ('drv','subdrv') AND k.tilde = '~'`).iterate()) {
     if (/^\p{L}+$/u.test(k.norm)) words.add(k.norm);
   }
-  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight };
+  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, classes: wordClasses(db) };
+}
+
+/**
+ * Word class per root, read off the headwords that are the root plus one
+ * vowel: the article's own kap ("hund/o") and derivations written "~o", "~a",
+ * "~e", "~i". No segmentation involved, so the tools can read it the same way
+ * from a built corpus.
+ */
+export function wordClasses(db: Database): Map<string, WordClass> {
+  const out = new Map<string, WordClass>();
+  for (const r of db.query<{ rad: string; v: keyof WordClass }, []>(
+    `SELECT lower(a.rad) rad, substr(k.tilde, -1) v FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
+     WHERE k.tilde IN ('~o','~a','~e','~i') OR lower(k.tilde) IN (lower(a.rad)||'/o', lower(a.rad)||'/a', lower(a.rad)||'/e', lower(a.rad)||'/i')`).iterate()) {
+    const c = out.get(r.rad) ?? { o: 0, a: 0, e: 0, i: 0 };
+    c[r.v]++;
+    out.set(r.rad, c);
+  }
+  return out;
 }
 
 function writeInventory(db: Database, inv: Built): number {

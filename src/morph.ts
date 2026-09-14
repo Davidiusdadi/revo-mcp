@@ -11,6 +11,8 @@
  *   `<tld/>`) can be fixed.
  */
 
+import { SEGMENT_WEIGHTS } from "./morph-weights";
+
 export interface Candidate {
   lemma: string;
   /** infl: inflection removed · class: same stem, another word class · ptcp: participle → its verb */
@@ -82,6 +84,19 @@ export interface Inventory {
   pairs?: ReadonlyMap<string, number>;
   /** Derivations per root in the corpus; a root with many is a little cheaper. */
   rootWeight?: ReadonlyMap<string, number>;
+  /**
+   * Word class of a root: how many of its headwords are the root plus o, a, e
+   * or i (hund|o, bel|a, ir|i). The learned scorer asks whether the ending or
+   * suffix a reading puts after a root suits it. Optional.
+   */
+  classes?: ReadonlyMap<string, WordClass>;
+}
+
+export interface WordClass {
+  o: number;
+  a: number;
+  e: number;
+  i: number;
 }
 
 export const ENDINGS: ReadonlySet<string> = new Set([
@@ -128,26 +143,51 @@ const LINK = 0.25; // an ending kept inside the word: the linking o, a/e, n afte
 const WORD_LATE = 2; // an endingless word (ĝis) as anything but the first piece
 const PAIR_BONUS = 0.25; // × ln(1 + n) for a pair the corpus writes
 const PAIR_UNSEEN = 0.5; // for a pair it never writes
-// Late choice among the near-best readings (only with pair evidence): the
-// weakest short root decides. A 2–4 letter root with few derivations is the
-// usual sign of a wrong cut: griz|ef|lav|a against griz|e|flav|a,
-// sup|ren|ir|i against supr|en|ir|i.
-const KEEP = 8; // readings kept per search state
-const LATE_WINDOW = 2; // how far above the cheapest reading a reading may cost
-const LATE_MAXLEN = 4; // longer roots are not judged
-const LATE_DRV = 4; // a root with this many derivations or more is not weak
-const LATE_WEIGHT = 2; // × (ln(1 + LATE_DRV) − ln(1 + derivations))
+const KEEP = 8; // readings kept per search state (with pair evidence)
+const MAX_READINGS = 16; // distinct finished readings handed to the scorer
+
+/** A split and its hand cost (the sum of the costs above). */
+export interface Reading {
+  ms: Morph[];
+  cost: number;
+}
 
 /**
- * Cheapest split of `word` into morphemes; null if the inventory can't cover
- * it. Each piece costs about one, less for a long one and for a root with many
- * derivations, more for a 1–2 letter root or word, a prefix after a root, an
- * endingless word inside the word; so "mal|san|ul|ej|o" beats readings with
- * more or shorter pieces. With `inv.pairs`, two neighbouring pieces the corpus
- * writes together (dis+port) are cheaper and two it never joins dearer, which
- * is why the search keeps the last piece in its state. Affix articles are
- * roots too (ulo, ejo), so an affix reading is priced just below the root
- * reading of the same string. `fixed` pins a root at a known offset.
+ * Split of `word` into morphemes; null if the inventory can't cover it.
+ *
+ * Without `inv.pairs` (the build's first pass) this is the cheapest reading by
+ * the hand costs of `readings()`. With pairs, the learned scorer picks among
+ * the cheapest readings (see `scoreReading`). Table words (kiu, tiajn, nenion)
+ * and the endingless words of the inventory (en, aj) are a closed set and keep
+ * the cheapest reading, which is the whole word or what ReVo files (neni|o):
+ * the scorer is trained on words with a marked root, never on these, and would
+ * read en as e|n.
+ */
+export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
+  const rs = readings(word, inv, fixed);
+  if (rs.length === 0) return null;
+  const w = word.toLowerCase();
+  if (rs.length === 1 || CORRELATIVE.test(w) || inv.words.has(w)) return rs[0].ms;
+  let pick = rs[0];
+  let low = Infinity;
+  for (const r of rs) {
+    const s = scoreReading(r, rs[0].cost, inv);
+    if (s < low - 1e-9) [pick, low] = [r, s];
+  }
+  return pick.ms;
+}
+
+/**
+ * Readings of `word` by hand cost, cheapest first; empty if the inventory
+ * can't cover it. Each piece costs about one, less for a long one and for a
+ * root with many derivations, more for a 1–2 letter root or word, a prefix
+ * after a root, an endingless word inside the word; so "mal|san|ul|ej|o" beats
+ * readings with more or shorter pieces. With `inv.pairs`, two neighbouring
+ * pieces the corpus writes together (dis+port) are cheaper and two it never
+ * joins dearer, which is why the search keeps the last piece in its state.
+ * Affix articles are roots too (ulo, ejo), so an affix reading is priced just
+ * below the root reading of the same string. `fixed` pins a root at a known
+ * offset.
  *
  * A piece may keep its ending inside a compound: the linking o always
  * (hund|o|ŝip|o), n after an endingless word (ĉio|n|pov|a, si|n|defend|o),
@@ -155,16 +195,14 @@ const LATE_WEIGHT = 2; // × (ln(1 + LATE_DRV) − ln(1 + derivations))
  * those only before a root the corpus writes after that vowel, or brit|e|lir|o
  * (the lira) would undercut brit|el|ir|o.
  *
- * With `inv.pairs` the search keeps the few cheapest readings, not just one,
- * and picks among those close to the cheapest the one whose weakest short root
- * has the most derivations (see LATE_WEIGHT). A root that is also an
- * endingless word (ĉiu, tiu) is not judged. Without pairs (the build's first
- * pass) it is the plain cheapest split.
+ * Without pairs only the cheapest reading is kept (one per search state);
+ * with pairs the eight cheapest per state, and up to 16 distinct readings
+ * come out.
  */
-export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
+export function readings(word: string, inv: Inventory, fixed?: { at: number; root: string }): Reading[] {
   const w = word.toLowerCase();
   const n = w.length;
-  if (n === 0) return null;
+  if (n === 0) return [];
   const keep = inv.pairs ? KEEP : 1;
   // the cheapest cells per (position, phase, last morpheme): the pair term needs the last piece
   const best: Map<string, Cell[]>[] = Array.from({ length: n + 1 }, () => new Map());
@@ -244,7 +282,6 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
     if (key[0] !== "4" && key[0] !== "3") continue;
     cells.forEach((c, idx) => ends.push({ key, idx, cost: c.cost }));
   }
-  if (!ends.length) return null;
   ends.sort((a, b) => a.cost - b.cost || (a.key[0] === b.key[0] ? 0 : a.key[0] === "4" ? -1 : 1));
   const trace = (key: string, idx: number): Morph[] => {
     const out: Morph[] = [];
@@ -255,29 +292,129 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
     }
     return out.reverse();
   };
-  if (keep === 1) return trace(ends[0].key, ends[0].idx);
-
-  const weak = (ms: Morph[]) => {
-    let least = Infinity;
-    for (const m of ms) {
-      if (m.k !== "R" || m.m.length < 2 || m.m.length > LATE_MAXLEN || inv.words.has(m.m)) continue;
-      least = Math.min(least, rootWeight?.get(m.m) ?? 0);
-    }
-    return least === Infinity ? 0 : LATE_WEIGHT * Math.max(0, Math.log1p(LATE_DRV) - Math.log1p(least));
-  };
-  let pick: Morph[] | null = null;
-  let pickScore = Infinity;
+  const out: Reading[] = [];
   const seen = new Set<string>();
   for (const e of ends) {
-    if (e.cost > ends[0].cost + LATE_WINDOW || seen.size >= KEEP) break;
+    if (out.length >= (keep === 1 ? 1 : MAX_READINGS)) break;
     const ms = trace(e.key, e.idx);
     const id = ms.map((m) => m.m + m.k).join("|");
     if (seen.has(id)) continue;
     seen.add(id);
-    const score = e.cost + weak(ms);
-    if (score < pickScore - 1e-9) [pick, pickScore] = [ms, score];
+    out.push({ ms, cost: e.cost });
   }
-  return pick;
+  return out;
+}
+
+// ---- learned scorer ----------------------------------------------------------
+//
+// The hand costs above get the root right for about 99.3 % of unseen words;
+// most of what is left is a near tie between readings the costs cannot tell
+// apart: di|sport|i against dis|port|i, flan|ken|ir|i against flank|en|ir|i.
+// The scorer looks at the readings `readings()` finishes with and describes
+// each by the features below; the reading with the lowest weighted sum wins.
+// The weights (src/morph-weights.ts) are fitted by scripts/train-segment.ts on
+// the "tune" third of the words ReVo marks with <tld/>, so that for each word
+// the readings that put the marked root in the right place get the most
+// probability (a log-linear model: P(reading) ∝ exp(−score)).
+//
+// To try a feature: add it here, run `bun run corpus:train-segment` (rewrites
+// the weights and prints the tune misses), then `bun run corpus:eval-segment`
+// (the report third, which training never sees) and compare the stored splits
+// of a rebuilt corpus. A feature the weights file does not name scores 0.
+
+/** Table words (correlatives): ki-, ti-, i-, ĉi-, neni- × a, al, am, e, el, es, o, om, u, with j, n, jn. */
+const CORRELATIVE = /^(ki|ti|i|ĉi|neni)(a|al|am|e|el|es|o|om|u)(j|n|jn)?$/;
+/** Suffixes that make or need a verb (a participle, -ig, -ebl …): they suit a root of class i. */
+const VERBAL: ReadonlySet<string> = new Set(["ant", "int", "ont", "at", "it", "ot", "ad", "ig", "iĝ", "ebl", "ind", "end", "em", "ist"]);
+/** The word class an ending belongs to. */
+const ENDING_CLASS: Record<string, keyof WordClass> = {
+  o: "o", oj: "o", on: "o", ojn: "o", a: "a", aj: "a", an: "a", ajn: "a", e: "e", en: "e",
+  i: "i", as: "i", is: "i", os: "i", us: "i", u: "i",
+};
+
+/**
+ * The features of one reading, by name. `best` is the hand cost of the
+ * cheapest reading of the same word.
+ *
+ * - `cost`: hand cost above the cheapest reading.
+ * - `n_P` … `n_W`: pieces per kind; `len2`: Σ length²/10 over the non-endings.
+ * - roots: `R_len1` … `R_len5` (5 = five or more letters); `R_logdrv`
+ *   ln(1 + derivations); `R_drv01` a root with at most one derivation;
+ *   `R_isprefix` / `R_issuffix` / `R_isword` a root that is also an affix or
+ *   an endingless word; `R_noclass` a root with no headword of its own class.
+ * - `weak`: ln 5 − ln(1 + derivations) of the least-derived 2–4 letter root
+ *   that is not also an endingless word (0 if none, or ≥ 4 derivations).
+ * - word class: `E_classfit` / `L_classfit` ln share of the root's headwords
+ *   in the class of the ending or inner vowel after it (smoothed);
+ *   `S_verbfit` the same for class i before a verbal suffix.
+ * - affixes: `P=dis`, `S=ist` … one feature per prefix / suffix, so each can
+ *   be likelier or less likely than its letters suggest (di is rarely a
+ *   prefix, dis often); `S_len1` … `S_len3`; `P_late` a prefix after a root.
+ * - `L_o`, `L_a`, `L_e`, `L_i`, `L_n`: an inner ending of that letter.
+ * - `W_late` an endingless word after the first piece; `W_short` one of ≤ 2 letters.
+ * - neighbours (as the hand cost sees them): `pair_seen` / `pair_unseen`
+ *   count pairs the corpus writes / never writes, `pair_log` Σ ln(1 + n).
+ */
+export function readingFeatures(r: Reading, best: number, inv: Inventory): Map<string, number> {
+  const f = new Map<string, number>();
+  const inc = (k: string, v = 1) => f.set(k, (f.get(k) ?? 0) + v);
+  f.set("cost", r.cost - best);
+  const classFit = (root: string, v: keyof WordClass) => {
+    const c = inv.classes?.get(root);
+    const all = c ? c.o + c.a + c.e + c.i : 0;
+    return Math.log(((c?.[v] ?? 0) + 0.5) / (all + 2));
+  };
+  let weakest = Infinity;
+  const ms = r.ms;
+  ms.forEach((m, i) => {
+    const prev = ms[i - 1];
+    const next = ms[i + 1];
+    inc("n_" + m.k);
+    if (m.k !== "E") inc("len2", (m.m.length * m.m.length) / 10);
+    if (m.k === "R") {
+      const d = inv.rootWeight?.get(m.m) ?? 0;
+      inc("R_len" + Math.min(m.m.length, 5));
+      inc("R_logdrv", Math.log1p(d));
+      if (d <= 1) inc("R_drv01");
+      if (m.m.length >= 2 && m.m.length <= 4 && !inv.words.has(m.m)) weakest = Math.min(weakest, d);
+      if (inv.prefixes.has(m.m)) inc("R_isprefix");
+      if (inv.suffixes.has(m.m)) inc("R_issuffix");
+      if (inv.words.has(m.m)) inc("R_isword");
+      if (!inv.classes?.has(m.m)) inc("R_noclass");
+      if (next?.k === "E" && ENDING_CLASS[next.m]) inc("E_classfit", classFit(m.m, ENDING_CLASS[next.m]));
+      if (next?.k === "L" && next.m !== "n") inc("L_classfit", classFit(m.m, next.m as keyof WordClass));
+      if (next?.k === "S" && VERBAL.has(next.m)) inc("S_verbfit", classFit(m.m, "i"));
+    }
+    if (m.k === "W") {
+      if (i > 0) inc("W_late");
+      if (m.m.length <= 2) inc("W_short");
+    }
+    if (m.k === "P") {
+      inc("P=" + m.m);
+      if (prev && prev.k !== "P") inc("P_late");
+    }
+    if (m.k === "S") {
+      inc("S=" + m.m);
+      inc("S_len" + Math.min(m.m.length, 3));
+    }
+    if (m.k === "L") inc("L_" + m.m);
+    if (inv.pairs && prev && prev.k !== "E" && m.k !== "E") {
+      const n = inv.pairs.get(`${prev.m}+${m.m}`);
+      if (n) {
+        inc("pair_seen");
+        inc("pair_log", Math.log1p(n));
+      } else inc("pair_unseen");
+    }
+  });
+  f.set("weak", weakest === Infinity ? 0 : Math.max(0, Math.log1p(4) - Math.log1p(weakest)));
+  return f;
+}
+
+/** The learned score of a reading: Σ weight × feature (lower is better). */
+export function scoreReading(r: Reading, best: number, inv: Inventory, weights: Readonly<Record<string, number>> = SEGMENT_WEIGHTS): number {
+  let s = 0;
+  for (const [k, v] of readingFeatures(r, best, inv)) s += (weights[k] ?? 0) * v;
+  return s;
 }
 
 /** "mal|san|ul|ej|o" and "PRSSE" */

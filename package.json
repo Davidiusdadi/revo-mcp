@@ -17,7 +17,8 @@
     "corpus:build": "bun run src/corpus/build.ts",
     "corpus:validate": "bun run scripts/compare-db.ts",
     "corpus:eval": "bun run scripts/eval-stemming.ts",
-    "corpus:eval-segment": "bun run scripts/eval-segment.ts"
+    "corpus:eval-segment": "bun run scripts/eval-segment.ts",
+    "corpus:train-segment": "bun run scripts/train-segment.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

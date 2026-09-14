@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "../src/morph";
+import { lemmaCandidates, segment, readings, formatSegments, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
@@ -71,27 +71,43 @@ describe("segment", () => {
 
   test("pair evidence decides between two readings the inventory allows", () => {
     // montaro: mont|ar|o (mountain range) or mon|tar|o (money + tare); both are
-    // roots, and on their own the two splits cost the same
+    // roots, and on their own the two splits cost the same. This is the hand
+    // cost order; the learned scorer in segment() weighs pairs among other things
     const both: Inventory = { ...inv, roots: new Set([...inv.roots, "mont", "mon", "tar"]), suffixes: new Set([...inv.suffixes, "ar"]) };
-    const seg = (pairs: Map<string, number>) => formatSegments(segment("montaro", { ...both, pairs })!).seg;
+    const seg = (pairs: Map<string, number>) => formatSegments(readings("montaro", { ...both, pairs })[0].ms).seg;
     expect(seg(new Map([["mont+ar", 3]]))).toBe("mont|ar|o");
     expect(seg(new Map([["mon+tar", 3]]))).toBe("mon|tar|o");
   });
 
-  test("among near-equal readings, a short root with few derivations loses", () => {
-    // flankeniri: flan|ken|ir|i costs about as much as flank|en|ir|i, but flan
-    // and ken have one derivation each, flank has 27 (counts as in ReVo)
-    const sides: Inventory = {
+  test("the learned scorer picks among the cheapest readings", () => {
+    // filmfarado: film|farad|o (the farad, a unit) is the cheaper split, but a
+    // five-letter root with 3 derivations loses to far (60) + the suffix ad
+    // after it, a pair the corpus writes (counts as in ReVo)
+    const films: Inventory = {
       ...inv,
-      roots: new Set([...inv.roots, "flan", "ken", "flank", "ir", "en"]),
-      prefixes: new Set([...inv.prefixes, "en"]),
-      pairs: new Map([["en+ir", 9], ["flank+en", 1], ["ken+ir", 2]]),
-      rootWeight: new Map([["flan", 1], ["ken", 1], ["flank", 27], ["ir", 55], ["en", 12]]),
+      roots: new Set(["film", "far", "farad"]),
+      suffixes: new Set(["ad"]),
+      pairs: new Map([["far+ad", 9]]),
+      rootWeight: new Map([["film", 10], ["far", 60], ["farad", 2]]),
     };
-    expect(formatSegments(segment("flankeniri", sides)!).seg).toBe("flank|en|ir|i");
-    // the same split with well-used short roots stays as the costs have it
-    const rich = new Map([...sides.rootWeight!, ["flan", 30], ["ken", 30]]);
-    expect(formatSegments(segment("flankeniri", { ...sides, rootWeight: rich })!).seg).toBe("flan|ken|ir|i");
+    expect(readings("filmfarado", films)[0].ms.map((m) => m.m).join("|")).toBe("film|farad|o");
+    expect(formatSegments(segment("filmfarado", films)!).seg).toBe("film|far|ad|o");
+    // sangalfluo: san|gal|flu|o, three roots, costs less than sang|al|flu|o
+    const blood: Inventory = {
+      ...inv,
+      roots: new Set(["sang", "san", "gal", "flu", "al"]),
+      prefixes: new Set(["al"]),
+      pairs: new Map([["al+flu", 3]]),
+      rootWeight: new Map([["sang", 20], ["san", 30], ["gal", 3], ["flu", 25], ["al", 1]]),
+    };
+    expect(formatSegments(segment("sangalfluo", blood)!).kinds).toBe("RPRE");
+  });
+
+  test("an endingless word keeps its own reading", () => {
+    // en is an endingless word, and so is e (the letter); e + the ending n is
+    // not a reading of the preposition, whatever the scorer would make of it
+    const letters: Inventory = { ...inv, words: new Set(["e", "en"]), pairs: new Map([["mal+san", 1]]) };
+    expect(formatSegments(segment("en", letters)!)).toEqual({ seg: "en", kinds: "W" });
   });
 
   test("a pair the corpus never writes is dearer, not forbidden", () => {
