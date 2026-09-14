@@ -25,7 +25,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 5,
+  version: 6,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -110,14 +110,17 @@ function writeInventory(db: Database, inv: Built): number {
  * before "port", "ist" after it. Only those two neighbours, because the rest
  * of a pinned split is the segmenter's own guess, and its guesses must not
  * become its evidence (a wrong "mon|tar" in montarĉeno would teach it to split
- * montaro the same way). A derivation and its inflections count once.
+ * montaro the same way). A derivation and its inflections count once per
+ * marked root.
  */
 export class Pairs {
   readonly counts = new Map<string, number>();
   private readonly seen = new Set<string>();
   add(ms: Morph[], at: number) {
     const core = ms.filter((m) => m.k !== "E");
-    const stem = core.map((m) => m.m).join("|");
+    // one count per derivation and pin: artefarita is filed under art and
+    // under far, and each mark vouches for its own neighbours (art+e, e+far)
+    const stem = `${core.map((m) => m.m).join("|")}@${at}`;
     if (this.seen.has(stem)) return;
     this.seen.add(stem);
     let off = 0;

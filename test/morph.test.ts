@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { lemmaCandidates, segment, formatSegments, type Inventory } from "../src/morph";
+import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "../src/morph";
+import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
 const lemmas = (w: string) => lemmaCandidates(w).map((c) => c.lemma);
@@ -147,5 +148,20 @@ describe("segment", () => {
   test("uncoverable words give null", () => {
     expect(seg("xyzo")).toBeNull();
     expect(seg("")).toBeNull();
+  });
+});
+
+describe("Pairs", () => {
+  test("each marked root vouches for its own neighbours", () => {
+    // artefarita is filed under art and under far: the same split, two marks
+    const ms: Morph[] = [{ m: "art", k: "R" }, { m: "e", k: "L" }, { m: "far", k: "R" }, { m: "it", k: "S" }, { m: "a", k: "E" }];
+    const pairs = new Pairs();
+    pairs.add(ms, 0);
+    pairs.add(ms, 4);
+    expect(pairs.counts.get("art+e")).toBe(1);
+    expect(pairs.counts.get("e+far")).toBe(1);
+    // an inflection of the same derivation, same mark: counted once
+    pairs.add([...ms.slice(0, 4), { m: "aj", k: "E" }], 4);
+    expect(pairs.counts.get("e+far")).toBe(1);
   });
 });
