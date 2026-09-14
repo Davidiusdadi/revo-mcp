@@ -11,9 +11,10 @@ import { join } from "path";
 import { buildL2, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
 import { TOKEN_GROUPS } from "../src/corpus/passes/morph";
-import { sensesOf, thesaurusOf, searchDefinitions } from "../src/db-voko";
+import { articlesOf } from "../src/corpus/sources";
+import { entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
-import { parse, descendants } from "voko-xml";
+import { descendants } from "voko-xml";
 
 let dir: string;
 let db: Database;
@@ -39,6 +40,10 @@ afterAll(() => {
 
 const one = <T>(sql: string, ...params: unknown[]) => db.query(sql).get(...(params as [])) as T;
 const all = <T>(sql: string, ...params: unknown[]) => db.query(sql).all(...(params as [])) as T[];
+const sensesOf = (mrk: string) => {
+  const entry = entryNodeByMark(db as never, mrk);
+  return entry ? sensesAt(db as never, entry) : [];
+};
 
 describe("corpus build", () => {
   test("meta describes the build", () => {
@@ -52,10 +57,14 @@ describe("corpus build", () => {
     const art = one<{ id: number; rad: string; rev: string }>("SELECT id, rad, rev FROM art WHERE file='abel'");
     expect(art.rad).toBe("abel");
     expect(art.rev).toMatch(/^\d+\.\d+$/);
-    const drvs = all<{ mrk: string; key: string; mrk_near: string }>(
-      "SELECT mrk, key, mrk_near FROM node WHERE art_id=? AND kind='drv' ORDER BY ord", art.id);
-    expect(drvs[0].key).toBe("abel/drv[0]");
+    const drvs = all<{ mrk: string; ord: number; mrk_near: string }>(
+      "SELECT mrk, ord, mrk_near FROM node WHERE art_id=? AND kind='drv' ORDER BY ord", art.id);
+    expect(drvs[0].ord).toBe(0);
     expect(drvs[0].mrk).toBe("abel.0o");
+    // ids are preorder: a node's subtree is id..last_id, inside its parent's
+    expect(one<{ c: number }>("SELECT COUNT(*) c FROM node WHERE last_id < id").c).toBe(0);
+    expect(one<{ c: number }>(
+      "SELECT COUNT(*) c FROM node n JOIN node p ON p.id = n.parent_id WHERE n.id <= p.id OR n.last_id > p.last_id").c).toBe(0);
     const kap = one<{ txt: string; tilde: string }>(
       "SELECT txt, tilde FROM kap WHERE node_id=(SELECT id FROM node WHERE mrk='abel.0ujo')");
     expect(kap).toEqual({ txt: "abelujo", tilde: "~ujo" });
@@ -82,8 +91,7 @@ describe("corpus build", () => {
     expect(one<{ c: number }>("SELECT COUNT(*) c FROM trd WHERE lng = ''").c).toBe(0);
     const pr = one<{ txt: string; pr: string }>("SELECT txt, pr FROM trd WHERE pr IS NOT NULL LIMIT 1");
     expect(pr.txt).not.toContain(pr.pr);
-    const klr = one<{ txt: string; klr: string; xml: string }>("SELECT txt, klr, xml FROM trd WHERE klr IS NOT NULL LIMIT 1");
-    expect(klr.xml).toContain("<klr");
+    const klr = one<{ txt: string; klr: string }>("SELECT txt, klr FROM trd WHERE klr IS NOT NULL LIMIT 1");
     expect(klr.txt).not.toContain("<");
     expect(klr.txt).not.toContain(`(${klr.klr})`);
   });
@@ -102,10 +110,11 @@ describe("corpus build", () => {
     ]);
 
     // the language is the nested <trdgrp lng>, not the enclosing translation's
-    const outer = all<{ lng: string }>(
-      `SELECT t.lng FROM trd t JOIN node n ON t.node_id = n.id JOIN art a ON n.art_id = a.id
-        WHERE a.file IN ('unu', 'li') AND t.owner_kind = 'node' AND t.xml LIKE '%<trdgrp%'`);
-    expect(outer.map((r) => r.lng).sort()).toEqual(["es", "id"]);
+    const outer = [...articlesOf(db)].filter(({ file }) => file === "unu" || file === "li")
+      .flatMap(({ art }) => [...descendants(art, "trd")])
+      .filter((trd) => [...descendants(trd, "trdgrp")].length > 0)
+      .map((trd) => trd.attrs.lng ?? trd.parent?.attrs.lng);
+    expect(outer.sort()).toEqual(["es", "id"]);
 
     // and they reach the compat view, so lookup answers with them
     for (const r of nested) {
@@ -177,7 +186,7 @@ describe("reading L2 the way db.ts does", () => {
          AND NOT EXISTS (SELECT 1 FROM node c WHERE c.parent_id = d.id AND c.kind <> 'snc')
          AND NOT EXISTS (SELECT 1 FROM node g JOIN node c ON g.parent_id = c.id WHERE c.parent_id = d.id)
        LIMIT 1`);
-    const senses = sensesOf(db, multi.mrk);
+    const senses = sensesOf(multi.mrk);
     expect(senses.map((s) => s.num).slice(-multi.n)).toEqual(
       Array.from({ length: multi.n }, (_, i) => `${i + 1}.`));
     for (const s of senses) expect(s.definition.length + s.examples.length).toBeGreaterThan(0);
@@ -194,16 +203,16 @@ describe("reading L2 the way db.ts does", () => {
        WHERE d.kind='drv' AND s.kind='snc' GROUP BY d.id HAVING COUNT(*) = 1
          AND NOT EXISTS (SELECT 1 FROM node g JOIN node c ON g.parent_id = c.id WHERE c.parent_id = d.id)
        LIMIT 1`);
-    expect(sensesOf(db, single.mrk).at(-1)!.num).toBe("");
+    expect(sensesOf(single.mrk).at(-1)!.num).toBe("");
     const sub = one<{ mrk: string } | null>(
       `SELECT d.mrk FROM node x JOIN node s ON s.id = x.parent_id JOIN node d ON d.id = s.parent_id
        WHERE x.kind='subsnc' AND d.kind='drv' AND d.mrk IS NOT NULL LIMIT 1`);
     expect(sub).toBeTruthy();
-    expect(sensesOf(db, sub!.mrk).map((s) => s.num)).toContain("a)");
+    expect(sensesOf(sub!.mrk).map((s) => s.num)).toContain("a)");
   });
 
   test("sensesOf: unknown mrk gives no senses", () => {
-    expect(sensesOf(db, "ne.0ekzistas")).toEqual([]);
+    expect(sensesOf("ne.0ekzistas")).toEqual([]);
   });
 });
 
@@ -218,9 +227,19 @@ describe("fixes from the parity report", () => {
   });
 
   test("<ctl> renders with quotes", () => {
-    const rows = all<{ txt: string }>("SELECT txt FROM ekz WHERE xml LIKE '%<ctl>%' LIMIT 10");
-    expect(rows.length).toBeGreaterThan(0);
-    for (const r of rows) expect(r.txt).toContain("„");
+    // a <ctl> of plain text reads „text“ in its example's row
+    let quoted = 0;
+    for (const { id, art } of articlesOf(db)) {
+      const rows = all<{ txt: string }>(
+        "SELECT e.txt FROM ekz e JOIN node n ON n.id = e.node_id WHERE n.art_id = ?", id).map((r) => r.txt);
+      for (const ctl of [...descendants(art, "ekz")].flatMap((ekz) => [...descendants(ekz, "ctl")])) {
+        if (ctl.children.some((c) => c.type !== "text")) continue;
+        const text = ctl.children.map((c) => (c.type === "text" ? c.value : "")).join("").replace(/\s+/g, " ").trim();
+        expect(rows.some((txt) => txt.includes(`„${text}“`))).toBeTrue();
+        quoted++;
+      }
+    }
+    expect(quoted).toBeGreaterThan(0);
   });
 
   test("traduko.trd is the <ind> form when marked", () => {
@@ -241,7 +260,7 @@ describe("fixes from the parity report", () => {
 describe("pass tld-links", () => {
   test("every <tld/> is one row", () => {
     let n = 0;
-    for (const { xml } of all<{ xml: string }>("SELECT xml FROM art")) n += [...descendants(parse(xml).root, "tld")].length;
+    for (const { art } of articlesOf(db)) n += [...descendants(art, "tld")].length;
     expect(one<{ c: number }>("SELECT COUNT(*) c FROM x_tld_occ").c).toBe(n);
   });
 

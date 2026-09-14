@@ -16,7 +16,9 @@
  * off them; then every word is split and stored with the pairs in hand.
  */
 import type { Database } from "bun:sqlite";
+import { outerXml } from "voko-xml";
 import type { Pass } from "../pass";
+import { articlesOf } from "../sources";
 import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph } from "../../morph";
 
 const WORD = /\p{L}+/gu;
@@ -65,9 +67,10 @@ export function buildInventory(db: Database): Built {
     rootArts.set(r, a);
     rootWeight.set(r, (rootWeight.get(r) ?? 0) + (drv.get(art) ?? 0));
   };
-  for (const a of db.query<{ id: number; rad: string; xml: string }, []>("SELECT id, rad, xml FROM art").iterate()) {
-    addRoot(a.rad, a.id);
-    for (const m of a.xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
+  const radOf = db.query<{ rad: string }, [number]>("SELECT rad FROM art WHERE id = ?");
+  for (const a of articlesOf(db)) {
+    addRoot(radOf.get(a.id)!.rad, a.id);
+    for (const m of outerXml(a.art).matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
   }
   // affix articles: kap "mal-" / "-ul"; the ending articles ("-o", "-as", "-j") are not
   // affixes, but "-an" and "-on" are (member, fraction) even though they spell endings too

@@ -8,7 +8,8 @@ parses it; `src/corpus/` builds and enriches the database.
 ```sh
 bun run setup                       # both of the next two steps, for a fresh clone
 bun run fonto                       # check out both submodules, generate the parser's tables
-bun run corpus:build                # XML → data/voko.db, then all passes (~1.5 min, ~460 MB)
+bun run corpus:build                # XML → data/voko.db, then all passes (~1.5 min, ~260 MB, + voko.db.gz)
+bun run corpus:build --stage core   # what a browser downloads: L2 + search (~100 MB, ~40 MB gzipped)
 bun run start                       # serve from data/voko.db; REVO_DB=… overrides the path
 bun run corpus:validate             # parity report against data/revo.db → data/parity.md
 bun run corpus:eval                 # stemming recall on attested word forms
@@ -32,16 +33,23 @@ inferred belongs to a versioned pass.
 ```
 L0  source XML        vendor/revo-fonto (verbatim) + corpus/overlay/*.xml
 L1  canonical model   packages/voko-xml: lossless DOM + typed walkers, round-trips to XML
-L2  canonical DB      data/voko.db tables mirroring the XML 1:1 (+ FTS)
-L3  enrichment        data/voko.db x_* tables, one versioned pass each
+L2  canonical DB      data/voko.db tables mirroring the XML 1:1, as text
+L3  derived           data/voko.db serĉo, fts_*, x_* tables, one versioned pass each
 ```
 
 - L2 holds only what the XML says. No heuristics.
 - Every L3 table is owned by one pass (`src/corpus/passes/*.ts`) with a name and
   version, recorded in `meta_pass`. Re-running a pass rewrites only its tables.
 - Stable keys: `mrk` where the XML has one, else the path key
-  (`san/drv[0]/snc[2]`). Integer ids change between builds; L3 tables are
-  rebuilt with the database and use ids, anything kept outside it must use keys.
+  (`san/drv[0]/snc[2]`), which `nodes()` in voko-xml computes and the database
+  does not store: a node is its parent, kind and `ord`. Integer ids change
+  between builds; L3 tables are rebuilt with the database and use ids, anything
+  kept outside it must use keys.
+- The database holds text, not markup. A pass that needs the XML itself
+  (`tld-links`, `morph`) reads the articles from the sources again
+  (`src/corpus/sources.ts`), so it must run against the sources the database was
+  built from; it fails when an article is gone or its elements no longer match
+  the rows.
 - Content we author goes to XML, never the DB: upstream-acceptable edits in the
   submodule on a fork branch; the rest in `corpus/overlay/` (see its README).
 
@@ -61,12 +69,14 @@ packages/voko-xml/           the parser package (no SQLite; usable by other proj
   data/cfg/*.json            lingvoj / fakoj / stiloj / mallongigoj — generated, not committed
 scripts/fonto.sh             submodule checkout + entity generation (bun run fonto)
 scripts/gen-entities.ts      vendor/voko-grundo → packages/voko-xml/data (bun run corpus:entities)
-src/corpus/schema.sql        L2 DDL + compat views
-src/corpus/build.ts          XML → data/voko.db   (bun run corpus:build [--limit N] [--no-passes] [--pass NAME])
+src/corpus/schema.sql        L2 DDL, its core indexes + compat views
+src/corpus/build.ts          XML → data/voko.db   (bun run corpus:build [--stage core|full] [--limit N] [--no-passes] [--pass NAME] [--out F])
+src/corpus/sources.ts        where the articles are read from, for the build and the passes
 src/corpus/pass.ts           pass contract, meta_pass bookkeeping
-src/corpus/passes/           fts.ts, tld-links.ts, refs.ts, morph.ts (one per L3 table group)
+src/corpus/passes/           search.ts, index.ts, fts.ts, tld-links.ts, refs.ts, morph.ts (one per table group)
+src/search.ts                the search and entry tools' ranking over serĉo
 src/morph.ts                 runtime-safe morphology: lemmaCandidates(), segment() (no DB, no voko-xml)
-src/db-voko.ts               what db.ts reads differently on voko.db (senses from dif/ekz)
+src/db-voko.ts               entry assembly over node ranges; which passes a database has
 scripts/compare-db.ts        parity: old revo.db vs voko.db key sets (bun run corpus:validate → data/parity.md)
 scripts/eval-stemming.ts     stemming recall on attested tilde forms (bun run corpus:eval)
 ```
@@ -96,61 +106,113 @@ scripts/eval-stemming.ts     stemming recall on attested tilde forms (bun run co
 
 ## L2 schema
 
-Integer PK everywhere. `key` = stable path key, `mrk` kept where present,
-`xml` = exact fragment so unmodelled detail stays recoverable. `owner_kind`/
-`owner_id` say which element a row sits in (node, dif, ekz, rim, klr, …);
-`node_id` is always the nearest enclosing structural node.
+Schema version 2 (`meta.schema_version`; the server refuses older files).
+Integer PK everywhere, `mrk` kept where present. `owner_kind`/`owner_id` say
+which element a row sits in (node, dif, ekz, rim, klr, …); `node_id` is always
+the nearest enclosing structural node.
 
 ```
-art    (id, file UNIQUE, rad, rev, modified, source fonto|overlay, xml)
-node   (id, art_id, parent_id, kind, key UNIQUE, mrk, mrk_near, num, ref, ord, kap_id)
-kap    (id, node_id, parent_kap_id, txt, tilde, norm, ofc, rad_var, ord, xml)   variants: parent_kap_id set
-dif    (id, node_id, ord, lng, txt, xml)
-ekz    (id, node_id, owner_kind, owner_id, ord, key UNIQUE, mrk, txt, ind, xml)
-trd    (id, node_id, owner_kind, owner_id, lng, grp, ord, txt, ind, baz, pr, klr, ofc, kod, fnt, xml)
-ref    (id, node_id, owner_kind, owner_id, tip, cel, lst, val, grp, ord, txt, xml)
-fnt    (id, node_id, owner_kind, owner_id, ord, bib, aut, vrk, lok, url, txt, xml)
+art    (id, file UNIQUE, rad, rev, modified, source fonto|overlay)
+node   (id, art_id, parent_id, kind, mrk, mrk_near, num, ref, ord, kap_id, last_id)
+kap    (id, node_id, parent_kap_id, txt, tilde, norm, ofc, rad_var, ord)   variants: parent_kap_id set
+dif    (id, node_id, ord, lng, txt)
+ekz    (id, node_id, owner_kind, owner_id, ord, mrk, txt, ind)
+trd    (id, node_id, owner_kind, owner_id, lng, grp, ord, txt, ind, baz, pr, klr, ofc, kod, fnt)
+ref    (id, node_id, owner_kind, owner_id, tip, cel, lst, val, grp, ord, txt)
+fnt    (id, node_id, owner_kind, owner_id, ord, bib, aut, vrk, lok, url, txt)
 uzo    (id, node_id, owner_kind, owner_id, tip, txt, ord)
-bld    (id, node_id, owner_kind, owner_id, lok, mrk, tip, alt, lrg, prm, txt, xml)
+bld    (id, node_id, owner_kind, owner_id, lok, mrk, tip, alt, lrg, prm, txt)
 rim · gra · mlg · tezrad · lstref · adm · sncref
 lng · fako · stilo · mallongigo (data/cfg) · bib (cfg/bibliogr.xml in the submodule)
 meta (key, value) · meta_pass (pass, version, input_hash, rows, ms, at)
 ```
 
+- Rows are written in document order and node ids are preorder: a node's
+  subtree is `id BETWEEN node.id AND node.last_id`, and its rows in every table
+  are one `node_id` range, stored side by side. An entry with its senses is
+  read with a few range scans instead of a recursive walk, which is what keeps
+  it to a few pages when the file is read over HTTP.
 - `mrk_near` = own mrk, else the nearest ancestor's (10k `snc` have none).
 - `kap_id` = the node's own headword, else the nearest ancestor's.
 - Text columns: citations dropped, `<tld/>` expanded (`lit` rule applied),
   `<ctl>` quoted „…“. `dif.txt` keeps an inline `<trd>` (Latin names) but not a
   `<trdgrp>`; `kap.txt` drops the separator before `<var>`.
 
-Compat views answer `src/db.ts`'s queries unchanged: `nodo`, `var` (article-level
-variants filed under the first drv, as upstream does), `traduko` (`rowid` =
-`fts_trd.rowid`; `trd` = the `<ind>` form when marked, as upstream), `referenco`,
-`uzo_compat` (upstream's tip names), `artikolo` (XML instead of HTML). The only
-query-level switch in `db.ts` is senses: `db-voko.ts` reads them from
-`dif`/`ekz` instead of scraping HTML. `fts_kap`, `fts_trd` (+ `ind`, `baz`,
-`pr`), `fts_ekz` (trigram over `ekzemplo`) and `fts_dif` (definitions, for reverse lookup) come from the
-`fts` pass.
+Compat views keep upstream's shape for scripts and ad-hoc queries
+(`scripts/compare-db.ts`): `nodo`, `var` (article-level variants filed under
+the first drv, as upstream does), `traduko` (`rowid` = `fts_trd.rowid`; `trd` =
+the `<ind>` form when marked, as upstream), `referenco`, `uzo_compat`
+(upstream's tip names). The runtime reads the tables and `serĉo` instead.
+`fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`), `fts_ekz` (trigram over
+`ekzemplo`) and `fts_dif` (definitions, for reverse lookup) come from the `fts`
+pass.
 
-## Enrichment passes (L3)
+## Stages and revisions
 
-`bun run corpus:build --pass NAME` reruns one pass on an existing `voko.db`.
-Order matters: `morph` reads `x_tld_occ`.
+A build is one of two stages of the same file, recorded in `meta.stage`:
 
-| pass | tables | rows | time |
-|---|---|---:|---:|
-| `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 933,800 | 8 s |
-| `tld-links` | `x_tld_occ` | 173,285 | 12 s |
-| `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 111,733 | 1 s |
-| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 | 11 s |
+| stage | passes | size | gzipped | answers |
+|---|---|---:|---:|---|
+| `core` | `search` | 103.8 MB | 40.2 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages` |
+| `full` (default) | `search`, `index`, `fts`, `tld-links`, `refs`, `morph` | 256.8 MB | 110.3 MB | every tool |
+
+Measured at `d18ad4f` (13,079 articles). The core file leaves `fnt` (the
+citations) empty, since no tool reads them, and has only the indexes of
+`schema.sql`. `hasPass`/`requirePasses` in `db-voko.ts` read `meta_pass`, so on
+a core file `examples`, `thesaurus`, `reverse_lookup` and `gloss` say which
+passes they need instead of failing on a missing table; `lookup` skips its FTS
+fallback.
+
+Every build ends in `finish()`: `PRAGMA user_version` = the build time in Unix
+seconds, `ANALYZE`, `VACUUM` (so each table and index lies in contiguous
+pages), and `<out>.gz` beside the file. `user_version` sits at byte 60 of the
+file header, so a browser compares its stored copy with the published file by
+reading the first 100 bytes; publish `voko.db` and `voko.db.gz` together, as
+the browser checks that the download is the revision it saw.
+
+## Passes (L3)
+
+`bun run corpus:build --pass NAME` reruns one pass on an existing `voko.db`
+(and finishes the file again). Order matters: `morph` reads `x_tld_occ`. Rows
+at `d18ad4f`:
+
+| pass | tables | rows |
+|---|---|---:|
+| `search` | `serĉo`, `serĉo_lng` | 758,070 |
+| `index` | the L2 indexes the enrichment tools read through | 5 |
+| `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 955,026 |
+| `tld-links` | `x_tld_occ` | 176,088 |
+| `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 113,867 |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 |
+
+**`search`** — one row in `serĉo` for every way into an entry (a marked drv):
+its headword and variants under `lng` 'eo', and each translation outside the
+examples under its language, keyed by the form a query is compared with
+(`normalizeQuery`: the `<ind>` form when there is one). The table is `WITHOUT
+ROWID` with the key `(lng, norm, ord)`, so a language's rows are stored in the
+order of their forms: an exact match is one short range and a prefix match one
+contiguous run of pages. `ord` fixes the order among equal forms (direct before
+filed under, then the headword's spelling), and a row carries the entry node,
+the form as written, whether it is filed under the key, and the entry's usage
+domains, so ranking, counting languages and domains, and narrowing read no other
+table; only the page of results shown loads entries. `serĉo_lng` counts each
+language's entries and translations for the `languages` tool.
+
+**`index`** — `kap(node_id)`, `kap(norm)`, `node(parent_id)`,
+`node(mrk_near)` and `trd(lng, COALESCE(ind, txt) COLLATE NOCASE)`, which the
+thesaurus, gloss and the compat views read through and the core file does
+without. With the last one present, SQLite would scan a whole language for an
+entry's translations; `db-voko.ts` writes `+lng` to keep it on the entry's
+node range.
 
 **`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35k, `ekz`
 115k, `dif` 14k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
 the root it stands for (`rad`, `var`, `lit`), and the letters glued to it on
 either side (`pre`/`post`, across adjacent `<tld/>`s), so `token` is the written
 word form: `mal<tld/>ulejo` → pre `mal`, rad `san`, post `ulejo`. The pass
-re-walks each article's DOM in build order and maps an owner element to its L2
-row by position; it fails if an owner's stored `xml` differs or counts disagree.
+reads each article from the sources, re-walks its DOM in build order and maps an
+owner element to its L2 row by position; it fails if an article's element counts
+differ from its rows or a headword owner spells another headword than its row.
 
 **`refs`** — `x_ref_tip` is the tip vocabulary with its `owl/voko.ttl`
 semantics (parent property, SKOS mapping, inverse, symmetric, transitive).
@@ -287,7 +349,9 @@ deliberately; `test/deploy-pins.test.ts` checks every stage uses the `ARG`.
 ## Parity with revo.db
 
 `bun run corpus:validate` → `data/parity.md`. Same 2026-02-28 snapshot on both sides;
-key sets, not row counts.
+key sets, not row counts. Measured with schema 1, when `artikolo` still held the
+XML; the compat views read the same text columns in schema 2, and `artikolo` is
+now compared by article file.
 
 | set | old | new | old-only | new-only |
 |---|---:|---:|---:|---:|

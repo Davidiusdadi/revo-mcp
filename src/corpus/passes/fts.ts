@@ -40,10 +40,11 @@ export const ftsPass: Pass = {
     db.run(`
       INSERT INTO ekzemplo (rowid, art, drv_mrk, sense_mrk, ekz_md, position)
       SELECT e.id, a.file,
+             -- the innermost marked drv or subart the example sits in (ids are preorder)
              COALESCE((SELECT d.mrk FROM node d
                        WHERE d.art_id = n.art_id AND d.kind IN ('drv','subart') AND d.mrk IS NOT NULL
-                         AND n.key LIKE d.key || '%'
-                       ORDER BY length(d.key) DESC LIMIT 1), n.mrk_near, a.file),
+                         AND n.id BETWEEN d.id AND d.last_id
+                       ORDER BY d.id DESC LIMIT 1), n.mrk_near, a.file),
              CASE WHEN n.kind IN ('snc','subsnc') THEN n.mrk ELSE NULL END,
              e.txt, e.ord
       FROM ekz e JOIN node n ON n.id = e.node_id JOIN art a ON a.id = n.art_id

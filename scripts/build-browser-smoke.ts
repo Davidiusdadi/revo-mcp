@@ -1,9 +1,15 @@
 #!/usr/bin/env bun
-import { copyFile, cp, mkdir, rm } from "node:fs/promises";
+/**
+ * A page that starts the dictionary Worker on a database and searches once:
+ * `bun run browser:smoke:build [out] [database]`, then serve `out` with range
+ * support. `?access=remote` keeps the Worker from storing a local copy.
+ */
+import { copyFile, mkdir, rm, symlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const output = resolve(process.argv[2] ?? "dist/browser-smoke");
-const dictionary = resolve(process.argv[3] ?? "dist/dictionary");
+const database = resolve(process.argv[3] ?? "data/voko.db");
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 
@@ -18,6 +24,7 @@ for (const [entrypoint, naming] of [
 await Promise.all([
   copyFile("test/browser/index.html", resolve(output, "index.html")),
   copyFile("node_modules/sqlite-wasm-http/deps/dist/sqlite3.wasm", resolve(output, "sqlite3.wasm")),
-  cp(dictionary, resolve(output, "dictionary"), { recursive: true }),
+  symlink(database, resolve(output, "voko.db")),
+  existsSync(`${database}.gz`) ? symlink(`${database}.gz`, resolve(output, "voko.db.gz")) : undefined,
 ]);
 console.log(output);

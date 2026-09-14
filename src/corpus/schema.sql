@@ -1,8 +1,13 @@
 -- L2: canonical tables mirroring the VOKO XML 1:1. Only what the XML says.
--- Integer PKs; `mrk` kept where the XML has one; `key` = stable path key
--- (art file + kind ordinals) so enrichment tables can reference rows across
--- rebuilds; `xml` = the exact fragment (entities expanded) so anything not
--- yet modelled stays recoverable. See docs/corpus.md.
+-- Integer PKs; `mrk` kept where the XML has one. The markup itself stays in
+-- the sources (vendor/revo-fonto): the passes that need it read the articles
+-- again, so the file every runtime downloads holds text, not XML twice.
+-- Rows are written in document order, so an article's, a node's and a
+-- subtree's rows sit next to each other in every table. See docs/corpus.md.
+--
+-- Indexes here are the ones the core database answers search, lookup and
+-- entries with; the indexes only the enrichment tools need are built by the
+-- `index` pass (src/corpus/passes/index.ts).
 
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE meta_pass (
@@ -15,8 +20,7 @@ CREATE TABLE art (
   file TEXT NOT NULL UNIQUE,          -- 'san'  (= article key)
   rad TEXT NOT NULL,                  -- 'san'
   rev TEXT, modified TEXT,            -- from the CVS $Id: stamp
-  source TEXT NOT NULL,               -- 'fonto' | 'overlay'
-  xml TEXT NOT NULL                   -- the whole <art> element
+  source TEXT NOT NULL                -- 'fonto' | 'overlay'
 );
 
 -- Structural nodes: art > subart? > drv > subdrv? > snc > subsnc.
@@ -25,18 +29,15 @@ CREATE TABLE node (
   art_id INTEGER NOT NULL REFERENCES art(id),
   parent_id INTEGER REFERENCES node(id),
   kind TEXT NOT NULL,                 -- art|subart|drv|subdrv|snc|subsnc
-  key TEXT NOT NULL UNIQUE,           -- 'san/drv[0]/snc[1]'
   mrk TEXT,                           -- 'san.0a.saniga' (may be NULL on snc)
   mrk_near TEXT,                      -- own mrk or nearest ancestor's (what old tables key on)
   num TEXT, ref TEXT,
   ord INTEGER NOT NULL,               -- ordinal among same-kind siblings
-  kap_id INTEGER                      -- headword: own <kap>, else nearest ancestor's (set after extraction)
+  kap_id INTEGER,                     -- headword: own <kap>, else nearest ancestor's (set after extraction)
+  last_id INTEGER NOT NULL            -- ids are preorder: the subtree is id..last_id
 );
 CREATE INDEX idx_node_art ON node(art_id);
-CREATE INDEX idx_node_kap ON node(kap_id);
 CREATE INDEX idx_node_mrk ON node(mrk);
-CREATE INDEX idx_node_parent ON node(parent_id);
-CREATE INDEX idx_node_mrk_near ON node(mrk_near);
 
 -- Headwords. One row per <kap>; variants (<var><kap>) point at their parent kap.
 CREATE TABLE kap (
@@ -48,19 +49,15 @@ CREATE TABLE kap (
   norm TEXT NOT NULL,                 -- unicode-lowercased txt
   ofc TEXT,                           -- '*', '1'..'9'
   rad_var TEXT,                       -- <rad var="…"> inside this kap
-  ord INTEGER NOT NULL,
-  xml TEXT NOT NULL
+  ord INTEGER NOT NULL
 );
-CREATE INDEX idx_kap_node ON kap(node_id);
-CREATE INDEX idx_kap_norm ON kap(norm);
 
 CREATE TABLE dif (
   id INTEGER PRIMARY KEY,
   node_id INTEGER NOT NULL REFERENCES node(id),
   ord INTEGER NOT NULL,
   lng TEXT,
-  txt TEXT NOT NULL,                  -- plain text; nested ekz/fnt/trdgrp excluded, inline trd kept
-  xml TEXT NOT NULL
+  txt TEXT NOT NULL                   -- plain text; nested ekz/fnt/trdgrp excluded, inline trd kept
 );
 CREATE INDEX idx_dif_node ON dif(node_id);
 
@@ -70,11 +67,9 @@ CREATE TABLE ekz (
   node_id INTEGER NOT NULL REFERENCES node(id),
   owner_kind TEXT NOT NULL, owner_id INTEGER,
   ord INTEGER NOT NULL,               -- ordinal among ekz of the node (document order)
-  key TEXT NOT NULL UNIQUE,           -- '<node key>/ekz[n]'
   mrk TEXT,
   txt TEXT NOT NULL,                  -- citations dropped, tildes expanded
-  ind TEXT,                           -- text of <ind>, if any
-  xml TEXT NOT NULL
+  ind TEXT                            -- text of <ind>, if any
 );
 CREATE INDEX idx_ekz_node ON ekz(node_id);
 
@@ -82,9 +77,8 @@ CREATE TABLE rim (
   id INTEGER PRIMARY KEY,
   node_id INTEGER NOT NULL REFERENCES node(id),
   ord INTEGER NOT NULL, num TEXT, mrk TEXT,
-  txt TEXT NOT NULL, xml TEXT NOT NULL
+  txt TEXT NOT NULL
 );
-CREATE INDEX idx_rim_node ON rim(node_id);
 
 -- Translations. owner = node|dif|ekz|klr|bld; grp = ordinal of the enclosing
 -- <trdgrp> within the owner (NULL when the <trd> stands alone).
@@ -96,14 +90,9 @@ CREATE TABLE trd (
   grp INTEGER, ord INTEGER NOT NULL,
   txt TEXT NOT NULL,                  -- the translation itself (klr/pr/baz/ofc excluded)
   ind TEXT, baz TEXT, pr TEXT, klr TEXT, ofc TEXT,
-  kod TEXT, fnt TEXT,                 -- the trd attributes
-  xml TEXT NOT NULL
+  kod TEXT, fnt TEXT                  -- the trd attributes
 );
 CREATE INDEX idx_trd_node ON trd(node_id);
--- traduko.trd is COALESCE(ind, txt); db.ts matches it case-insensitively
--- (old idx_traduko_lng_trd), so index that exact expression.
-CREATE INDEX idx_trd_lng_key ON trd(lng, COALESCE(ind, txt) COLLATE NOCASE);
-CREATE INDEX idx_trd_key ON trd(COALESCE(ind, txt) COLLATE NOCASE);
 
 -- Typed references. owner = node|dif|ekz|rim|klr|ke|mrk(bld mark);
 -- grp = ordinal of the enclosing <refgrp> (tip inherited from it).
@@ -115,11 +104,9 @@ CREATE TABLE ref (
   cel TEXT NOT NULL,
   lst TEXT, val TEXT,
   grp INTEGER, ord INTEGER NOT NULL,
-  txt TEXT NOT NULL,
-  xml TEXT NOT NULL
+  txt TEXT NOT NULL
 );
 CREATE INDEX idx_ref_node ON ref(node_id);
-CREATE INDEX idx_ref_cel ON ref(cel);
 
 -- Citations. owner = node|kap|ekz|rim.
 CREATE TABLE fnt (
@@ -128,10 +115,8 @@ CREATE TABLE fnt (
   owner_kind TEXT NOT NULL, owner_id INTEGER,
   ord INTEGER NOT NULL,
   bib TEXT, aut TEXT, vrk TEXT, lok TEXT, url TEXT,
-  txt TEXT NOT NULL, xml TEXT NOT NULL
+  txt TEXT NOT NULL
 );
-CREATE INDEX idx_fnt_node ON fnt(node_id);
-CREATE INDEX idx_fnt_bib ON fnt(bib);
 
 -- Usage tags. owner = node|ekz|var|dif|rim.
 CREATE TABLE uzo (
@@ -148,12 +133,12 @@ CREATE TABLE gra (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES no
 CREATE TABLE bld (
   id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id),
   owner_kind TEXT NOT NULL, owner_id INTEGER,
-  lok TEXT NOT NULL, mrk TEXT, tip TEXT, alt TEXT, lrg TEXT, prm TEXT, txt TEXT NOT NULL, xml TEXT NOT NULL
+  lok TEXT NOT NULL, mrk TEXT, tip TEXT, alt TEXT, lrg TEXT, prm TEXT, txt TEXT NOT NULL
 );
 CREATE TABLE mlg (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), kod TEXT, txt TEXT NOT NULL);
 CREATE TABLE tezrad (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), fak TEXT);
 CREATE TABLE lstref (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), lst TEXT NOT NULL, txt TEXT NOT NULL);
-CREATE TABLE adm (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), txt TEXT NOT NULL, xml TEXT NOT NULL);
+CREATE TABLE adm (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), txt TEXT NOT NULL);
 CREATE TABLE sncref (id INTEGER PRIMARY KEY, node_id INTEGER NOT NULL REFERENCES node(id), owner_kind TEXT NOT NULL, owner_id INTEGER, ref TEXT);
 
 -- Lookup lists from voko-grundo/cfg (vendored in packages/voko-xml/data/cfg)
@@ -164,14 +149,14 @@ CREATE TABLE stilo (kodo TEXT PRIMARY KEY, nomo TEXT NOT NULL);
 CREATE TABLE mallongigo (mll TEXT PRIMARY KEY, nomo TEXT NOT NULL);
 CREATE TABLE bib (
   mll TEXT PRIMARY KEY, tip TEXT, tit TEXT, url TEXT, aut TEXT, trd TEXT, ald TEXT,
-  eld TEXT,                           -- JSON array of {nom,lok,dat,nro,isbn}
-  xml TEXT NOT NULL
+  eld TEXT                            -- JSON array of {nom,lok,dat,nro,isbn}
 );
 
 -- ---------------------------------------------------------------------------
--- Compatibility views: the shape src/db.ts queries today (upstream's
--- revo-skemo.sql). Keyed on mrk_near, i.e. sense-level rows attach to the
--- nearest marked ancestor exactly as upstream's index does.
+-- Compatibility views: the shape of upstream's revo-skemo.sql, for scripts
+-- and ad-hoc queries (scripts/compare-db.ts). Keyed on mrk_near, i.e.
+-- sense-level rows attach to the nearest marked ancestor exactly as upstream's
+-- index does. The runtime reads the tables and the search pass instead.
 CREATE VIEW nodo AS
   SELECT n.mrk AS mrk, a.file AS art, k.txt AS kap, n.num AS num, k.norm AS kap_norm
   FROM node n
@@ -213,5 +198,3 @@ CREATE VIEW uzo_compat AS
   FROM uzo u JOIN node n ON n.id = u.node_id
   WHERE n.mrk_near IS NOT NULL AND u.tip IN ('fak', 'stl') AND u.owner_kind <> 'ekz';
 
-CREATE VIEW artikolo AS
-  SELECT file AS mrk, xml AS txt FROM art;

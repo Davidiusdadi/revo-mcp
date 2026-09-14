@@ -1,7 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { z } from "zod";
 import { MessagePortTransport } from "./message-port-transport";
-import type { RevoWorkerEvent, RevoWorkerInit } from "./protocol";
-import type { BrowserSearchInput, BrowserSearchOutput } from "./search-schema";
+import type { RevoWorkerCommand, RevoWorkerEvent, RevoWorkerInit } from "./protocol";
+import type { SearchOutput, searchInputSchema } from "../tools/search";
 
 export interface RevoWorkerLike {
   postMessage(message: unknown, transfer: Transferable[]): void;
@@ -10,30 +11,29 @@ export interface RevoWorkerLike {
   terminate(): void;
 }
 
-export type RevoBrowserProgress = Extract<RevoWorkerEvent, { type: "revo:loading" }>;
-
 export class RevoBrowserClient {
   private readonly client = new Client({ name: "kunirado", version: "1.0.0" });
 
   private constructor(private readonly worker: RevoWorkerLike) {}
 
+  /**
+   * Starts the Worker on the database at `databaseUrl` and resolves once it
+   * answers. `onEvent` hears every Worker event, also after that: the local
+   * copy's download progress and the switch to it.
+   */
   static async connect(
     worker: RevoWorkerLike,
     databaseUrl: string,
-    options: { access?: "shards" | "range" | "download"; onProgress?: (progress: RevoBrowserProgress) => void } = {},
+    options: { access?: RevoWorkerInit["access"]; onEvent?: (event: RevoWorkerEvent) => void } = {},
   ): Promise<RevoBrowserClient> {
     const browserClient = new RevoBrowserClient(worker);
     const channel = new MessageChannel();
     const ready = new Promise<void>((resolve, reject) => {
-      const listener = (event: MessageEvent<RevoWorkerEvent>) => {
-        if (event.data.type === "revo:loading") options.onProgress?.(event.data);
-        if (event.data.type === "revo:ready" || event.data.type === "revo:error") {
-          worker.removeEventListener("message", listener);
-          if (event.data.type === "revo:ready") resolve();
-          else reject(new Error(event.data.message));
-        }
-      };
-      worker.addEventListener("message", listener);
+      worker.addEventListener("message", (event: MessageEvent<RevoWorkerEvent>) => {
+        options.onEvent?.(event.data);
+        if (event.data.type === "revo:ready") resolve();
+        if (event.data.type === "revo:error") reject(new Error(event.data.message));
+      });
     });
     const message: RevoWorkerInit = {
       type: "revo:init",
@@ -49,16 +49,22 @@ export class RevoBrowserClient {
     return browserClient;
   }
 
-  async search(input: BrowserSearchInput): Promise<BrowserSearchOutput> {
+  async search(input: z.input<typeof searchInputSchema>): Promise<SearchOutput> {
     const result = await this.client.callTool({ name: "search", arguments: input });
     if (result.isError) throw new Error((result.content as any[])?.[0]?.text ?? "ReVo search failed.");
-    return result.structuredContent as BrowserSearchOutput;
+    return result.structuredContent as SearchOutput;
   }
 
   async languages(): Promise<{ code: string; name: string; count: number }[]> {
     const result = await this.client.callTool({ name: "languages", arguments: {} });
     if (result.isError) throw new Error("ReVo language lookup failed.");
     return (result.structuredContent as any).languages;
+  }
+
+  /** Downloads the local copy now, or deletes it; events report the outcome. */
+  local(action: RevoWorkerCommand["action"]): void {
+    const command: RevoWorkerCommand = { type: "revo:local", action };
+    this.worker.postMessage(command, []);
   }
 
   async close(): Promise<void> {

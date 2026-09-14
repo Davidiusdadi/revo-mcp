@@ -342,3 +342,48 @@ describe("MCP Protocol: Response format validation", () => {
     expect(text).toContain("**");
   });
 });
+
+describe("the application dictionary tools", () => {
+  let appClient: Client;
+
+  beforeAll(async () => {
+    const { createMcpServer } = await import("../src/server");
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    appClient = new Client({ name: "app-test", version: "1.0.0" });
+    await Promise.all([createMcpServer().connect(serverSide), appClient.connect(clientSide)]);
+  });
+
+  afterAll(async () => {
+    await appClient.close();
+  });
+
+  test("search pages through ranked results a card can show", async () => {
+    const result = await appClient.callTool({
+      name: "search",
+      arguments: { query: "Hund", languages: ["de"], limit: 3 },
+    });
+    const output = result.structuredContent as any;
+    expect(output.results[0].entry.headword).toBe("hundo");
+    expect(output.results).toHaveLength(3);
+    expect(output.total).toBeGreaterThan(3);
+    expect(output.languageMatches.map(({ language }: { language: string }) => language)).toEqual(["eo", "de"]);
+  });
+
+  test("entry loads a search result's complete entry by its mark", async () => {
+    const search = await appClient.callTool({ name: "search", arguments: { query: "hundo", limit: 1 } });
+    const mark = (search.structuredContent as any).results[0].entry.mrk;
+    const result = await appClient.callTool({ name: "entry", arguments: { mark, languages: ["en"] } });
+    const { entry } = result.structuredContent as any;
+    expect((result.content[0] as any).text).toBe("hundo");
+    expect(entry.mrk).toBe(mark);
+    expect(entry.senses.length).toBeGreaterThan(0);
+    expect(entry.translations.map(({ lng }: { lng: string }) => lng)).toEqual(expect.arrayContaining(["en"]));
+    expect(entry.translations.every(({ lng }: { lng: string }) => lng === "en")).toBeTrue();
+  });
+
+  test("entry reports a mark no entry has", async () => {
+    const result = await appClient.callTool({ name: "entry", arguments: { mark: "hund.0nenio" } });
+    expect(result.isError).toBeTrue();
+    expect((result.content[0] as any).text).toContain("No dictionary entry has the mark hund.0nenio.");
+  });
+});

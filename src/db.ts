@@ -1,11 +1,12 @@
 /**
  * Database connection and query functions for the Revo dictionary.
  *
- * Queries the corpus `bun run setup` builds from the VOKO XML (data/voko.db):
- * the L2 tables through the compatibility views, and the FTS5 indexes the
- * `fts` pass writes. Supports:
- * - Esperanto headword lookup (exact, prefix, stemmed, FTS)
- * - Translation lookup by language (exact, FTS)
+ * Queries the corpus `bun run setup` builds from the VOKO XML (data/voko.db).
+ * Words are found through the search pass's `serĉo` rows and entries read as
+ * node ranges (db-voko.ts); the FTS indexes the `fts` pass writes are a
+ * fallback where the database has them. Supports:
+ * - Esperanto headword lookup (exact, variant, stemmed, prefix, FTS)
+ * - Translation lookup by language (exact, FTS, partial)
  * - Cross-language search
  */
 
@@ -14,59 +15,45 @@ import { generateStems, normalizeQuery, fromXSystem, hasXSystem } from "./stemme
 import { lemmaCandidates } from "./morph";
 import { glossEsperanto, glossSource, type EoGloss, type GlossOptions, type SourceGloss } from "./gloss";
 import {
+  SCHEMA_VERSION,
+  IS_ENTRY,
   isVokoDb,
-  sensesOf,
+  schemaVersionOf,
+  hasPass as hasPassIn,
+  requirePasses,
+  exactRows,
+  prefixRows,
+  spelled,
+  indexForm,
+  entryNodesById,
+  entryNodeByMark,
+  assembleEntry,
+  translationsOf,
   thesaurusOf,
   searchDefinitions as searchDefinitionsIn,
+  type EntryNode,
+  type EntryOptions,
+  type LookupResult,
+  type SearchRow,
   type ThesaurusResult,
   type DefinitionHit,
 } from "./db-voko";
 
-export interface NodoRow {
-  mrk: string;
-  art: string;
-  kap: string;
-  num: string | null;
-}
-
-export interface TradukoRow {
-  mrk: string;
-  lng: string;
-  /** the <ind> when the translation has one, else the whole translation */
-  trd: string;
-  /** the whole translation, pronunciation appended */
-  txt: string;
-  /** set when the translation is filed under an index form rather than being it */
-  ind: string | null;
-}
-
-export interface LookupResult {
-  headword: string;
-  article: string;
-  mrk: string;
-  senses: {
-    num?: string;
-    definition: string;
-    examples: string[];
-    domain?: string;
-  }[];
-  translations: { lng: string; trd: string }[];
-  crossRefs: { target: string; type: string; targetKap?: string }[];
-  usageDomains: string[];
-  matchedVia?: string; // How the result was found (e.g., "stem:amik", "translation:en:friend")
-  matchKind?: "exact" | "fts" | "partial";
-}
+export type { LookupResult } from "./db-voko";
 
 let _db: SqlReader | null = null;
 let _databaseFactory: (() => SqlReader) | null = null;
 
 export function configureDatabase(database: SqlReader): void {
+  let problem: string | null = null;
   if (!isVokoDb(database)) {
+    problem = "is not an XML-built corpus (meta.schema is not 'voko')";
+  } else if (schemaVersionOf(database) < SCHEMA_VERSION) {
+    problem = `has schema version ${schemaVersionOf(database)}; this server reads version ${SCHEMA_VERSION}`;
+  }
+  if (problem) {
     database.close();
-    throw new Error(
-      "The configured database is not an XML-built corpus (meta.schema is not 'voko'). " +
-        "Run `bun run setup` to build data/voko.db.",
-    );
+    throw new Error(`The configured database ${problem}. Run \`bun run setup\` to build data/voko.db.`);
   }
   if (_db && _db !== database) _db.close();
   _db = database;
@@ -89,6 +76,11 @@ export function closeDb(): void {
   }
 }
 
+/** Whether the configured database was built with an enrichment pass. */
+export function hasPass(name: string): boolean {
+  return hasPassIn(getDb(), name);
+}
+
 /** Reference graph around a word, grouped by relation. */
 export function lookupThesaurus(word: string): ThesaurusResult | null {
   return thesaurusOf(getDb(), word);
@@ -100,6 +92,7 @@ export function lookupThesaurus(word: string): ThesaurusResult | null {
  */
 export function glossText(text: string, opts: GlossOptions = {}): SourceGloss | EoGloss {
   const db = getDb();
+  requirePasses(db, "Gloss", ["morph", "index"]);
   return (opts.lang ?? "en") === "eo" ? glossEsperanto(db, text, opts) : glossSource(db, text, opts);
 }
 
@@ -109,110 +102,85 @@ export function searchDefinitions(query: string, limit: number = 20): Definition
 }
 
 /**
+ * Full entries for search rows, one per entry in the rows' order (or `order`,
+ * which sees only what names an entry), until the limit. `via` names how an
+ * entry was found.
+ */
+function resultsOf(
+  db: SqlReader,
+  rows: SearchRow[],
+  limit: number,
+  { order, via }: { order?: (a: EntryNode, b: EntryNode) => number; via?: (nid: number) => string } = {},
+): LookupResult[] {
+  const ids = [...new Set(rows.map((row) => row.nid))];
+  const nodes = entryNodesById(db, order ? ids : ids.slice(0, limit));
+  const listed = ids.flatMap((id) => nodes.get(id) ?? []);
+  if (order) listed.sort(order);
+  return listed.slice(0, limit).map((node) => {
+    const result = assembleEntry(db, node);
+    if (via) result.matchedVia = via(node.id);
+    return result;
+  });
+}
+
+// Of several entries with one headword, the shorter mark is the plainer word
+// ("bank.0o" before "bank.0o2"), as the lookup always listed them.
+const shorterMark = (a: EntryNode, b: EntryNode) => a.mrk.length - b.mrk.length;
+
+/** Rows that are the form itself rather than filed under it; else all of them. */
+function directFirst(rows: SearchRow[]): SearchRow[] {
+  const direct = rows.filter((row) => !row.ind);
+  return direct.length > 0 ? direct : rows;
+}
+
+/**
  * Look up an Esperanto word. Tries in order:
- * 1. Exact match on nodo.kap
- * 2. Variant match on var.kap
+ * 1. Exact match on a headword
+ * 2. Exact match on a variant
  * 3. Stemmed matches (strip grammatical endings)
- * 4. FTS5 prefix search
+ * 4. Prefix match on headwords
+ * 5. FTS5 prefix search, where the database has it
  */
 export function lookupEsperanto(
   query: string,
   limit: number = 5
 ): LookupResult[] {
   const db = getDb();
-  let normalized = normalizeQuery(query);
+  const normalized = normalizeQuery(query);
 
   if (normalized.length === 0) return [];
 
-  // 1. Exact match (uses idx_nodo_kap_norm; Unicode-aware via pre-folded column)
-  let nodes = db
-    .query<NodoRow, [string]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
-    )
-    .all(normalized);
-
-  if (nodes.length > 0) {
-    return assembleResults(nodes, limit);
-  }
-
-  // 2. Variant match (uses idx_var_kap_norm)
-  const variants = db
-    .query<{ mrk: string; kap: string }, [string]>(
-      "SELECT mrk, kap FROM var WHERE kap_norm = ?"
-    )
-    .all(normalized);
-
-  if (variants.length > 0) {
-    const mrks = variants.map((v) => v.mrk);
-    nodes = db
-      .query<NodoRow, []>(
-        `SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE mrk IN (${mrks
-          .map(() => "?")
-          .join(",")}) ORDER BY length(mrk)`
-      )
-      .all(...(mrks as []));
-
-    if (nodes.length > 0) {
-      return assembleResults(nodes, limit);
-    }
-  }
+  // 1–2. Headwords, else variants
+  const exact = exactRows(db, "eo", normalized);
+  if (exact.length > 0) return resultsOf(db, directFirst(exact), limit, { order: shorterMark });
 
   // 3. Inflected forms: the ending says which dictionary form to look for
   //    (morph.ts); the older ending-stripping heuristic is the fallback.
   const stems = new Set([...lemmaCandidates(normalized).map((c) => c.lemma), ...generateStems(normalized)]);
   for (const stem of stems) {
     if (stem === normalized) continue; // Already tried
-    nodes = db
-      .query<NodoRow, [string]>(
-        "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
-      )
-      .all(stem);
-
-    if (nodes.length > 0) {
-      const results = assembleResults(nodes, limit);
-      for (const r of results) r.matchedVia = `stem:${stem}`;
-      return results;
-    }
+    const rows = exactRows(db, "eo", stem).filter((row) => !row.ind);
+    if (rows.length > 0) return resultsOf(db, rows, limit, { order: shorterMark, via: () => `stem:${stem}` });
   }
 
-  // 4. Prefix match
-  nodes = db
-    .query<NodoRow, [string, number]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm LIKE ? || '%' ORDER BY length(kap), kap LIMIT ?"
-    )
-    .all(normalized, limit * 5);
-
-  if (nodes.length > 0) {
-    const results = assembleResults(nodes, limit);
-    for (const r of results) r.matchedVia = `prefix:${normalized}`;
-    return results;
-  }
+  // 4. Prefix match, shortest headwords first
+  const prefixed = prefixRows(db, "eo", normalized)
+    .filter((row) => !row.ind)
+    .sort((a, b) => a.norm.length - b.norm.length || a.ord - b.ord);
+  if (prefixed.length > 0) return resultsOf(db, prefixed, limit, { via: () => `prefix:${normalized}` });
 
   // 5. FTS5 fallback
+  if (!hasPassIn(db, "fts")) return [];
   try {
     const ftsRows = db
-      .query<{ kap: string; rowid: number }, [string]>(
-        `SELECT kap, rowid FROM fts_kap WHERE kap MATCH ? || '*' LIMIT ?`
+      .query<{ kap: string }, [string]>(
+        `SELECT kap FROM fts_kap WHERE kap MATCH ? || '*' LIMIT 50`
       )
       .all(normalized);
 
-    if (ftsRows.length > 0) {
-      const kaps = [...new Set(ftsRows.map((r) => r.kap.toLowerCase()))];
-      const allNodes: NodoRow[] = [];
-      for (const kap of kaps.slice(0, limit)) {
-        const n = db
-          .query<NodoRow, [string]>(
-            "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap_norm = ? ORDER BY length(mrk)"
-          )
-          .all(kap);
-        allNodes.push(...n);
-      }
-      if (allNodes.length > 0) {
-        const results = assembleResults(allNodes, limit);
-        for (const r of results) r.matchedVia = `fts:${normalized}`;
-        return results;
-      }
-    }
+    const kaps = [...new Set(ftsRows.map((r) => normalizeQuery(r.kap)))].slice(0, limit);
+    const rows = kaps.flatMap((kap) => exactRows(db, "eo", kap));
+    if (rows.length > 0) return resultsOf(db, rows, limit, { via: () => `fts:${normalized}` });
   } catch {
     // FTS query might fail with special characters — ignore
   }
@@ -220,36 +188,40 @@ export function lookupEsperanto(
   return [];
 }
 
-/**
- * Look up a word in a specific translation language.
- */
-// ReVo files a translation under its <ind> headword, so a query also matches
-// idioms that merely contain it: "Hund" finds hundo and "vor die Hunde gehen"
-// (degradiĝi) alike. Without an order the older row won. A translation that is
-// the searched word itself outranks one filed under it — that is exactly
-// "has no <ind>" — and among the rest the shorter index form comes first.
-const TRD_RANK = "ORDER BY (ind IS NULL) DESC, length(trd), rowid";
-
-// The same order for rows gathered one by one (the FTS path).
-function rankTrds(trds: TradukoRow[]): TradukoRow[] {
-  const filed = (t: TradukoRow) => (t.ind === null ? 0 : 1);
-  return trds.sort((a, b) => filed(a) - filed(b) || a.trd.length - b.trd.length);
-}
-
-// The translation row behind a result. Rows are keyed by the nearest marked
-// node, often a sense ("degrad.0igxi.FIG"), while results carry the derivation
-// ("degrad.0igxi"); trds is ranked, so the first fitting row is the best one.
-function trdFor(trds: TradukoRow[], mrk: string): TradukoRow | undefined {
-  return trds.find((t) => t.mrk === mrk || t.mrk.startsWith(mrk + "."));
+/** A translation row a lookup found, in whichever language. */
+interface TranslationHit {
+  lng: string;
+  row: SearchRow;
 }
 
 // "translation:de:Hund" names what matched; a translation only filed under
 // that index form also shows its full text, so an idiom
 // ("translation:de:Hund (vor die Hunde gehen)") is not read as the word's
-// meaning. Without an <ind> the two are the same text, pronunciation aside.
-function translationVia(lng: string, t: TradukoRow | undefined, query: string): string {
-  if (!t) return `translation:${lng}:${query}`;
-  return `translation:${lng}:${t.trd}${t.ind === null ? "" : ` (${t.txt})`}`;
+// meaning. Without an <ind> the two are the same text.
+function translationVia({ lng, row }: TranslationHit): string {
+  if (!row.ind) return `translation:${lng}:${spelled(row)}`;
+  return `translation:${lng}:${indexForm(row.norm, row.txt)} (${spelled(row)})`;
+}
+
+/** One result per entry, named by the first hit that led to it. */
+function translationResults(db: SqlReader, hits: TranslationHit[], limit: number): LookupResult[] {
+  const firstHit = new Map<number, TranslationHit>();
+  for (const hit of hits) if (!firstHit.has(hit.row.nid)) firstHit.set(hit.row.nid, hit);
+  return resultsOf(db, hits.map((hit) => hit.row), limit, { via: (nid) => translationVia(firstHit.get(nid)!) });
+}
+
+/** The entry a node belongs to: itself or its nearest derivation ancestor that is one. */
+function entryIdAt(db: SqlReader, nodeId: number): number | null {
+  const step = db.query<{ id: number; parent_id: number | null; is_entry: number }, [number]>(
+    `SELECT n.id, n.parent_id, COALESCE(${IS_ENTRY}, 0) AS is_entry FROM node n WHERE n.id = ?`,
+  );
+  for (let id: number | null = nodeId; id !== null; ) {
+    const n = step.get(id);
+    if (!n) return null;
+    if (n.is_entry) return n.id;
+    id = n.parent_id;
+  }
+  return null;
 }
 
 export function lookupTranslation(
@@ -258,76 +230,62 @@ export function lookupTranslation(
   limit: number = 5
 ): LookupResult[] {
   const db = getDb();
-  const normalized = query.trim().toLowerCase();
+  const normalized = normalizeQuery(query);
 
   if (normalized.length === 0) return [];
 
-  // 1. Exact match (uses idx_traduko_lng_trd COLLATE NOCASE on trd)
-  let trds = db
-    .query<TradukoRow, [string, string]>(
-      `SELECT mrk, lng, trd, txt, ind FROM traduko WHERE lng = ? AND trd = ? COLLATE NOCASE ${TRD_RANK} LIMIT 50`
-    )
-    .all(lang, normalized);
-  let matchKind: LookupResult["matchKind"] = trds.length > 0 ? "exact" : undefined;
+  // 1. Exact match: a translation that is the word itself comes before one
+  //    only filed under it ("Hund" before "vor die Hunde gehen"), which the
+  //    rows' order already says.
+  let hits: TranslationHit[] = exactRows(db, lang, normalized).map((row) => ({ lng: lang, row }));
+  let matchKind: LookupResult["matchKind"] = hits.length > 0 ? "exact" : undefined;
 
-  if (trds.length === 0) {
-    // 2. FTS match
+  if (hits.length === 0 && hasPassIn(db, "fts")) {
+    // 2. FTS match, mapped back to the entries' rows
     try {
       const ftsRows = db
-        .query<{ trd: string; rowid: number }, [string]>(
-          `SELECT trd, rowid FROM fts_trd WHERE trd MATCH '"' || ? || '"' LIMIT 100`
+        .query<{ node_id: number; lng: string; txt: string; ind: string | null }, [string, string]>(
+          `SELECT t.node_id, t.lng, t.txt, t.ind FROM fts_trd f JOIN trd t ON t.id = f.rowid
+            WHERE fts_trd MATCH '"' || ? || '"' AND t.lng = ? AND t.owner_kind <> 'ekz' LIMIT 100`
         )
-        .all(normalized);
-
-      // Filter by language using the traduko table
-      if (ftsRows.length > 0) {
-        matchKind = "fts";
-        const rowids = ftsRows.map((r) => r.rowid);
-        // Get matching traduko rows filtered by language
-        for (const rowid of rowids) {
-          const row = db
-            .query<TradukoRow, [number, string]>(
-              "SELECT mrk, lng, trd, txt, ind FROM traduko WHERE rowid = ? AND lng = ?"
-            )
-            .get(rowid, lang);
-          if (row) trds.push(row);
-        }
-        trds = rankTrds(trds);
-      }
+        .all(normalized, lang);
+      const found = ftsRows.flatMap((t) => {
+        const nid = entryIdAt(db, t.node_id);
+        const row: SearchRow = { norm: normalizeQuery(t.ind ?? t.txt), ord: 0, nid: nid ?? 0, txt: t.txt, ind: t.ind === null ? null : 1, fak: null };
+        return nid === null ? [] : [{ lng: lang, row }];
+      });
+      hits = found.sort((a, b) => (a.row.ind ?? 0) - (b.row.ind ?? 0) || a.row.norm.length - b.row.norm.length);
+      if (hits.length > 0) matchKind = "fts";
     } catch {
       // FTS query might fail — ignore
     }
   }
 
-  if (trds.length === 0) {
-    // 3. LIKE partial match
-    trds = db
-      .query<TradukoRow, [string, string]>(
-        `SELECT mrk, lng, trd, txt, ind FROM traduko WHERE lng = ? AND trd LIKE '%' || ? || '%' COLLATE NOCASE ${TRD_RANK} LIMIT 50`
+  if (hits.length === 0) {
+    // 3. Partial match: the form contains the query
+    hits = db
+      .query<SearchRow, [string, string]>(
+        `SELECT norm, ord, nid, txt, ind, fak FROM serĉo WHERE lng = ? AND instr(norm, ?) > 0
+          ORDER BY ind IS NOT NULL, length(norm), ord LIMIT 50`
       )
-      .all(lang, normalized);
-    if (trds.length > 0) matchKind = "partial";
+      .all(lang, normalized)
+      .map((row) => ({ lng: lang, row }));
+    if (hits.length > 0) matchKind = "partial";
   }
 
-  if (trds.length === 0) return [];
+  if (hits.length === 0) return [];
 
-  // Get unique mrk values and look up the nodes
-  const uniqueMrks = [...new Set(trds.map((t) => t.mrk))];
-  const allNodes: NodoRow[] = [];
-  for (const mrk of uniqueMrks.slice(0, limit * 3)) {
-    const node = db
-      .query<NodoRow, [string]>(
-        "SELECT mrk, art, kap, num FROM nodo WHERE mrk = ?"
-      )
-      .get(mrk);
-    if (node) allNodes.push(node);
-  }
-  const results = assembleResults(allNodes, limit);
-  for (const r of results) {
-    r.matchedVia = translationVia(lang, trdFor(trds, r.mrk), query);
-    r.matchKind = matchKind;
-  }
+  const results = translationResults(db, hits, limit);
+  for (const r of results) r.matchKind = matchKind;
   return results;
+}
+
+/** The translation languages, most translations first. */
+function translationLanguages(db: SqlReader): string[] {
+  return db
+    .query<{ lng: string }, []>("SELECT lng FROM serĉo_lng WHERE lng <> 'eo' ORDER BY translations DESC, lng")
+    .all()
+    .map((r) => r.lng);
 }
 
 /**
@@ -338,53 +296,19 @@ export function lookupAllLanguages(
   limit: number = 5
 ): LookupResult[] {
   const db = getDb();
-  const normalized = query.trim().toLowerCase();
+  const normalized = normalizeQuery(query);
+  if (normalized.length === 0) return [];
 
   // Also try as Esperanto headword
   const eoResults = lookupEsperanto(query, limit);
 
-  // Search translations across all languages
-  let trds = db
-    .query<TradukoRow, [string]>(
-      `SELECT mrk, lng, trd, txt, ind FROM traduko WHERE trd = ? COLLATE NOCASE ${TRD_RANK} LIMIT 100`
-    )
-    .all(normalized);
-
-  if (trds.length === 0) {
-    // FTS fallback
-    try {
-      trds = rankTrds(
-        db
-          .query<TradukoRow, [string]>(
-            `SELECT t.mrk, t.lng, t.trd, t.txt, t.ind
-             FROM fts_trd f
-             JOIN traduko t ON f.rowid = t.rowid
-             WHERE f.trd MATCH '"' || ? || '"'
-             LIMIT 100`
-          )
-          .all(normalized)
-      );
-    } catch {
-      // ignore FTS errors
-    }
-  }
-
-  const uniqueMrks = [...new Set(trds.map((t) => t.mrk))];
-  const allNodes: NodoRow[] = [];
-  for (const mrk of uniqueMrks.slice(0, limit * 3)) {
-    const node = db
-      .query<NodoRow, [string]>(
-        "SELECT mrk, art, kap, num FROM nodo WHERE mrk = ?"
-      )
-      .get(mrk);
-    if (node) allNodes.push(node);
-  }
-
-  const trdResults = assembleResults(allNodes, limit);
-  for (const r of trdResults) {
-    const matched = trdFor(trds, r.mrk);
-    r.matchedVia = translationVia(matched?.lng ?? "?", matched, query);
-  }
+  // The form in every language: direct translations before filed ones, then
+  // the languages with the most translations.
+  const hits = translationLanguages(db)
+    .flatMap((lng, rank) => exactRows(db, lng, normalized).map((row) => ({ lng, row, rank })))
+    .sort((a, b) => (a.row.ind ?? 0) - (b.row.ind ?? 0) || a.rank - b.rank || a.row.ord - b.row.ord)
+    .slice(0, 100);
+  const trdResults = translationResults(db, hits, limit);
 
   // Merge eo results + translation results, dedup by mrk
   const seen = new Set<string>();
@@ -407,10 +331,8 @@ export interface WildcardMatch {
  * Compact wildcard search: returns just headwords + all glosses in glossLang.
  * Used for discovery when * is in the query — fits hundreds of results in one response.
  *
- * Two-step for performance: (1) fetch matching headwords with a COLLATE NOCASE LIKE
- * (uses idx_nodo_kap, ~5ms), (2) batch-fetch all translations for those mrks via
- * idx_traduko_mrk (~25ms). Avoids the LEFT-JOIN-then-LIMIT trap that scanned all
- * 48K rows and ran ~18s in the prior implementation.
+ * Matches the Esperanto headword rows; a pattern with a literal start reads
+ * only that range of them. Glosses are read for the page shown.
  */
 export function lookupWildcardCompact(
   pattern: string,
@@ -419,199 +341,56 @@ export function lookupWildcardCompact(
   offset: number = 0
 ): { matches: WildcardMatch[]; total: number } {
   const db = getDb();
-  // Match against the Unicode-folded column; pattern must be lowercased too.
-  const sqlPattern = pattern.toLowerCase().replace(/\*/g, "%");
+  // Match against the folded forms; the pattern is folded the same way.
+  const folded = pattern.toLowerCase();
+  const sqlPattern = folded.replace(/\*/g, "%");
+  const start = folded.split("*")[0];
 
-  const total = (db
-    .query<{ c: number }, [string]>(
-      `SELECT COUNT(DISTINCT kap) as c FROM nodo WHERE kap_norm LIKE ?`
+  const rows = db
+    .query<SearchRow, [string, string, string]>(
+      `SELECT norm, ord, nid, txt, ind, fak FROM serĉo
+        WHERE lng = 'eo' AND ind IS NULL AND norm >= ? AND norm < ? AND norm LIKE ?`
     )
-    .get(sqlPattern))?.c ?? 0;
+    .all(start, `${start}\u{10FFFF}`, sqlPattern);
 
-  // Step 1: fetch matching headwords (one canonical mrk per kap).
-  const headwords = db
-    .query<{ kap: string; mrk: string }, [string, number, number]>(
-      `SELECT kap, MIN(mrk) AS mrk FROM nodo
-       WHERE kap_norm LIKE ?
-       GROUP BY kap
-       ORDER BY length(kap), kap
-       LIMIT ? OFFSET ?`
-    )
-    .all(sqlPattern, limit, offset);
-
-  if (headwords.length === 0) return { matches: [], total };
-
-  // Step 2: batch-fetch all translations in glossLang for those mrks.
-  const placeholders = headwords.map(() => "?").join(",");
-  const mrks = headwords.map((h) => h.mrk);
-  const glossRows = db
-    .query<{ mrk: string; trd: string }, (string | string)[]>(
-      `SELECT mrk, trd FROM traduko WHERE lng = ? AND mrk IN (${placeholders})`
-    )
-    .all(glossLang, ...mrks);
-
-  const glossMap = new Map<string, string[]>();
-  for (const row of glossRows) {
-    let arr = glossMap.get(row.mrk);
-    if (!arr) { arr = []; glossMap.set(row.mrk, arr); }
-    arr.push(row.trd);
+  // One canonical entry per headword spelling: the first in the rows' order.
+  const byKap = new Map<string, SearchRow>();
+  for (const row of rows.sort((a, b) => a.ord - b.ord)) {
+    const kap = spelled(row);
+    if (!byKap.has(kap)) byKap.set(kap, row);
   }
+  const headwords = [...byKap].sort(([a], [b]) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+  const total = headwords.length;
+  const page = headwords.slice(offset, offset + limit);
+  if (page.length === 0) return { matches: [], total };
 
-  const matches = headwords.map((h) => ({
-    kap: h.kap,
-    glosses: glossMap.get(h.mrk) ?? [],
-  }));
+  const nodes = entryNodesById(db, page.map(([, row]) => row.nid));
+  const matches = page.map(([kap, row]) => {
+    const node = nodes.get(row.nid);
+    const glosses = node ? [...new Set(translationsOf(db, node, [glossLang]).map((t) => t.trd))] : [];
+    return { kap, glosses };
+  });
 
   return { matches, total };
 }
 
 /**
- * Wildcard search for Esperanto headwords (full rich results).
- * Use * as wildcard: '*ejo' (suffix), 'ej*' (prefix), '*ej*' (infix), 'l*ejo' (both).
+ * Canonical dictionary entries for known derivation marks, in the marks'
+ * order; a sense's mark gives its derivation's entry.
  */
-export function lookupWildcard(
-  pattern: string,
-  limit: number = 20
-): LookupResult[] {
-  const db = getDb();
-  const sqlPattern = pattern.toLowerCase().replace(/\*/g, "%");
-
-  const nodes = db
-    .query<NodoRow, [string, string, number]>(
-      `SELECT mrk, art, kap, num FROM (
-         SELECT n.mrk, n.art, n.kap, n.num
-         FROM nodo n
-         WHERE n.kap_norm LIKE ?
-         UNION
-         SELECT n.mrk, n.art, n.kap, n.num
-         FROM nodo n JOIN var v ON n.mrk = v.mrk
-         WHERE v.kap_norm LIKE ?
-       )
-       ORDER BY length(kap), kap
-       LIMIT ?`
-    )
-    .all(sqlPattern, sqlPattern, limit * 5);
-
-  if (nodes.length === 0) return [];
-
-  const results = assembleResults(nodes, limit);
-  for (const r of results) r.matchedVia = `wildcard:${pattern}`;
-  return results;
-}
-
-/**
- * Assemble full lookup results from matched nodo rows.
- * Groups by article, fetches definitions from HTML, translations, etc.
- */
-function assembleResults(
-  nodes: NodoRow[],
-  limit: number
-): LookupResult[] {
+export function lookupMarks(mrks: string[], limit: number = mrks.length, options: EntryOptions = {}): LookupResult[] {
+  if (mrks.length === 0 || limit <= 0) return [];
   const db = getDb();
   const results: LookupResult[] = [];
-
-  // Group by derivation-level mrk (no dot-dot in mrk, or first two segments)
-  const drvNodes = new Map<string, NodoRow>();
-  for (const node of nodes) {
-    const drvMrk = getDrvMrk(node.mrk);
-    if (!drvNodes.has(drvMrk)) {
-      drvNodes.set(drvMrk, node);
-    }
-  }
-
-  for (const [drvMrk, node] of drvNodes) {
+  const seen = new Set<number>();
+  for (const mrk of mrks) {
     if (results.length >= limit) break;
-
-    // Senses, numbering and their examples come from the node/dif/ekz tables.
-    const senses: LookupResult["senses"] = sensesOf(db, drvMrk);
-
-    // Fetch translations for this mrk
-    const translations = db
-      .query<{ lng: string; trd: string }, [string]>(
-        "SELECT lng, trd FROM traduko WHERE mrk = ? ORDER BY lng"
-      )
-      .all(drvMrk);
-
-    // Also fetch translations at sense level. Using a range over the indexed
-    // mrk column instead of LIKE — case-insensitive LIKE forces a full scan
-    // of the 801K-row traduko table (~80ms vs ~0.02ms via the index).
-    const senseTranslations = db
-      .query<{ lng: string; trd: string; mrk: string }, [string, string]>(
-        "SELECT lng, trd, mrk FROM traduko WHERE mrk >= ? || '.' AND mrk < ? || '/' ORDER BY lng"
-      )
-      .all(drvMrk, drvMrk);
-
-    const allTranslations = [...translations, ...senseTranslations].map(
-      (t) => ({
-        lng: t.lng,
-        trd: t.trd,
-      })
-    );
-
-    // Fetch cross-references (range form — see senseTranslations note).
-    const refs = db
-      .query<{ cel: string; tip: string }, [string, string, string]>(
-        "SELECT cel, tip FROM referenco WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')"
-      )
-      .all(drvMrk, drvMrk, drvMrk);
-
-    const crossRefs = refs.map((r) => {
-      // Try to resolve target headword
-      const targetNode = db
-        .query<{ kap: string }, [string]>(
-          "SELECT kap FROM nodo WHERE mrk = ?"
-        )
-        .get(r.cel);
-      return {
-        target: r.cel,
-        type: r.tip,
-        targetKap: targetNode?.kap,
-      };
-    });
-
-    // Fetch usage domains (range form — see senseTranslations note).
-    const uzoj = db
-      .query<{ uzo: string }, [string, string, string]>(
-        `SELECT DISTINCT uzo FROM uzo_compat WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/')`
-      )
-      .all(drvMrk, drvMrk, drvMrk);
-    const usageDomains = uzoj.map((u) => u.uzo);
-
-    results.push({
-      headword: node.kap,
-      article: node.art,
-      mrk: drvMrk,
-      senses,
-      translations: allTranslations,
-      crossRefs,
-      usageDomains,
-    });
+    const node = entryNodeByMark(db, mrk);
+    if (!node || seen.has(node.id)) continue;
+    seen.add(node.id);
+    results.push(assembleEntry(db, node, options));
   }
-
   return results;
-}
-
-/** Assemble canonical dictionary entries for known derivation marks. */
-export function lookupMarks(mrks: string[], limit: number = mrks.length): LookupResult[] {
-  if (mrks.length === 0 || limit <= 0) return [];
-  const unique = [...new Set(mrks)].slice(0, limit);
-  const placeholders = unique.map(() => "?").join(",");
-  const nodes = getDb()
-    .query<NodoRow, string[]>(
-      `SELECT mrk, art, kap, num FROM nodo WHERE mrk IN (${placeholders}) ORDER BY length(mrk)`,
-    )
-    .all(...unique);
-  return assembleResults(nodes, limit);
-}
-
-/**
- * Extract the derivation-level mrk from a potentially sense-level mrk.
- * E.g., "amik.0o.KOMUNE" → "amik.0o"
- */
-function getDrvMrk(mrk: string): string {
-  const parts = mrk.split(".");
-  if (parts.length <= 2) return mrk;
-  return parts.slice(0, 2).join(".");
 }
 
 export interface FamilyMember {
@@ -635,90 +414,78 @@ export function lookupFamily(query: string): FamilyResult | null {
   if (!normalized) return null;
 
   // The query is in real letters (normalizeQuery turns cx into ĉ), so it is
-  // compared with real letters: the roots the morph pass lists lowercased, and
-  // the headwords' kap_norm. Not with the article's file name, which is in the
-  // x-system (cxeval), nor through SQLite's lower(), which leaves Ĉ as it is.
-  type ArtRow = { file: string; rad: string };
+  // compared with real letters: the roots, lowercased, and the headwords'
+  // folded forms. Not with the article's file name, which is in the x-system
+  // (cxeval), nor through SQLite's lower(), which leaves Ĉ as it is.
+  type ArtRow = { id: number; file: string; rad: string };
 
-  // 1. Try treating input as a bare root
-  let art = db
-    .query<ArtRow, [string]>(
-      `SELECT a.file, a.rad FROM x_morpheme m JOIN art a ON a.id = m.art_id
-        WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file LIMIT 1`
-    )
-    .get(normalized);
+  // 1. Try treating input as a bare root: the morph pass lists every root;
+  //    without it, the articles' own roots.
+  let art: ArtRow | null | undefined = hasPassIn(db, "morph")
+    ? db
+        .query<ArtRow, [string]>(
+          `SELECT a.id, a.file, a.rad FROM x_morpheme m JOIN art a ON a.id = m.art_id
+            WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file LIMIT 1`
+        )
+        .get(normalized)
+    : db
+        .query<ArtRow, []>("SELECT id, file, rad FROM art ORDER BY file")
+        .all()
+        .find((a) => a.rad.toLowerCase() === normalized);
 
   // 2. Try as a word form — look up its article
-  const byKap = db.query<ArtRow, [string]>(
-    "SELECT a.file, a.rad FROM nodo n JOIN art a ON a.file = n.art WHERE n.kap_norm = ? LIMIT 1"
+  const artOfEntry = db.query<ArtRow, [number]>(
+    "SELECT a.id, a.file, a.rad FROM node n JOIN art a ON a.id = n.art_id WHERE n.id = ?"
   );
-  if (!art) art = byKap.get(normalized);
+  const byKap = (form: string) => {
+    const row = exactRows(db, "eo", form).find((r) => !r.ind);
+    return row ? artOfEntry.get(row.nid) : null;
+  };
+  if (!art) art = byKap(normalized);
 
   // 3. Inflected forms, as in lookupEsperanto: dictionary forms first, heuristic after
   if (!art) {
     const stems = new Set([...lemmaCandidates(normalized).map((c) => c.lemma), ...generateStems(normalized)]);
     for (const stem of stems) {
-      art = byKap.get(stem);
+      art = byKap(stem);
       if (art) break;
     }
   }
 
   if (!art) return null;
-  const root = art.rad;
 
-  // Get all derivation-level members
-  const members = db
-    .query<{ mrk: string; kap: string }, [string]>(
-      `SELECT DISTINCT mrk, kap FROM nodo
-       WHERE art = ? AND instr(mrk, '.') > 0
-       ORDER BY mrk`
+  const entries = db
+    .query<{ id: number; last_id: number; mrk: string; kap: string }, [number]>(
+      `SELECT n.id, n.last_id, n.mrk, k.txt AS kap FROM node n JOIN kap k ON k.id = n.kap_id
+        WHERE n.art_id = ? AND ${IS_ENTRY} ORDER BY n.mrk`
     )
-    .all(art.file);
+    .all(art.id);
 
-  // Deduplicate to drv-level mrks (strip sense suffixes like .1, .2)
-  const seen = new Set<string>();
-  const drvMembers: { mrk: string; kap: string }[] = [];
-  for (const m of members) {
-    const drvMrk = m.mrk.split(".").slice(0, 2).join(".");
-    if (!seen.has(drvMrk)) {
-      seen.add(drvMrk);
-      drvMembers.push({ mrk: drvMrk, kap: m.kap });
-    }
-  }
+  const members: FamilyMember[] = entries.map((e) => ({
+    headword: e.kap,
+    mrk: e.mrk,
+    translations: translationsOf(db, e),
+  }));
 
-  const result: FamilyMember[] = drvMembers.map(({ mrk, kap }) => {
-    const trds = db
-      .query<{ lng: string; trd: string }, [string, string, string]>(
-        "SELECT lng, trd FROM traduko WHERE mrk = ? OR (mrk >= ? || '.' AND mrk < ? || '/') ORDER BY lng"
-      )
-      .all(mrk, mrk, mrk);
-    return { headword: kap, mrk, translations: trds };
-  });
-
-  return { root, members: result };
+  return { root: art.rad, members };
 }
 
 /**
  * Get all available languages with their translation counts.
  */
 export function getLanguages(): { lng: string; count: number }[] {
-  const db = getDb();
-  return db
+  // Counted by the search pass: translations outside example sentences, which
+  // no lookup reaches.
+  return getDb()
     .query<{ lng: string; count: number }, []>(
-      // Counted on trd rather than through the traduko view, whose join costs
-      // ~4 s. The view's other condition has to be repeated here, though:
-      // translations of example sentences are 12,143 rows that no lookup
-      // reaches. What is left out are the ~8 rows under no marked node.
-      `SELECT lng, COUNT(*) as count FROM trd WHERE owner_kind <> 'ekz'
-        GROUP BY lng ORDER BY count DESC`
+      "SELECT lng, translations AS count FROM serĉo_lng WHERE lng <> 'eo' ORDER BY translations DESC, lng"
     )
     .all();
 }
 
 export function getHeadwordCount(): number {
   return getDb().query<{ count: number }, []>(
-    `SELECT COUNT(DISTINCT mrk) AS count FROM nodo
-      WHERE mrk IS NOT NULL AND instr(mrk, '.') > 0 AND mrk NOT GLOB '*.*.*'`
+    "SELECT entries AS count FROM serĉo_lng WHERE lng = 'eo'"
   ).get()?.count ?? 0;
 }
 
@@ -741,6 +508,7 @@ export interface ExampleHit {
  */
 export function searchExamples(query: string, limit: number = 20): ExampleHit[] {
   const db = getDb();
+  requirePasses(db, "Example search", ["fts"]);
   // Same normalization as normalizeQuery EXCEPT we preserve leading/trailing
   // whitespace so callers can use " word " as a word-boundary query under the
   // trigram tokenizer (spaces are tokenizable characters).
@@ -763,7 +531,8 @@ export function searchExamples(query: string, limit: number = 20): ExampleHit[] 
       [string, number]
     >(
       `SELECT e.art, e.drv_mrk, e.sense_mrk, e.ekz_md,
-              (SELECT kap FROM nodo n WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
+              (SELECT k.txt FROM node n JOIN kap k ON k.id = n.kap_id
+                WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
        FROM fts_ekz
        JOIN ekzemplo e ON e.rowid = fts_ekz.rowid
        WHERE fts_ekz MATCH ?

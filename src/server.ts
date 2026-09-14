@@ -5,7 +5,14 @@ import { lookupRootInputSchema, handleLookupRoot } from "./tools/root";
 import { examplesInputSchema, handleExamples } from "./tools/examples";
 import { thesaurusInputSchema, handleThesaurus } from "./tools/thesaurus";
 import { reverseLookupInputSchema, handleReverseLookup } from "./tools/reverse";
-import { searchInputSchema, searchOutputSchema, executeSearch } from "./tools/search";
+import {
+  searchInputSchema,
+  searchOutputSchema,
+  executeSearch,
+  entryInputSchema,
+  entryOutputSchema,
+  executeEntry,
+} from "./tools/search";
 import { glossInputSchema, handleGloss } from "./tools/gloss";
 import {
   getLanguages,
@@ -55,7 +62,11 @@ export function createMcpServer(): McpServer {
   const server = new McpServer({ name: "revo-vortaro", version: "1.0.0" });
 
   server.registerTool("search", {
-    description: "Search Esperanto headwords and the selected translation languages, merging ambiguous matches.",
+    description: "Search Esperanto headwords and selected translation languages, counting each language's matches " +
+      "and the usage domains among the results, narrowing to one domain, and paging through every result with " +
+      "offset and limit. Each result's first match reason names it: the match it is ranked by, in the " +
+      "matchLanguage when one narrows the search, otherwise its strongest match. A result carries the entry's " +
+      "headword, mark, usage domains and translations in the searched languages; `entry` loads the rest.",
     inputSchema: searchInputSchema,
     outputSchema: searchOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
@@ -67,6 +78,17 @@ export function createMcpServer(): McpServer {
         : "No results found.",
       structuredContent,
     };
+  }));
+
+  server.registerTool("entry", {
+    description: "Load one complete dictionary entry (senses, examples, translations, references) by its stable ReVo mark, " +
+      "such as a search result's entry.mrk.",
+    inputSchema: entryInputSchema,
+    outputSchema: entryOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("entry", args as Record<string, unknown>, () => {
+    const structuredContent = executeEntry(args);
+    return { text: structuredContent.entry.headword, structuredContent };
   }));
 
   server.registerTool("lookup", {

@@ -64,15 +64,14 @@ async function main(): Promise<void> {
   mkdirSync(DATA_DIR, { recursive: true });
   sources();
 
-  const { buildL2, PASSES } = await import("./corpus/build");
+  const { buildL2, finish, PASSES } = await import("./corpus/build");
   const { runPass } = await import("./corpus/pass");
 
   console.log(`Building ${DB_PATH} ...`);
   const t0 = Date.now();
   const db = buildL2(DB_PATH); // replaces the file if it is already there
   for (const pass of PASSES) runPass(db, pass);
-  db.exec("PRAGMA optimize");
-  db.close();
+  finish(db, DB_PATH);
 
   const mb = (Bun.file(DB_PATH).size / 1024 / 1024).toFixed(0);
   const s = ((Date.now() - t0) / 1000).toFixed(0);

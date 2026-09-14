@@ -5,16 +5,19 @@
  * links, the attested half of the morphology `morph` builds on.
  *
  * Owner = the innermost element with its own L2 row (kap, dif, ekz, rim, trd,
- * ref, bld), else the structural node. Rows are matched to elements by
- * replaying build.ts's traversal (nodes in document order, each node's own
- * content preorder); every owner is checked against its row's stored `xml`.
+ * ref, bld), else the structural node. The articles are read from the sources
+ * (the database keeps no XML), and rows are matched to elements by replaying
+ * build.ts's traversal (nodes in document order, each node's own content
+ * preorder); each article's element counts must equal its row counts, and
+ * every headword owner must spell its row's text.
  */
 import type { Database } from "bun:sqlite";
 import {
-  parse, articleOf, rootsOf, nodes, expandTld, outerXml, NODE_KIND_SET,
+  rootsOf, nodes, expandTld, kapForms, NODE_KIND_SET,
   type Element, type Node, type Roots,
 } from "voko-xml";
 import type { Pass } from "../pass";
+import { articlesOf } from "../sources";
 
 const OWNERS = ["kap", "dif", "ekz", "rim", "trd", "ref", "bld"] as const;
 type Owner = (typeof OWNERS)[number];
@@ -42,12 +45,14 @@ export const tldLinksPass: Pass = {
         norm       TEXT NOT NULL       -- token, lowercased
       )`);
 
-    const nodeByKey = new Map<string, number>();
-    for (const r of db.query<{ id: number; key: string }, []>("SELECT id, key FROM node").iterate()) {
-      nodeByKey.set(r.key, r.id);
+    // build.ts writes an article's nodes in document order, one after another
+    const nodesOf = new Map<number, { first: number; n: number }>();
+    for (const r of db.query<{ art_id: number; first: number; n: number }, []>(
+      "SELECT art_id, MIN(id) first, COUNT(*) n FROM node GROUP BY art_id").iterate()) {
+      nodesOf.set(r.art_id, { first: r.first, n: r.n });
     }
     const rowsOf = rowRanges(db);
-    const xmlOf = new Map(OWNERS.map((t) => [t, db.query<{ xml: string }, [number]>(`SELECT xml FROM ${t} WHERE id = ?`)]));
+    const kapTxt = db.query<{ txt: string }, [number]>("SELECT txt FROM kap WHERE id = ?");
     const ins = db.prepare(
       `INSERT INTO x_tld_occ (art_id, node_id, owner_kind, owner_id, ord, rad, var, lit, pre, post, token, norm)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -55,8 +60,8 @@ export const tldLinksPass: Pass = {
 
     let rows = 0;
     const byOwner: Record<string, number> = {};
-    for (const a of db.query<{ id: number; file: string; xml: string }, []>("SELECT id, file, xml FROM art ORDER BY id").iterate()) {
-      const art = articleOf(parse(a.xml, a.file));
+    for (const a of articlesOf(db)) {
+      const art = a.art;
       const roots = rootsOf(art);
       const used: Partial<Record<Owner, number>> = {};
       const tldOrd = new Map<string, number>();
@@ -81,10 +86,10 @@ export const tldLinksPass: Pass = {
             continue;
           }
           const k = `${kind}:${ownerId}`;
-          if (ownerEl && !checked.has(k)) {
+          if (kind === "kap" && ownerEl && !checked.has(k)) {
             checked.add(k);
-            if (xmlOf.get(kind as Owner)!.get(ownerId)?.xml !== outerXml(ownerEl)) {
-              throw new Error(`${a.file}: <${kind}> matched to row ${ownerId}, but the row's xml differs`);
+            if (kapTxt.get(ownerId)?.txt !== kapForms(ownerEl, roots).txt) {
+              throw new Error(`${a.file}: <kap> matched to row ${ownerId}, but the row spells another headword`);
             }
           }
           const ord = tldOrd.get(k) ?? 0;
@@ -101,11 +106,10 @@ export const tldLinksPass: Pass = {
         }
       };
 
-      for (const n of nodes(art, a.file)) {
-        const nodeId = nodeByKey.get(n.key);
-        if (nodeId === undefined) throw new Error(`${a.file}: no node row for ${n.key}`);
-        walk(n.el, nodeId, "node", nodeId, null);
-      }
+      const infos = nodes(art, a.file);
+      const range = nodesOf.get(a.id);
+      if (!range || range.n !== infos.length) throw new Error(`${a.file}: ${infos.length} nodes vs ${range?.n ?? 0} node rows`);
+      infos.forEach((n, i) => walk(n.el, range.first + i, "node", range.first + i, null));
       for (const t of OWNERS) {
         const want = rowsOf.get(t)!.get(a.id)?.n ?? 0;
         if ((used[t] ?? 0) !== want) throw new Error(`${a.file}: ${used[t] ?? 0} <${t}> elements vs ${want} rows`);

@@ -47,7 +47,7 @@ const CMP: Cmp[] = [
     old: "SELECT drv_mrk, lower(replace(replace(ekz_md, '**', ''), ' ', '')) FROM old.ekzemplo",
     new: "SELECT drv_mrk, lower(replace(ekz_md, ' ', '')) FROM ekzemplo",
   },
-  { name: "artikolo", old: "SELECT mrk FROM old.artikolo", new: "SELECT mrk FROM artikolo" },
+  { name: "artikolo", old: "SELECT mrk FROM old.artikolo", new: "SELECT file FROM art" },
 ];
 
 function keys(sql: string): Set<string> {

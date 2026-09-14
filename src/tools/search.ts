@@ -1,15 +1,26 @@
+/**
+ * MCP tools: search and entry — the application dictionary contract.
+ *
+ * `search` ranks every match of a query in Esperanto and the requested
+ * languages, counts each language's matches and the usage domains among them,
+ * narrows to one of each, and pages through all results; a result carries what
+ * a result card shows. `entry` loads one complete entry by its mark.
+ */
+
 import { z } from "zod";
-import {
-  lookupEsperanto,
-  lookupTranslation,
-  type LookupResult,
-} from "../db";
-import { fromXSystem, hasXSystem } from "../stemmer";
+import { getDb, lookupMarks } from "../db";
+import { searchDictionary } from "../search";
 
 export const searchInputSchema = z.object({
   query: z.string().min(1).max(200),
   languages: z.array(z.string().min(2).max(12)).max(174).default([]),
   limit: z.number().int().min(1).max(50).default(20),
+  matchLanguage: z.string().min(2).max(12).optional()
+    .describe("Only return results that matched in this searched language, ranked and named by that match."),
+  domain: z.string().min(1).max(12).optional()
+    .describe("Only return results whose entry carries this ReVo usage domain, such as ZOO or KUI."),
+  offset: z.number().int().min(0).optional()
+    .describe("Skip this many ranked results; with limit as the page size, this pages through all of them."),
 });
 
 export const matchReasonSchema = z.object({
@@ -26,68 +37,38 @@ export const searchOutputSchema = z.object({
     entry: z.any(),
     matchReasons: z.array(matchReasonSchema),
   })),
+  total: z.number().int().describe("Results the search found across all pages."),
+  languageMatches: z.array(z.object({
+    language: z.string(),
+    count: z.number().int(),
+  })).describe("Entries matched in each searched language, in request order."),
+  domainMatches: z.array(z.object({
+    domain: z.string(),
+    count: z.number().int(),
+  })).describe("Usage domains among the results before a domain narrows them, most common first."),
 });
 
 export type SearchInput = z.infer<typeof searchInputSchema>;
 export type SearchOutput = z.infer<typeof searchOutputSchema>;
 
-const MATCH_RANK: Record<string, number> = {
-  headword: 0,
-  translation: 0,
-  stem: 1,
-  prefix: 2,
-  fts: 3,
-};
-
-function reasonOf(result: LookupResult, fallbackLanguage: string, query: string) {
-  const [rawKind = "headword", language = fallbackLanguage, ...matched] =
-    result.matchedVia?.split(":") ?? [];
-  const kind = rawKind === "translation" && result.matchKind && result.matchKind !== "exact"
-    ? `translation-${result.matchKind}`
-    : rawKind;
-  return {
-    language: kind === "translation" ? language : fallbackLanguage,
-    text: matched.join(":") || query,
-    kind,
-  };
+/** Search the configured database. */
+export function executeSearch(input: SearchInput): SearchOutput {
+  return searchDictionary(getDb(), input);
 }
 
-/** Multilingual application search with stable deduplication and match labels. */
-export function executeSearch(input: SearchInput): SearchOutput {
-  const query = hasXSystem(input.query) ? fromXSystem(input.query) : input.query;
-  const languages = [...new Set(input.languages.filter((language) => language !== "eo"))];
-  const found = new Map<string, { entry: LookupResult; matchReasons: ReturnType<typeof reasonOf>[] }>();
+export const entryInputSchema = z.object({
+  mark: z.string().min(1).max(200).describe("The entry's ReVo mark, such as hund.0o."),
+  languages: z.array(z.string().min(2).max(12)).max(174).optional()
+    .describe("Translation languages to include; all of them when omitted."),
+});
 
-  const merge = (results: LookupResult[], language: string) => {
-    for (const result of results) {
-      const existing = found.get(result.mrk);
-      const reason = reasonOf(result, language, query);
-      if (existing) {
-        if (!existing.matchReasons.some((item) =>
-          item.language === reason.language && item.text === reason.text && item.kind === reason.kind
-        )) existing.matchReasons.push(reason);
-      } else {
-        found.set(result.mrk, { entry: result, matchReasons: [reason] });
-      }
-    }
-  };
+export const entryOutputSchema = z.object({ entry: z.any() });
 
-  merge(lookupEsperanto(query, input.limit), "eo");
-  for (const language of languages) merge(lookupTranslation(query, language, input.limit), language);
+export type EntryInput = z.infer<typeof entryInputSchema>;
 
-  const ranked = [...found.values()].sort((a, b) => {
-    const aRank = Math.min(...a.matchReasons.map((reason) => MATCH_RANK[reason.kind] ?? 4));
-    const bRank = Math.min(...b.matchReasons.map((reason) => MATCH_RANK[reason.kind] ?? 4));
-    return aRank - bRank || a.entry.headword.length - b.entry.headword.length ||
-      a.entry.headword.localeCompare(b.entry.headword, "eo");
-  });
-  const results = ranked.slice(0, input.limit).map(({ entry, matchReasons }) => ({
-    entry: {
-      ...entry,
-      translations: entry.translations.filter((translation) => languages.includes(translation.lng)),
-    },
-    matchReasons,
-  }));
-
-  return { query, languages, results };
+export function executeEntry({ mark, languages }: EntryInput) {
+  const selected = languages && [...new Set(languages.filter((language) => language !== "eo"))];
+  const entry = lookupMarks([mark], 1, { languages: selected })[0];
+  if (!entry) throw new Error(`No dictionary entry has the mark ${mark}.`);
+  return { entry };
 }

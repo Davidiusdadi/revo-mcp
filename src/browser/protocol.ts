@@ -1,11 +1,31 @@
+/** Messages between a page and the dictionary Worker (worker-entry.ts). */
+
+/** Where queries read the database: the published file over HTTP ranges, or the local copy. */
+export type RevoEngine = "remote" | "local";
+
 export type RevoWorkerInit = {
   type: "revo:init";
   mcpPort: MessagePort;
+  /** The database file, voko.db; its gzip copy, when published, is this URL + ".gz". */
   databaseUrl: string;
-  access?: "shards" | "range" | "download";
+  /**
+   * "auto" (default): read remotely until a local copy is downloaded, and keep
+   * it up to date. "remote": keep no local copy, deleting one stored before,
+   * unless a "download" command asks for one.
+   */
+  access?: "auto" | "remote";
 };
 
+/** Download a local copy now (when there is none, or the published file is newer), or delete it. */
+export type RevoWorkerCommand = { type: "revo:local"; action: "download" | "delete" };
+
 export type RevoWorkerEvent =
-  | { type: "revo:loading"; phase: "sqlite" | "database" | "mcp"; loaded?: number; total?: number }
-  | { type: "revo:ready"; engine: "shards" | "sqlite-wasm" }
+  | { type: "revo:loading"; phase: "sqlite" | "mcp" }
+  | { type: "revo:ready"; engine: RevoEngine }
+  /** Progress of the local copy, in bytes of the database file. */
+  | { type: "revo:download"; loaded: number; total: number }
+  /** Queries read from this engine from now on. */
+  | { type: "revo:engine"; engine: RevoEngine }
+  /** The Worker goes on without what the message names, such as a local copy. */
+  | { type: "revo:notice"; message: string }
   | { type: "revo:error"; message: string };
