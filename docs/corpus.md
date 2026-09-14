@@ -60,7 +60,9 @@ vendor/revo-fonto/           submodule: the VOKO articles, sparse to revo/ cfg/ 
 vendor/voko-grundo/          submodule: DTDs and name lists, sparse to dtd/ cfg/  (bun run fonto)
 corpus/overlay/              our VOKO articles (currently none)
 packages/voko-xml/           the parser package (no SQLite; usable by other projects)
-  src/dom.ts                 lossless DOM, parse (saxes), serialize, fragments
+  src/tree.ts                the lossless document tree: node types, walking, domEqual
+  src/dom.ts                 parse (saxes), serialize, fragments
+  src/view.ts                `voko-xml/view`: tree + model + walk, no parser (browser-safe)
   src/entities.ts            named-entity substitution (hard error on unknown)
   src/model.ts               the 62 DTD elements + declared attributes
   src/walk.ts                roots, tilde expansion, kap forms, node path keys, inventory
@@ -72,6 +74,8 @@ scripts/gen-entities.ts      vendor/voko-grundo → packages/voko-xml/data (bun 
 src/corpus/schema.sql        L2 DDL, its core indexes + compat views
 src/corpus/build.ts          XML → data/voko.db   (bun run corpus:build [--stage core|full] [--limit N] [--no-passes] [--pass NAME] [--out F])
 src/corpus/sources.ts        where the articles are read from, for the build and the passes
+src/corpus/documents.ts      articles → one table per element (L1), each batch read back and compared
+src/articles.ts              reading L1: id ranges back into voko-xml trees (runtime-safe)
 src/corpus/pass.ts           pass contract, meta_pass bookkeeping
 src/corpus/passes/           search.ts, index.ts, fts.ts, tld-links.ts, refs.ts, morph.ts (one per table group)
 src/search.ts                the search and entry tools' ranking over serĉo
