@@ -116,6 +116,17 @@ describe("segment", () => {
     // so brit|e|lir|o (the lira) cannot undercut brit|el|ir|o
     const exits: Inventory = { ...inv, roots: new Set([...inv.roots, "brit", "el", "ir", "lir"]), pairs: new Map([["el+ir", 7]]) };
     expect(formatSegments(segment("briteliro", exits)!).seg).toBe("brit|el|ir|o");
+    // i as well: daŭr|i|pov|a, the i an ending and not the letter's root
+    const pova: Inventory = { ...inv, roots: new Set([...inv.roots, "pov", "i"]), pairs: new Map([["i+pov", 2]]) };
+    expect(formatSegments(segment("daŭripova", pova)!)).toEqual({ seg: "daŭr|i|pov|a", kinds: "RLRE" });
+  });
+
+  test("without pair evidence only the linking o is kept inside", () => {
+    // the build's first pass has no pairs yet; a cheap inner a would let it
+    // learn a+grad from its own guess
+    const grade: Inventory = { ...inv, roots: new Set([...inv.roots, "cert", "grad", "agr"]), suffixes: new Set([...inv.suffixes, "ad"]) };
+    expect(formatSegments(segment("certagrade", grade)!).seg).toBe("cert|agr|ad|e");
+    expect(seg("vivodaŭro")).toEqual({ seg: "viv|o|daŭr|o", kinds: "RLRE" });
   });
 
   test("a pinned root is kept", () => {

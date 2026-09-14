@@ -88,8 +88,8 @@ export const ENDINGS: ReadonlySet<string> = new Set([
   "o", "a", "e", "i", "u", "as", "is", "os", "us", "oj", "on", "ojn", "aj", "an", "ajn", "en",
 ]);
 const WORD_ENDINGS: ReadonlySet<string> = new Set(["n", "j", "jn"]);
-/** Endings a root may keep inside a compound besides o (certa|grade, multe|nombra). */
-const VOWEL_LINK: ReadonlySet<string> = new Set(["a", "e"]);
+/** Endings a root may keep inside a compound besides o (certa|grade, multe|nombra, daŭri|pova). */
+const VOWEL_LINK: ReadonlySet<string> = new Set(["a", "e", "i"]);
 const MAX_MORPH = 24;
 
 // phases: 0 start / after a prefix · 1 after a root or suffix · 2 after an inner
@@ -140,9 +140,9 @@ const PAIR_UNSEEN = 0.5; // for a pair it never writes
  *
  * A piece may keep its ending inside a compound: the linking o always
  * (hund|o|ŝip|o), n after an endingless word (ĉio|n|pov|a, si|n|defend|o),
- * and a or e after a root (cert|a|grad|e, mult|e|nombr|a) — those two only
- * before a root the corpus writes after that vowel, or brit|e|lir|o (the lira)
- * would undercut brit|el|ir|o.
+ * and a, e or i after a root (cert|a|grad|e, mult|e|nombr|a, daŭr|i|pov|a) —
+ * those only before a root the corpus writes after that vowel, or brit|e|lir|o
+ * (the lira) would undercut brit|el|ir|o.
  */
 export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
   const w = word.toLowerCase();
@@ -188,7 +188,7 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
           if (inv.words.has(s)) relax(3, "W", 0.5);
           continue;
         }
-        // after an inner a/e only a root the corpus writes after that vowel fits
+        // after an inner a/e/i only a root the corpus writes after that vowel fits
         const backed = !(ph === 2 && pairs && VOWEL_LINK.has(prev!.m) && !pairs.has(`${prev!.m}+${s}`));
         if (inv.roots.has(s) && backed) relax(1, "R", rootCost(s));
         if (ph === 2) continue; // after an inner ending only a root fits
@@ -198,7 +198,11 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
           if (inv.suffixes.has(s)) relax(1, "S", 0.9 - bonus(s));
           if (atEnd && ENDINGS.has(s)) relax(4, "E", 0.5);
         }
-        if (ph === 1 && !atEnd && (s === "o" || VOWEL_LINK.has(s))) relax(2, "L", LINK);
+        // without pair evidence (the build's first pass over the marked words)
+        // an inner a/e/i is not offered at all: the pass then reads the vowel
+        // as the letter's root only where nothing else fits (daŭr|i|pov|a) and
+        // learns i+pov from that, instead of nepr|i|pens from a cheap vowel
+        if (ph === 1 && !atEnd && (s === "o" || (VOWEL_LINK.has(s) && pairs))) relax(2, "L", LINK);
         if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(4, "E", 0.5);
         if (ph === 3 && !atEnd && s === "n") relax(2, "L", LINK);
       }
