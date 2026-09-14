@@ -142,7 +142,7 @@ Order matters: `morph` reads `x_tld_occ`.
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 933,800 | 8 s |
 | `tld-links` | `x_tld_occ` | 173,285 | 12 s |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 111,733 | 1 s |
-| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 | 11 s |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 152,018 | 11 s |
 
 **`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35k, `ekz`
 115k, `dif` 14k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
@@ -164,8 +164,10 @@ OWL: `hom` is treated as symmetric (the ontology only makes it transitive).
 
 **`morph`** — a lexicon-driven segmenter (`src/morph.ts`, a DP over morpheme
 classes with costs) over an inventory built from the corpus itself: 13.3k roots
-(`art.rad` and `<rad var>`), 106 prefixes and 58 suffixes from the affix
-articles (`mal-`, `-ul`; the grammatical endings excluded), 304 endingless
+(`art.rad` and `<rad var>`; not the ending articles such as `-is`, nor an
+article that is only an exclamation and derives nothing, such as `eh`), 106
+prefixes and 58 suffixes from the affix articles (`mal-`, `-ul`; the
+grammatical endings excluded), 304 endingless
 words (`ĉar`, `kiu`) from drv headwords with a bare tilde. A `<tld/>` pins the
 root span, so the segmenter only has to place affixes around a known root. A
 headword written out in full (`hufofero` in `fer`) is pinned where the
@@ -190,7 +192,7 @@ cheaper, one it never writes dearer, which is how `montaro` becomes
   `x_tld_occ` outside headwords), segmented with the root pinned (99.3 %), and
   tied to a headword of the same article when one of its dictionary forms is one
   (84 %, `how` = `kap` / `infl` / `class` / `ptcp`).
-- `x_pair`: 21,184 morpheme pairs next to a marked root, each with the number
+- `x_pair`: 21,266 morpheme pairs next to a marked root, each with the number
   of derivations that write it.
 
 Without a pin, the segmenter puts the marked root in the right place for

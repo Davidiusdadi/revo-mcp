@@ -1,9 +1,10 @@
 /**
  * Pass `morph`: lexicon-driven morphology (src/morph.ts does the work).
  *
- * - x_morpheme: the inventory — article roots (and `<rad var>` roots), prefixes
- *   and suffixes from the affix articles (kap "mal-", "-ul"), the endings,
- *   and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
+ * - x_morpheme: the inventory — article roots (and `<rad var>` roots; not the
+ *   ending articles "-is", nor exclamations that derive nothing "eh"),
+ *   prefixes and suffixes from the affix articles (kap "mal-", "-ul"), the
+ *   endings, and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
  * - x_morph: a segmentation of every headword, the root pinned where the kap
  *   marks it (`<tld/>`, or the "/" after an article's root).
  * - x_token: every distinct word written with a `<tld/>` outside headwords,
@@ -25,7 +26,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 6,
+  version: 7,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -65,7 +66,20 @@ export function buildInventory(db: Database): Built {
     rootArts.set(r, a);
     rootWeight.set(r, (rootWeight.get(r) ?? 0) + (drv.get(art) ?? 0));
   };
+  // the ending articles ("-is": the past tense) have a root column like any
+  // other, but is/as/n/j are not roots: read as one, "is" could sit inside a
+  // word and esperant|is|oj would pass
+  const endingArts = new Set(db.query<{ id: number }, []>(
+    `SELECT a.id FROM art a JOIN node n ON n.art_id = a.id AND n.kind = 'art' JOIN kap k ON k.node_id = n.id
+     WHERE k.txt LIKE '-%'`).all().map((r) => r.id));
+  // An article that is only an exclamation or a sound ("eh", "brr", "kva":
+  // marked ekkrio/sonimit, nothing derived from it) has a root column too, but
+  // an exclamation does not join other roots: mult|eh|ar|a is no reading of
+  // multehara. Exclamations ReVo builds on (pafi, halti, jesi) stay roots.
+  const EXCLAMATION = /<vspec>(ekkrio|sonimito)<\/vspec>/;
   for (const a of db.query<{ id: number; rad: string; xml: string }, []>("SELECT id, rad, xml FROM art").iterate()) {
+    if (endingArts.has(a.id) && GRAMMATICAL.has(a.rad.toLowerCase())) continue;
+    if (EXCLAMATION.test(a.xml) && (drv.get(a.id) ?? 0) <= 1) continue;
     addRoot(a.rad, a.id);
     for (const m of a.xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
   }
