@@ -98,6 +98,8 @@ interface Cell {
   cost: number;
   from: number;
   fromKey: string;
+  /** which of the kept cells at (from, fromKey) this one extends */
+  fromIdx: number;
   morph: Morph | null;
 }
 
@@ -126,6 +128,15 @@ const LINK = 0.25; // an ending kept inside the word: the linking o, a/e, n afte
 const WORD_LATE = 2; // an endingless word (ĝis) as anything but the first piece
 const PAIR_BONUS = 0.25; // × ln(1 + n) for a pair the corpus writes
 const PAIR_UNSEEN = 0.5; // for a pair it never writes
+// Late choice among the near-best readings (only with pair evidence): the
+// weakest short root decides. A 2–4 letter root with few derivations is the
+// usual sign of a wrong cut: griz|ef|lav|a against griz|e|flav|a,
+// sup|ren|ir|i against supr|en|ir|i.
+const KEEP = 8; // readings kept per search state
+const LATE_WINDOW = 2; // how far above the cheapest reading a reading may cost
+const LATE_MAXLEN = 4; // longer roots are not judged
+const LATE_DRV = 4; // a root with this many derivations or more is not weak
+const LATE_WEIGHT = 2; // × (ln(1 + LATE_DRV) − ln(1 + derivations))
 
 /**
  * Cheapest split of `word` into morphemes; null if the inventory can't cover
@@ -143,14 +154,21 @@ const PAIR_UNSEEN = 0.5; // for a pair it never writes
  * and a, e or i after a root (cert|a|grad|e, mult|e|nombr|a, daŭr|i|pov|a) —
  * those only before a root the corpus writes after that vowel, or brit|e|lir|o
  * (the lira) would undercut brit|el|ir|o.
+ *
+ * With `inv.pairs` the search keeps the few cheapest readings, not just one,
+ * and picks among those close to the cheapest the one whose weakest short root
+ * has the most derivations (see LATE_WEIGHT). A root that is also an
+ * endingless word (ĉiu, tiu) is not judged. Without pairs (the build's first
+ * pass) it is the plain cheapest split.
  */
 export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
   const w = word.toLowerCase();
   const n = w.length;
   if (n === 0) return null;
-  // one cell per (position, phase, last morpheme): the pair term needs the last piece
-  const best: Map<string, Cell>[] = Array.from({ length: n + 1 }, () => new Map());
-  best[0].set("0", { cost: 0, from: -1, fromKey: "", morph: null });
+  const keep = inv.pairs ? KEEP : 1;
+  // the cheapest cells per (position, phase, last morpheme): the pair term needs the last piece
+  const best: Map<string, Cell[]>[] = Array.from({ length: n + 1 }, () => new Map());
+  best[0].set("0", [{ cost: 0, from: -1, fromKey: "", fromIdx: -1, morph: null }]);
   // A pin the word does not bear is dropped: the span it names would be
   // stamped as a root whatever text happens to sit there, and straddling it
   // is forbidden, so a wrong pin also rules out every correct reading.
@@ -162,6 +180,16 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
   const bonus = (s: string) => LEN_BONUS * s.length * s.length;
   const rootCost = (s: string) =>
     (s.length === 1 ? ONE_LETTER : s.length === 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
+  // insert by cost; an equal cost goes after the cells already there, so the first reading found wins a tie
+  const add = (j: number, key: string, cell: Cell) => {
+    let cells = best[j].get(key);
+    if (!cells) best[j].set(key, (cells = []));
+    let at = cells.length;
+    while (at > 0 && cell.cost < cells[at - 1].cost) at--;
+    if (at >= keep) return;
+    cells.splice(at, 0, cell);
+    if (cells.length > keep) cells.pop();
+  };
 
   for (let i = 0; i < n; i++) {
     if (best[i].size === 0) continue;
@@ -170,59 +198,86 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
       if (pin && !isFixed && i < fEnd && j > fAt) continue; // nothing may straddle the fixed root
       const s = w.slice(i, j);
       const atEnd = j === n;
-      for (const [key, cell] of best[i]) {
+      for (const [key, cells] of best[i]) {
         const ph = Number(key[0]);
-        const prev = cell.morph;
-        const relax = (next: number, k: MorphKind, cost: number) => {
-          let c = cell.cost + cost;
-          if (pairs && prev && prev.k !== "E" && k !== "E") {
-            const m = pairs.get(`${prev.m}+${s}`);
-            c += m ? -PAIR_BONUS * Math.log1p(m) : PAIR_UNSEEN;
+        for (let idx = 0; idx < cells.length; idx++) {
+          const cell = cells[idx];
+          const prev = cell.morph;
+          const relax = (next: number, k: MorphKind, cost: number) => {
+            let c = cell.cost + cost;
+            if (pairs && prev && prev.k !== "E" && k !== "E") {
+              const m = pairs.get(`${prev.m}+${s}`);
+              c += m ? -PAIR_BONUS * Math.log1p(m) : PAIR_UNSEEN;
+            }
+            add(j, `${next}${s}`, { cost: c, from: i, fromKey: key, fromIdx: idx, morph: { m: s, k } });
+          };
+          if (isFixed) {
+            relax(1, "R", 0.5);
+            if (inv.words.has(s)) relax(3, "W", 0.5);
+            continue;
           }
-          const nk = `${next}${s}`;
-          const cur = best[j].get(nk);
-          if (!cur || c < cur.cost) best[j].set(nk, { cost: c, from: i, fromKey: key, morph: { m: s, k } });
-        };
-        if (isFixed) {
-          relax(1, "R", 0.5);
-          if (inv.words.has(s)) relax(3, "W", 0.5);
-          continue;
+          // after an inner a/e/i only a root the corpus writes after that vowel fits
+          const backed = !(ph === 2 && pairs && VOWEL_LINK.has(prev!.m) && !pairs.has(`${prev!.m}+${s}`));
+          if (inv.roots.has(s) && backed) relax(1, "R", rootCost(s));
+          if (ph === 2) continue; // after an inner ending only a root fits
+          if (inv.words.has(s)) relax(3, "W", (s.length <= 2 ? 2.5 : 1) - bonus(s) + (ph === 0 ? 0 : WORD_LATE));
+          if (inv.prefixes.has(s)) relax(0, "P", (ph === 0 ? 0.9 : 2.5) - bonus(s));
+          if (ph === 1 || ph === 3) {
+            if (inv.suffixes.has(s)) relax(1, "S", 0.9 - bonus(s));
+            if (atEnd && ENDINGS.has(s)) relax(4, "E", 0.5);
+          }
+          // without pair evidence (the build's first pass over the marked words)
+          // an inner a/e/i is not offered at all: the pass then reads the vowel
+          // as the letter's root only where nothing else fits (daŭr|i|pov|a) and
+          // learns i+pov from that, instead of nepr|i|pens from a cheap vowel
+          if (ph === 1 && !atEnd && (s === "o" || (VOWEL_LINK.has(s) && pairs))) relax(2, "L", LINK);
+          if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(4, "E", 0.5);
+          if (ph === 3 && !atEnd && s === "n") relax(2, "L", LINK);
         }
-        // after an inner a/e/i only a root the corpus writes after that vowel fits
-        const backed = !(ph === 2 && pairs && VOWEL_LINK.has(prev!.m) && !pairs.has(`${prev!.m}+${s}`));
-        if (inv.roots.has(s) && backed) relax(1, "R", rootCost(s));
-        if (ph === 2) continue; // after an inner ending only a root fits
-        if (inv.words.has(s)) relax(3, "W", (s.length <= 2 ? 2.5 : 1) - bonus(s) + (ph === 0 ? 0 : WORD_LATE));
-        if (inv.prefixes.has(s)) relax(0, "P", (ph === 0 ? 0.9 : 2.5) - bonus(s));
-        if (ph === 1 || ph === 3) {
-          if (inv.suffixes.has(s)) relax(1, "S", 0.9 - bonus(s));
-          if (atEnd && ENDINGS.has(s)) relax(4, "E", 0.5);
-        }
-        // without pair evidence (the build's first pass over the marked words)
-        // an inner a/e/i is not offered at all: the pass then reads the vowel
-        // as the letter's root only where nothing else fits (daŭr|i|pov|a) and
-        // learns i+pov from that, instead of nepr|i|pens from a cheap vowel
-        if (ph === 1 && !atEnd && (s === "o" || (VOWEL_LINK.has(s) && pairs))) relax(2, "L", LINK);
-        if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(4, "E", 0.5);
-        if (ph === 3 && !atEnd && s === "n") relax(2, "L", LINK);
       }
     }
   }
 
-  // finished: an ending (phase 4), or an endingless word (phase 3); on a tie the ending
-  let end: { key: string; cell: Cell } | undefined;
-  for (const [key, cell] of best[n]) {
+  // finished: an ending (phase 4) or an endingless word (phase 3); on a tie the ending
+  const ends: { key: string; idx: number; cost: number }[] = [];
+  for (const [key, cells] of best[n]) {
     if (key[0] !== "4" && key[0] !== "3") continue;
-    if (!end || cell.cost < end.cell.cost || (cell.cost === end.cell.cost && key[0] === "4" && end.key[0] === "3")) end = { key, cell };
+    cells.forEach((c, idx) => ends.push({ key, idx, cost: c.cost }));
   }
-  if (!end) return null;
-  const out: Morph[] = [];
-  for (let i = n, key = end.key; i > 0; ) {
-    const c = best[i].get(key)!;
-    out.push(c.morph!);
-    [i, key] = [c.from, c.fromKey];
+  if (!ends.length) return null;
+  ends.sort((a, b) => a.cost - b.cost || (a.key[0] === b.key[0] ? 0 : a.key[0] === "4" ? -1 : 1));
+  const trace = (key: string, idx: number): Morph[] => {
+    const out: Morph[] = [];
+    for (let i = n; i > 0; ) {
+      const c = best[i].get(key)![idx];
+      out.push(c.morph!);
+      [i, key, idx] = [c.from, c.fromKey, c.fromIdx];
+    }
+    return out.reverse();
+  };
+  if (keep === 1) return trace(ends[0].key, ends[0].idx);
+
+  const weak = (ms: Morph[]) => {
+    let least = Infinity;
+    for (const m of ms) {
+      if (m.k !== "R" || m.m.length < 2 || m.m.length > LATE_MAXLEN || inv.words.has(m.m)) continue;
+      least = Math.min(least, rootWeight?.get(m.m) ?? 0);
+    }
+    return least === Infinity ? 0 : LATE_WEIGHT * Math.max(0, Math.log1p(LATE_DRV) - Math.log1p(least));
+  };
+  let pick: Morph[] | null = null;
+  let pickScore = Infinity;
+  const seen = new Set<string>();
+  for (const e of ends) {
+    if (e.cost > ends[0].cost + LATE_WINDOW || seen.size >= KEEP) break;
+    const ms = trace(e.key, e.idx);
+    const id = ms.map((m) => m.m + m.k).join("|");
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const score = e.cost + weak(ms);
+    if (score < pickScore - 1e-9) [pick, pickScore] = [ms, score];
   }
-  return out.reverse();
+  return pick;
 }
 
 /** "mal|san|ul|ej|o" and "PRSSE" */

@@ -78,6 +78,22 @@ describe("segment", () => {
     expect(seg(new Map([["mon+tar", 3]]))).toBe("mon|tar|o");
   });
 
+  test("among near-equal readings, a short root with few derivations loses", () => {
+    // flankeniri: flan|ken|ir|i costs about as much as flank|en|ir|i, but flan
+    // and ken have one derivation each, flank has 27 (counts as in ReVo)
+    const sides: Inventory = {
+      ...inv,
+      roots: new Set([...inv.roots, "flan", "ken", "flank", "ir", "en"]),
+      prefixes: new Set([...inv.prefixes, "en"]),
+      pairs: new Map([["en+ir", 9], ["flank+en", 1], ["ken+ir", 2]]),
+      rootWeight: new Map([["flan", 1], ["ken", 1], ["flank", 27], ["ir", 55], ["en", 12]]),
+    };
+    expect(formatSegments(segment("flankeniri", sides)!).seg).toBe("flank|en|ir|i");
+    // the same split with well-used short roots stays as the costs have it
+    const rich = new Map([...sides.rootWeight!, ["flan", 30], ["ken", 30]]);
+    expect(formatSegments(segment("flankeniri", { ...sides, rootWeight: rich })!).seg).toBe("flan|ken|ir|i");
+  });
+
   test("a pair the corpus never writes is dearer, not forbidden", () => {
     const pairs = new Map([["mal+san", 5]]);
     expect(formatSegments(segment("malsanulejo", { ...inv, pairs })!).seg).toBe("mal|san|ul|ej|o");

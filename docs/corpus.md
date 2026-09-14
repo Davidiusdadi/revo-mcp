@@ -182,7 +182,13 @@ root are split first, and the morphemes written on either side of the pin
 is the segmenter's own reading) are counted into `x_pair`. Then every word,
 pinned or not, is split with that evidence: a pair the corpus writes is
 cheaper, one it never writes dearer, which is how `montaro` becomes
-`mont|ar|o` and not `mon|tar|o` (money, tare).
+`mont|ar|o` and not `mon|tar|o` (money, tare). In that second pass the
+segmenter keeps the eight cheapest readings, and among those that cost at most
+2 more than the cheapest it takes the one whose weakest root of two to four
+letters has the most derivations: `flank|en|ir|i`, not `flan|ken|ir|i` (flank
+has 27 derivations, flan and ken one each). A rare short root that is really
+there loses the same way (`dub|list|o` for `dublisto`); on balance the wrong
+readings drop.
 
 - `x_morpheme`: the inventory; for roots, the article and its number of
   derivations.
@@ -196,11 +202,11 @@ cheaper, one it never writes dearer, which is how `montaro` becomes
   of derivations that write it.
 
 Without a pin, the segmenter puts the marked root in the right place for
-99.3 % of the 68,578 root-marked words (headwords 99.5 %, example forms
-99.2 %); `bun run corpus:eval-segment` measures it and lists the misses. The
+99.4 % of the 68,578 root-marked words (headwords 99.6 %, example forms
+99.3 %); `bun run corpus:eval-segment` measures it and lists the misses. The
 script takes its pair evidence from one third of the words only and scores
 separately the third whose derivational relatives are not in that evidence
-(99.2 %), so the number stands for words the segmenter has not seen a relative
+(99.3 %), so the number stands for words the segmenter has not seen a relative
 of.
 
 **Stemming in the tools.** `lemmaCandidates()` (grammar-driven: the ending says
