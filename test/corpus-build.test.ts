@@ -12,12 +12,12 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { descendants, domEqual, type Element } from "voko-xml";
 import { idOf, readRange } from "../src/articles";
-import { contentOf, textIn, OMIT } from "../src/content";
+import { contentOf, entryContent, textIn, OMIT } from "../src/content";
 import { buildArticles, PASSES } from "../src/corpus/build";
 import { articleTrees, type ArticleTree } from "../src/corpus/documents";
 import { runPass } from "../src/corpus/pass";
 import { TOKEN_GROUPS } from "../src/corpus/passes/morph";
-import { entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
+import { IS_ENTRY, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
 
 let dir: string;
@@ -222,6 +222,22 @@ describe("entries read from the stored articles", () => {
 
   test("sensesOf: unknown mrk gives no senses", () => {
     expect(sensesOf("ne.0ekzistas")).toEqual([]);
+  });
+
+  test("an entry reads the same without the tables of a citation's parts", () => {
+    // what db-voko leaves out: bib, vrk, lok, aut and url rows inside the entries
+    expect(one<{ c: number }>(
+      `SELECT COUNT(*) c FROM node n JOIN aut x ON x.id BETWEEN n.id AND n.last_id WHERE ${IS_ENTRY}`).c).toBeGreaterThan(0);
+    const marks = all<{ mrk: string }>(`SELECT n.mrk FROM node n WHERE ${IS_ENTRY}`).map((r) => r.mrk);
+    expect(marks.length).toBeGreaterThan(400);
+    for (const mrk of marks) {
+      const node = entryNodeByMark(db as never, mrk)!;
+      const [drv] = readRange(db as never, node.id, node.last_id);
+      const whole = entryContent(drv as Element, treeOf(node.article).roots);
+      const entry = assembleEntry(db as never, node);
+      expect({ senses: entry.senses, crossRefs: entry.crossRefs.map(({ target, type }) => ({ target, type })), usageDomains: entry.usageDomains })
+        .toEqual(whole);
+    }
   });
 
   test("an entry lists a translation by its <ind> form when it marks one", () => {

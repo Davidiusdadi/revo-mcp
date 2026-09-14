@@ -15,7 +15,7 @@ import type { SqlReader } from "./sql";
 import type { Element, Roots } from "voko-xml/view";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
-import { readRange } from "./articles";
+import { inMask, maskOf, readRange, storedTablesOf } from "./articles";
 import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry } from "./content";
 
 export type { SenseEntry } from "./content";
@@ -211,9 +211,24 @@ function rootsAt(db: SqlReader, node: EntryNode, drv: Element): Roots {
   return rootsFrom(node.rad, variants);
 }
 
+/**
+ * The parts of a citation. The DTD puts them only in <fnt>, <rim> and <adm>,
+ * and <url> also beside a node's content: nowhere an entry reads text, so an
+ * entry leaves their tables out, a fifth of its table reads (3.4 of 18 on
+ * average), each a few pages of a file read over HTTP. <fnt> itself stays: its
+ * row holds the whitespace before it, which the text around it keeps. Should
+ * entries read <rim> or <adm> text, <aut> goes from here.
+ */
+const UNREAD_IN_ENTRIES: ReadonlySet<string> = new Set(["bib", "vrk", "lok", "aut", "url"]);
+
+/** A node's table mask without the tables an entry does not read. */
+function entryMask(db: SqlReader, mask: Uint8Array): Uint8Array {
+  return maskOf(storedTablesOf(db).flatMap((table, i) => inMask(mask, i) && !UNREAD_IN_ENTRIES.has(table.name) ? [i] : []));
+}
+
 /** What an entry's derivation says: its senses, references and usage domains. */
 function contentOf(db: SqlReader, node: EntryNode): EntryContent {
-  const [drv] = readRange(db, node.id, node.last_id, { mask: node.mask });
+  const [drv] = readRange(db, node.id, node.last_id, { mask: entryMask(db, node.mask) });
   if (drv?.type !== "element") throw new Error(`${node.mrk}: no element at ${node.id}`);
   return entryContent(drv, rootsAt(db, node, drv));
 }
