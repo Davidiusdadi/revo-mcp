@@ -81,13 +81,14 @@ cd revo-mcp
 # Install dependencies
 bun install
 
-# Check out the XML sources and build the dictionary database (~2 min, ~260 MB)
+# Check out the XML sources and build the dictionary database (~4 min, ~280 MB)
 bun run setup
 ```
 
 `bun run setup` checks out the two source submodules, generates the parser's
 entity and name tables from them, then parses all 13,079 VOKO articles into
-`data/voko.db` and runs the enrichment passes. The database is not committed —
+`data/voko.db`, stores them there whole, and runs the passes that derive the
+search and enrichment tables from them. The database is not committed —
 it is built from the XML, and rebuilding is one command.
 
 See [docs/corpus.md](docs/corpus.md) for the layers, the schema and the passes.
@@ -102,7 +103,7 @@ database file. It needs no server of its own: a static host serving `voko.db`
 with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
-# The database a browser reads: search, lookup, entries and languages (~100 MB, ~40 MB gzipped)
+# The database a browser reads: search, lookup, entries and languages (~140 MB, ~60 MB gzipped)
 bun run corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
@@ -169,10 +170,11 @@ are made one after another, so at a 100 ms round trip a `mal` page takes about
 7 s and `Haus` about 2 s. Once the copy is stored a search makes no request
 (`mal` ~110 ms, `Haus` ~20 ms) and a start makes one, the revision check.
 
-Of the core file, translations take 37 MB and their index 9 MB, the search
-table 25 MB, examples 12 MB, and nodes, references, definitions and headwords
-the rest; the citations are left empty. The full build (`bun run setup`,
-257 MB, 110 MB gzipped) adds the enrichment passes and their indexes.
+The core file (141 MB, 62.5 MB gzipped) holds every article whole, one table
+per XML element (92 MB, citations, remarks and markup included), plus the
+search table (24 MB), the translations (22 MB), and the nodes and headwords
+(5.5 MB). The full build (`bun run setup`, 281 MB, 132 MB gzipped) adds the
+enrichment passes and their indexes.
 
 Search always includes Esperanto and ranks exact matches, then reduced or
 inflected forms, then literal prefixes; the request's language order breaks
@@ -406,7 +408,7 @@ revo-mcp/
 the structure the rendered HTML flattens:
 - 64,000+ headword entries, senses kept as senses
 - 550,000+ translations across 174 languages, with `ind`/`baz`/`pr` intact
-- 13,079 articles, their text in tables (the XML stays in the sources)
+- 13,079 articles stored whole, one table per XML element, each reading back as its file
 - A typed reference graph, morphological segmentation, and full-text indexes
   over headwords, translations, examples and definitions
 

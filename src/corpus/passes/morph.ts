@@ -17,9 +17,11 @@
  * off them; then every word is split and stored with the pairs in hand.
  */
 import type { Database } from "bun:sqlite";
-import { outerXml } from "voko-xml";
+import { kapForms, outerXml } from "voko-xml";
 import type { Pass } from "../pass";
-import { articlesOf } from "../sources";
+import { idOf } from "../../articles";
+import { contentOf } from "../../content";
+import { articleTrees } from "../documents";
 import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph } from "../../morph";
 
 const WORD = /\p{L}+/gu;
@@ -28,14 +30,14 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 7,
+  version: 8,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
     const nInv = writeInventory(db, inv);
     log(`x_morpheme: ${inv.roots.size} roots, ${inv.prefixes.size} prefixes, ${inv.suffixes.size} suffixes, ${inv.words.size} endingless words`);
     const pairs = new Pairs();
-    const heads = segmentHeadwords(db, inv, pairs, log);
+    const heads = segmentHeadwords(db, inv, inv.tildes, pairs, log);
     const toks = attestedTokens(db, inv, pairs, log);
     const nPair = writePairs(db, pairs, log);
     inv.pairs = pairs.counts;
@@ -49,6 +51,8 @@ interface Built extends Inventory {
   rootArts: Map<string, number[]>;
   /** derivations per article */
   drv: Map<number, number>;
+  /** every headword's display form, root marked ("mal~ulejo", "san/a"), by its id */
+  tildes: Map<number, string>;
 }
 
 export function buildInventory(db: Database): Built {
@@ -56,8 +60,9 @@ export function buildInventory(db: Database): Built {
   const rootArts = new Map<string, number[]>();
   const drv = new Map<number, number>();
   const rootWeight = new Map<string, number>();
-  for (const r of db.query<{ art_id: number; n: number }, []>(
-    "SELECT art_id, COUNT(*) n FROM node WHERE kind IN ('drv','subdrv') GROUP BY art_id").iterate()) drv.set(r.art_id, r.n);
+  const tildes = new Map<number, string>();
+  for (const r of db.query<{ article_id: number; n: number }, []>(
+    "SELECT article_id, COUNT(*) n FROM node WHERE kind IN ('drv','subdrv') GROUP BY article_id").iterate()) drv.set(r.article_id, r.n);
   const addRoot = (r: string, art: number) => {
     r = r.toLowerCase();
     if (!r) return;
@@ -72,38 +77,40 @@ export function buildInventory(db: Database): Built {
   // other, but is/as/n/j are not roots: read as one, "is" could sit inside a
   // word and esperant|is|oj would pass
   const endingArts = new Set(db.query<{ id: number }, []>(
-    `SELECT a.id FROM art a JOIN node n ON n.art_id = a.id AND n.kind = 'art' JOIN kap k ON k.node_id = n.id
-     WHERE k.txt LIKE '-%'`).all().map((r) => r.id));
+    `SELECT n.article_id id FROM node n JOIN headword h ON h.node_id = n.id
+     WHERE n.kind = 'art' AND h.txt LIKE '-%'`).all().map((r) => r.id));
   // An article that is only an exclamation or a sound ("eh", "brr", "kva":
   // marked ekkrio/sonimit, nothing derived from it) has a root column too, but
   // an exclamation does not join other roots: mult|eh|ar|a is no reading of
   // multehara. Exclamations ReVo builds on (pafi, halti, jesi) stay roots.
   const EXCLAMATION = /<vspec>(ekkrio|sonimito)<\/vspec>/;
-  const radOf = db.query<{ rad: string }, [number]>("SELECT rad FROM art WHERE id = ?");
-  for (const a of articlesOf(db)) {
-    const rad = radOf.get(a.id)!.rad;
-    const xml = outerXml(a.art);
-    if (endingArts.has(a.id) && GRAMMATICAL.has(rad.toLowerCase())) continue;
-    if (EXCLAMATION.test(xml) && (drv.get(a.id) ?? 0) <= 1) continue;
-    addRoot(rad, a.id);
-    for (const m of xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
+  for (const { article, art, roots: articleRoots, nodes } of articleTrees(db)) {
+    // endingless words: a derivation whose headword is the bare root
+    for (const n of nodes) {
+      for (const c of contentOf(n.el)) {
+        if (c.el.name !== "kap") continue;
+        const forms = kapForms(c.el, articleRoots);
+        tildes.set(idOf(c.el)!, forms.tilde);
+        if ((n.kind === "drv" || n.kind === "subdrv") && forms.tilde === "~" && /^\p{L}+$/u.test(forms.norm)) words.add(forms.norm);
+      }
+    }
+    const rad = article.rad;
+    const xml = outerXml(art);
+    if (endingArts.has(article.id) && GRAMMATICAL.has(rad.toLowerCase())) continue;
+    if (EXCLAMATION.test(xml) && (drv.get(article.id) ?? 0) <= 1) continue;
+    addRoot(rad, article.id);
+    for (const m of xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), article.id);
   }
   // affix articles: kap "mal-" / "-ul"; the ending articles ("-o", "-as", "-j") are not
   // affixes, but "-an" and "-on" are (member, fraction) even though they spell endings too
   for (const k of db.query<{ txt: string }, []>(
-    "SELECT DISTINCT txt FROM kap WHERE (txt LIKE '-%' OR txt LIKE '%-') AND txt NOT LIKE '% %'").iterate()) {
+    "SELECT DISTINCT txt FROM headword WHERE (txt LIKE '-%' OR txt LIKE '%-') AND txt NOT LIKE '% %'").iterate()) {
     const m = k.txt.toLowerCase().replace(/^-|-$/g, "");
     if (!m || GRAMMATICAL.has(m)) continue;
     if (k.txt.endsWith("-") && !k.txt.startsWith("-")) prefixes.add(m);
     else if (k.txt.startsWith("-") && !k.txt.endsWith("-")) suffixes.add(m);
   }
-  // endingless words: a derivation whose headword is the bare root
-  for (const k of db.query<{ norm: string }, []>(
-    `SELECT DISTINCT k.norm FROM kap k JOIN node n ON n.id = k.node_id
-     WHERE n.kind IN ('drv','subdrv') AND k.tilde = '~'`).iterate()) {
-    if (/^\p{L}+$/u.test(k.norm)) words.add(k.norm);
-  }
-  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight };
+  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, tildes };
 }
 
 function writeInventory(db: Database, inv: Built): number {
@@ -111,7 +118,7 @@ function writeInventory(db: Database, inv: Built): number {
     CREATE TABLE x_morpheme (
       morph  TEXT NOT NULL,
       kind   TEXT NOT NULL,      -- R root · P prefix · S suffix · E ending · W endingless word
-      art_id INTEGER,            -- for roots: the article (homonym articles share a root)
+      article_id INTEGER,        -- for roots: the article (homonym articles share a root)
       drv    INTEGER             -- for roots: derivations in that article
     )`);
   const ins = db.prepare("INSERT INTO x_morpheme VALUES (?,?,?,?)");
@@ -209,13 +216,15 @@ interface Deferred {
   write(inv: Inventory): number;
 }
 
-function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
+function segmentHeadwords(
+  db: Database, inv: Inventory, tildes: Map<number, string>, pairs: Pairs, log: (m: string) => void,
+): Deferred {
   db.run(`
     CREATE TABLE x_morph (
       kap_id  INTEGER PRIMARY KEY,
       node_id INTEGER NOT NULL,
-      art_id  INTEGER NOT NULL,
-      form    TEXT NOT NULL,         -- kap.norm
+      article_id INTEGER NOT NULL,
+      form    TEXT NOT NULL,         -- headword.norm
       seg     TEXT NOT NULL,         -- "mal|san|ul|ej|o", words separated by " "
       kinds   TEXT NOT NULL,         -- "PRSSE" per word; "?" where the inventory could not cover it
       roots   TEXT NOT NULL,         -- the R morphemes, space-separated
@@ -229,24 +238,26 @@ function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: s
     if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
   }
   const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
-  type Kap = { id: number; node_id: number; art_id: number; norm: string; tilde: string; rad: string };
+  type Kap = { id: number; node_id: number; article_id: number; norm: string; rad: string };
   type Pin = { word: string; at: number; root: string };
   const rows: { k: Kap; pin?: Pin }[] = [];
   let n = 0, ok = 0, pinned = 0;
   const write = (k: Kap, inv: Inventory, pin?: Pin) => {
     const r = segmentForm(k.norm, inv, pin);
-    ins.run(k.id, k.node_id, k.art_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);
+    ins.run(k.id, k.node_id, k.article_id, k.norm, r.seg, r.kinds, r.roots, r.pinned ? "tilde" : "free", +r.ok);
     n++;
     if (r.ok) ok++;
     if (r.pinned) pinned++;
   };
   for (const k of db.query<Kap, []>(
-    "SELECT k.id, k.node_id, n.art_id, k.norm, k.tilde, a.rad FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id").iterate()) {
+    `SELECT h.id, h.node_id, n.article_id, h.norm, a.rad FROM headword h
+       JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id ORDER BY h.id`).iterate()) {
     let pin = marked.get(k.id);
     // article kap "san/a": the root ends at the "/"
-    const slash = k.tilde.indexOf("/");
-    if (!pin && slash > 0 && !k.tilde.slice(0, slash).includes(" ")) {
-      const root = k.tilde.slice(0, slash).toLowerCase().replace(/^-/, "");
+    const tilde = tildes.get(k.id)!;
+    const slash = tilde.indexOf("/");
+    if (!pin && slash > 0 && !tilde.slice(0, slash).includes(" ")) {
+      const root = tilde.slice(0, slash).toLowerCase().replace(/^-/, "");
       const word = k.norm.match(WORD)?.find((w) => w.startsWith(root));
       if (word) pin = { word, at: 0, root };
     }
@@ -293,15 +304,15 @@ function segmentHeadwords(db: Database, inv: Inventory, pairs: Pairs, log: (m: s
  * row it picked, so MIN(id) makes that the first occurrence. Exported so the
  * test can hold the pin against the occurrences it came from.
  */
-export const TOKEN_GROUPS = `SELECT norm, art_id, COUNT(*) n, pre, rad, MIN(id) AS first_id
-    FROM x_tld_occ WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, art_id`;
+export const TOKEN_GROUPS = `SELECT norm, article_id, COUNT(*) n, pre, rad, MIN(id) AS first_id
+    FROM x_tld_occ WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, article_id`;
 
 function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
   db.run(`
     CREATE TABLE x_token (
       id      INTEGER PRIMARY KEY,
       norm    TEXT NOT NULL,          -- the word as written with <tld/>, lowercased
-      art_id  INTEGER NOT NULL,       -- the article whose root the tilde stands for
+      article_id INTEGER NOT NULL,    -- the article whose root the tilde stands for
       n       INTEGER NOT NULL,       -- occurrences
       seg     TEXT NOT NULL,
       kinds   TEXT NOT NULL,
@@ -310,25 +321,26 @@ function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: str
       how     TEXT                    -- kap (is the headword) · infl · class · ptcp
     )`);
   const heads = new Map<number, Map<string, number>>();
-  for (const k of db.query<{ art_id: number; norm: string; id: number }, []>(
-    "SELECT n.art_id, k.norm, k.id FROM kap k JOIN node n ON n.id = k.node_id ORDER BY k.id").iterate()) {
-    const m = heads.get(k.art_id) ?? new Map<string, number>();
+  for (const k of db.query<{ article_id: number; norm: string; id: number }, []>(
+    `SELECT n.article_id, h.norm, h.id FROM headword h JOIN node n ON n.id = h.node_id
+      ORDER BY h.node_id, h.id`).iterate()) {
+    const m = heads.get(k.article_id) ?? new Map<string, number>();
     if (!m.has(k.norm)) m.set(k.norm, k.id);
-    heads.set(k.art_id, m);
+    heads.set(k.article_id, m);
   }
-  const ins = db.prepare("INSERT INTO x_token (norm, art_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
-  type Tok = { norm: string; art_id: number; n: number; pre: string; rad: string };
+  const ins = db.prepare("INSERT INTO x_token (norm, article_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
+  type Tok = { norm: string; article_id: number; n: number; pre: string; rad: string };
   const rows: Tok[] = [];
   let n = 0, ok = 0, lemma = 0;
   const write = (t: Tok, inv: Inventory, pin: { word: string; at: number; root: string }) => {
     const s = segmentForm(t.norm, inv, pin);
-    const h = heads.get(t.art_id);
+    const h = heads.get(t.article_id);
     let kap: number | undefined, how: string | null = null;
     if (h?.has(t.norm)) [kap, how] = [h.get(t.norm), "kap"];
     else for (const c of lemmaCandidates(t.norm)) {
       if (h?.has(c.lemma)) { [kap, how] = [h.get(c.lemma), c.how]; break; }
     }
-    ins.run(t.norm, t.art_id, t.n, s.seg, s.kinds, +s.ok, kap ?? null, how);
+    ins.run(t.norm, t.article_id, t.n, s.seg, s.kinds, +s.ok, kap ?? null, how);
     n++;
     if (s.ok) ok++;
     if (kap !== undefined) lemma++;

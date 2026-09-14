@@ -20,7 +20,9 @@ const at = args.indexOf("--db");
 const db = new Database(at >= 0 ? args[at + 1] : "data/voko.db", { readonly: true });
 
 const heads = new Map<string, Set<string>>();
-for (const r of db.query<{ kap_norm: string; art: string }, []>("SELECT kap_norm, art FROM nodo").iterate()) {
+for (const r of db.query<{ kap_norm: string; art: string }, []>(
+  `SELECT h.norm kap_norm, a.file art FROM node n JOIN headword h ON h.id = n.kap_id
+     JOIN article a ON a.id = n.article_id WHERE n.mrk IS NOT NULL AND n.kind <> 'art'`).iterate()) {
   const s = heads.get(r.kap_norm) ?? new Set<string>();
   s.add(r.art);
   heads.set(r.kap_norm, s);
@@ -29,7 +31,7 @@ for (const r of db.query<{ kap_norm: string; art: string }, []>("SELECT kap_norm
 const inv = { roots: new Set<string>(), prefixes: new Set<string>(), suffixes: new Set<string>(), words: new Set<string>() };
 const rootArts = new Map<string, Set<string>>();
 for (const r of db.query<{ morph: string; kind: string; file: string | null }, []>(
-  "SELECT m.morph, m.kind, a.file FROM x_morpheme m LEFT JOIN art a ON a.id = m.art_id").iterate()) {
+  "SELECT m.morph, m.kind, a.file FROM x_morpheme m LEFT JOIN article a ON a.id = m.article_id").iterate()) {
   if (r.kind === "R") {
     inv.roots.add(r.morph);
     const s = rootArts.get(r.morph) ?? new Set<string>();
@@ -42,7 +44,7 @@ for (const r of db.query<{ morph: string; kind: string; file: string | null }, [
 const affixy = (rad: string) => inv.prefixes.has(rad) || inv.suffixes.has(rad) || ENDINGS.has(rad) || rad === "j" || rad === "n";
 
 const gold = db.query<{ norm: string; art: string; rad: string }, []>(
-  `SELECT DISTINCT o.norm, a.file art, lower(o.rad) rad FROM x_tld_occ o JOIN art a ON a.id = o.art_id WHERE o.owner_kind = 'ekz'`
+  `SELECT DISTINCT o.norm, a.file art, lower(o.rad) rad FROM x_tld_occ o JOIN article a ON a.id = o.article_id WHERE o.owner_kind = 'ekz'`
 ).all().filter((g) => !heads.has(g.norm) && /^\p{L}+$/u.test(g.norm) && !affixy(g.rad));
 
 type Method = (w: string) => Set<string> | null | undefined;

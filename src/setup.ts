@@ -3,8 +3,8 @@
  * Setup: build data/voko.db from ReVo's VOKO XML.
  *
  * Checks out the source submodules and generates the parser's tables first if
- * that has not happened yet (scripts/fonto.sh), then runs the L2 build and
- * every enrichment pass — the same work as `bun run corpus:build`, so a fresh
+ * that has not happened yet (scripts/fonto.sh), then stores the articles and
+ * runs every pass — the same work as `bun run corpus:build`, so a fresh
  * clone reaches a serving database in one command.
  */
 
@@ -64,12 +64,12 @@ async function main(): Promise<void> {
   mkdirSync(DATA_DIR, { recursive: true });
   sources();
 
-  const { buildL2, finish, PASSES } = await import("./corpus/build");
+  const { buildArticles, finish, PASSES } = await import("./corpus/build");
   const { runPass } = await import("./corpus/pass");
 
   console.log(`Building ${DB_PATH} ...`);
   const t0 = Date.now();
-  const db = buildL2(DB_PATH); // replaces the file if it is already there
+  const db = buildArticles(DB_PATH); // replaces the file if it is already there
   for (const pass of PASSES) runPass(db, pass);
   finish(db, DB_PATH);
 

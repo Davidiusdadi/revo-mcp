@@ -95,6 +95,25 @@ function writtenWhitespace(stored: string | null, standard: string): string | nu
   return stored === null ? standard : stored === "" ? null : stored;
 }
 
+const ids = new WeakMap<Node, number>();
+
+/** The id of a node read from the tables; undefined for what no row holds (folded text and whitespace). */
+export function idOf(node: Node): number | undefined {
+  return ids.get(node);
+}
+
+/** The last id of a node's subtree: its own, when nothing below it is a row. */
+export function lastIdOf(node: Node): number {
+  if (node.type === "element") {
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      if (ids.has(node.children[i])) return lastIdOf(node.children[i]);
+    }
+  }
+  const id = ids.get(node);
+  if (id === undefined) throw new Error("lastIdOf: not a node read from the tables");
+  return id;
+}
+
 /**
  * Rows back into nodes. Rows come in id order; a row whose parent is not among
  * them starts a tree of its own, at `depth`.
@@ -115,7 +134,9 @@ export class TreeReader {
       if (ws !== null) siblings.push({ type: "text", value: ws });
     }
     if (table.name === TEXT || table.name === COMMENT) {
-      siblings.push({ type: table.name === TEXT ? "text" : "comment", value: row.txt ?? "" });
+      const node: Node = { type: table.name === TEXT ? "text" : "comment", value: row.txt ?? "" };
+      ids.set(node, row.id);
+      siblings.push(node);
       return;
     }
     const attrs: Record<string, string> = {};
@@ -125,6 +146,7 @@ export class TreeReader {
     }
     const el: Element = { type: "element", name: table.name, attrs, children: [], selfClosing: row.open !== 1, parent: parent?.el ?? null };
     if (row.txt !== null) el.children.push({ type: "text", value: row.txt });
+    ids.set(el, row.id);
     siblings.push(el);
     this.placed.set(row.id, { el, depth });
     this.ends.push({ el, ws: row.ws_end ?? null, depth, own: el.children.length });

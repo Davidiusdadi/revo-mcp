@@ -7,10 +7,10 @@
  */
 import type { Database } from "bun:sqlite";
 import {
-  ELEMENTS, ATTRIBUTES, articleOf, rootsOf, readArticle, inventory, emptyInventory, domEqual,
-  type ArticleSource, type Document, type Element, type Inventory, type Node, type TextNode,
+  ELEMENTS, ATTRIBUTES, articleOf, rootsOf, readArticle, inventory, emptyInventory, domEqual, nodes,
+  type ArticleSource, type Document, type Element, type Inventory, type Node, type NodeInfo, type Roots, type TextNode,
 } from "voko-xml";
-import { COMMENT, TEXT, documentsOf, indentation, tableName } from "../articles";
+import { COMMENT, TEXT, documentsOf, indentation, tableName, type StoredArticle } from "../articles";
 
 /** `meta.elements`: every declared element with its attributes, then text and comments. */
 export const LAYOUT: string[][] = [...ELEMENTS.map((e) => [e, ...(ATTRIBUTES[e] ?? [])]), [TEXT], [COMMENT]];
@@ -188,4 +188,21 @@ export function importDocuments(db: Database, sources: ArticleSource[], { batch 
     log(`${Math.min(i + batch, sources.length)}/${sources.length} articles`);
   }
   return inv;
+}
+
+/** A stored article as the passes read it. */
+export interface ArticleTree {
+  article: StoredArticle;
+  art: Element;
+  roots: Roots;
+  /** its structural nodes in document order (walk.ts nodes()) */
+  nodes: NodeInfo[];
+}
+
+/** Every stored article rebuilt, in id order: what the passes walk instead of the files. */
+export function* articleTrees(db: Database): Generator<ArticleTree> {
+  for (const { article, doc } of documentsOf(db)) {
+    const art = articleOf(doc);
+    yield { article, art, roots: rootsOf(art), nodes: nodes(art, article.file) };
+  }
 }

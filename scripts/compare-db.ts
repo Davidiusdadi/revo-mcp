@@ -11,6 +11,9 @@ import { Database } from "bun:sqlite";
 import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import type { NodeInfo, Roots } from "voko-xml";
+import { contentOf, textIn, type Content } from "../src/content";
+import { articleTrees } from "../src/corpus/documents";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -29,30 +32,82 @@ db.run(`ATTACH DATABASE '${OLD.replace(/'/g, "''")}' AS old`);
 interface Cmp {
   name: string;
   old: string; // SELECT against old.* producing the key columns
-  new: string; // same key columns from voko.db
+  new: string | (() => Iterable<unknown[]>); // same key columns from voko.db
+}
+
+// Upstream files a row under the nearest mark: the node's own, else its parent's.
+const NEAR = `WITH RECURSIVE near(id, mrk) AS (
+    SELECT id, mrk FROM node WHERE parent_id IS NULL
+    UNION ALL SELECT n.id, COALESCE(n.mrk, near.mrk) FROM node n JOIN near ON n.parent_id = near.id)`;
+
+/** Content rows of every node, under the node's nearest mark, as upstream's referenco and uzo list them. */
+function* nearContent(pick: (c: Content, roots: Roots) => unknown[] | null): Generator<unknown[]> {
+  for (const { roots, nodes } of articleTrees(db)) {
+    const near = new Map<NodeInfo, string | null>();
+    for (const n of nodes) {
+      const mrk = n.mrk ?? (n.parent ? near.get(n.parent) ?? null : null);
+      near.set(n, mrk);
+      if (mrk === null) continue;
+      for (const c of contentOf(n.el)) {
+        const key = pick(c, roots);
+        if (key) yield [mrk, ...key];
+      }
+    }
+  }
 }
 
 const CMP: Cmp[] = [
-  { name: "nodo mrk", old: "SELECT mrk FROM old.nodo", new: "SELECT mrk FROM nodo" },
-  { name: "nodo (mrk, kap)", old: "SELECT mrk, kap FROM old.nodo", new: "SELECT mrk, kap FROM nodo" },
-  { name: "var kap", old: "SELECT kap FROM old.var", new: "SELECT kap FROM var" },
-  { name: "var (mrk, kap)", old: "SELECT mrk, kap FROM old.var", new: "SELECT mrk, kap FROM var" },
-  { name: "traduko (lng, trd)", old: "SELECT lng, trd FROM old.traduko", new: "SELECT lng, trd FROM traduko" },
-  { name: "traduko (mrk, lng, trd)", old: "SELECT mrk, lng, trd FROM old.traduko", new: "SELECT mrk, lng, trd FROM traduko" },
-  { name: "referenco (mrk, cel, tip)", old: "SELECT mrk, cel, COALESCE(tip, '') FROM old.referenco", new: "SELECT mrk, cel, tip FROM referenco" },
-  { name: "uzo (mrk, tip, uzo)", old: "SELECT mrk, tip, uzo FROM old.uzo", new: "SELECT mrk, tip, uzo FROM uzo_compat" },
+  { name: "nodo mrk", old: "SELECT mrk FROM old.nodo", new: "SELECT mrk FROM node WHERE mrk IS NOT NULL AND kind <> 'art' AND kap_id IS NOT NULL" },
+  {
+    name: "nodo (mrk, kap)", old: "SELECT mrk, kap FROM old.nodo",
+    new: "SELECT n.mrk, h.txt FROM node n JOIN headword h ON h.id = n.kap_id WHERE n.mrk IS NOT NULL AND n.kind <> 'art'",
+  },
+  { name: "var kap", old: "SELECT kap FROM old.var", new: "SELECT txt FROM headword WHERE main_id IS NOT NULL" },
+  {
+    // an article-level variant has no mark of its own; upstream files it under the article's first derivation
+    name: "var (mrk, kap)", old: "SELECT mrk, kap FROM old.var",
+    new: `${NEAR} SELECT COALESCE(near.mrk,
+            (SELECT d.mrk FROM node d WHERE d.article_id = n.article_id AND d.kind = 'drv'
+               AND d.mrk IS NOT NULL ORDER BY d.id LIMIT 1)), h.txt
+          FROM headword h JOIN node n ON n.id = h.node_id JOIN near ON near.id = n.id
+          WHERE h.main_id IS NOT NULL`,
+  },
+  {
+    name: "traduko (lng, trd)", old: "SELECT lng, trd FROM old.traduko",
+    new: `${NEAR} SELECT t.lng, COALESCE(t.ind, t.txt) FROM translation t JOIN near ON near.id = t.node_id
+          WHERE near.mrk IS NOT NULL AND t.in_ekz = 0`,
+  },
+  {
+    name: "traduko (mrk, lng, trd)", old: "SELECT mrk, lng, trd FROM old.traduko",
+    new: `${NEAR} SELECT near.mrk, t.lng, COALESCE(t.ind, t.txt) FROM translation t JOIN near ON near.id = t.node_id
+          WHERE near.mrk IS NOT NULL AND t.in_ekz = 0`,
+  },
+  {
+    name: "referenco (mrk, cel, tip)", old: "SELECT mrk, cel, COALESCE(tip, '') FROM old.referenco",
+    new: () => nearContent((c) => c.el.name === "ref" ? [c.el.attrs.cel ?? "", c.tip ?? ""] : null),
+  },
+  {
+    // upstream names the fak tip 'uzo' and has no klr/reg rows, nor the usage of an example
+    name: "uzo (mrk, tip, uzo)", old: "SELECT mrk, tip, uzo FROM old.uzo",
+    new: () => nearContent((c, roots) => {
+      const tip = c.el.attrs.tip;
+      if (c.el.name !== "uzo" || (tip !== "fak" && tip !== "stl") || c.owner === "ekz") return null;
+      return [tip === "fak" ? "uzo" : tip, textIn(c.el, roots)];
+    }),
+  },
   {
     // whitespace and **bold** markers differ by rendering, not content
     name: "ekzemplo (drv_mrk, text)",
     old: "SELECT drv_mrk, lower(replace(replace(ekz_md, '**', ''), ' ', '')) FROM old.ekzemplo",
     new: "SELECT drv_mrk, lower(replace(ekz_md, ' ', '')) FROM ekzemplo",
   },
-  { name: "artikolo", old: "SELECT mrk FROM old.artikolo", new: "SELECT file FROM art" },
+  { name: "artikolo", old: "SELECT mrk FROM old.artikolo", new: "SELECT file FROM article" },
 ];
 
-function keys(sql: string): Set<string> {
+function keys(source: Cmp["new"]): Set<string> {
   const s = new Set<string>();
-  for (const row of db.query(sql).values()) s.add(row.map((v) => String(v ?? "∅")).join("\t"));
+  const rows = typeof source === "string" ? db.query(source).values() : source();
+  for (const row of rows) s.add(row.map((v) => String(v ?? "∅")).join("\t"));
   return s;
 }
 

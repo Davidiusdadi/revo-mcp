@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { runPass, type Pass } from "../src/corpus/pass";
 
-// meta_pass as schema.sql declares it; a pass needs nothing else of L2.
+// meta_pass as schema.sql declares it; a pass needs nothing else of the database.
 let db: Database;
 beforeEach(() => {
   db = new Database(":memory:");

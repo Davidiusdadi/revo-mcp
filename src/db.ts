@@ -92,7 +92,7 @@ export function lookupThesaurus(word: string): ThesaurusResult | null {
  */
 export function glossText(text: string, opts: GlossOptions = {}): SourceGloss | EoGloss {
   const db = getDb();
-  requirePasses(db, "Gloss", ["morph", "index"]);
+  requirePasses(db, "Gloss", ["morph", "index", "fts"]);
   return (opts.lang ?? "en") === "eo" ? glossEsperanto(db, text, opts) : glossSource(db, text, opts);
 }
 
@@ -245,8 +245,8 @@ export function lookupTranslation(
     try {
       const ftsRows = db
         .query<{ node_id: number; lng: string; txt: string; ind: string | null }, [string, string]>(
-          `SELECT t.node_id, t.lng, t.txt, t.ind FROM fts_trd f JOIN trd t ON t.id = f.rowid
-            WHERE fts_trd MATCH '"' || ? || '"' AND t.lng = ? AND t.owner_kind <> 'ekz' LIMIT 100`
+          `SELECT t.node_id, t.lng, t.txt, t.ind FROM fts_trd f JOIN translation t ON t.id = f.rowid
+            WHERE fts_trd MATCH '"' || ? || '"' AND t.lng = ? AND t.in_ekz = 0 LIMIT 100`
         )
         .all(normalized, lang);
       const found = ftsRows.flatMap((t) => {
@@ -417,25 +417,25 @@ export function lookupFamily(query: string): FamilyResult | null {
   // compared with real letters: the roots, lowercased, and the headwords'
   // folded forms. Not with the article's file name, which is in the x-system
   // (cxeval), nor through SQLite's lower(), which leaves Ĉ as it is.
-  type ArtRow = { id: number; file: string; rad: string };
+  type ArtRow = { id: number; last_id: number; file: string; rad: string };
 
   // 1. Try treating input as a bare root: the morph pass lists every root;
   //    without it, the articles' own roots.
   let art: ArtRow | null | undefined = hasPassIn(db, "morph")
     ? db
         .query<ArtRow, [string]>(
-          `SELECT a.id, a.file, a.rad FROM x_morpheme m JOIN art a ON a.id = m.art_id
+          `SELECT a.id, a.last_id, a.file, a.rad FROM x_morpheme m JOIN article a ON a.id = m.article_id
             WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file LIMIT 1`
         )
         .get(normalized)
     : db
-        .query<ArtRow, []>("SELECT id, file, rad FROM art ORDER BY file")
+        .query<ArtRow, []>("SELECT id, last_id, file, rad FROM article ORDER BY file")
         .all()
         .find((a) => a.rad.toLowerCase() === normalized);
 
   // 2. Try as a word form — look up its article
   const artOfEntry = db.query<ArtRow, [number]>(
-    "SELECT a.id, a.file, a.rad FROM node n JOIN art a ON a.id = n.art_id WHERE n.id = ?"
+    "SELECT a.id, a.last_id, a.file, a.rad FROM node n JOIN article a ON a.id = n.article_id WHERE n.id = ?"
   );
   const byKap = (form: string) => {
     const row = exactRows(db, "eo", form).find((r) => !r.ind);
@@ -455,11 +455,11 @@ export function lookupFamily(query: string): FamilyResult | null {
   if (!art) return null;
 
   const entries = db
-    .query<{ id: number; last_id: number; mrk: string; kap: string }, [number]>(
-      `SELECT n.id, n.last_id, n.mrk, k.txt AS kap FROM node n JOIN kap k ON k.id = n.kap_id
-        WHERE n.art_id = ? AND ${IS_ENTRY} ORDER BY n.mrk`
+    .query<{ id: number; last_id: number; mrk: string; kap: string }, [number, number]>(
+      `SELECT n.id, n.last_id, n.mrk, h.txt AS kap FROM node n JOIN headword h ON h.id = n.kap_id
+        WHERE n.id BETWEEN ? AND ? AND ${IS_ENTRY} ORDER BY n.mrk`
     )
-    .all(art.id);
+    .all(art.id, art.last_id);
 
   const members: FamilyMember[] = entries.map((e) => ({
     headword: e.kap,
@@ -531,7 +531,7 @@ export function searchExamples(query: string, limit: number = 20): ExampleHit[] 
       [string, number]
     >(
       `SELECT e.art, e.drv_mrk, e.sense_mrk, e.ekz_md,
-              (SELECT k.txt FROM node n JOIN kap k ON k.id = n.kap_id
+              (SELECT h.txt FROM node n JOIN headword h ON h.id = n.kap_id
                 WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
        FROM fts_ekz
        JOIN ekzemplo e ON e.rowid = fts_ekz.rowid

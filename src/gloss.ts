@@ -233,24 +233,25 @@ function affixesOf(db: SqlReader): Map<string, { txt: string; gloss: string; art
   if (hit) return hit;
   const out = new Map<string, { txt: string; gloss: string; art: string }>();
   // several candidate definitions per article: the first is sometimes only a
-  // colon and a connective ("Sufikso, kiu:"), with the content in the next one
-  const difs = db.query<{ txt: string }, [number]>(
-    `SELECT d.txt FROM dif d JOIN node dn ON dn.id = d.node_id
-      WHERE dn.art_id = ? AND length(d.txt) > 8
-        AND d.txt NOT LIKE 'Samsignifa%' AND d.txt NOT LIKE 'Uzata memstare%'
-        AND d.txt NOT LIKE 'Vortero%'
-      ORDER BY dn.id, d.ord LIMIT 5`
+  // colon and a connective ("Sufikso, kiu:"), with the content in the next one.
+  // fts_dif's rowid is the <dif>'s id, so an article's definitions are its id range.
+  const difs = db.query<{ dif: string }, [number, number]>(
+    `SELECT dif FROM fts_dif
+      WHERE rowid BETWEEN ? AND ? AND length(dif) > 8
+        AND dif NOT LIKE 'Samsignifa%' AND dif NOT LIKE 'Uzata memstare%'
+        AND dif NOT LIKE 'Vortero%'
+      ORDER BY node_id, rowid LIMIT 5`
   );
-  for (const r of db.query<{ txt: string; art: string; art_id: number }, []>(
-    `SELECT k.txt AS txt, a.file AS art, n.art_id AS art_id
-       FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-      WHERE (k.txt LIKE '-%' OR k.txt LIKE '%-') AND k.txt NOT LIKE '% %'
-      ORDER BY k.id`).all()) {
+  for (const r of db.query<{ txt: string; art: string; id: number; last_id: number }, []>(
+    `SELECT h.txt AS txt, a.file AS art, a.id, a.last_id
+       FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
+      WHERE (h.txt LIKE '-%' OR h.txt LIKE '%-') AND h.txt NOT LIKE '% %'
+      ORDER BY h.node_id, h.id`).all()) {
     const m = r.txt.toLowerCase().replace(/^-|-$/g, "");
     if (!m || out.has(m)) continue;
     let gloss = "";
-    for (const d of difs.all(r.art_id)) {
-      const g = affixGloss(d.txt);
+    for (const d of difs.all(r.id, r.last_id)) {
+      const g = affixGloss(d.dif);
       if (g.length >= 12) {
         gloss = g;
         break;
@@ -292,11 +293,10 @@ function rootHeadword(db: SqlReader, morph: string): { txt: string; art: string 
     .query<{ txt: string; art: string }, [string]>(
       `SELECT k.txt AS txt, a.file AS art
          FROM x_morpheme x
-         JOIN art a ON a.id = x.art_id
-         JOIN node n ON n.art_id = a.id
-         JOIN kap k ON k.node_id = n.id
+         JOIN article a ON a.id = x.article_id
+         JOIN headword k ON k.id BETWEEN a.id AND a.last_id
         WHERE x.morph = ? AND x.kind IN ('R', 'W')
-        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
+        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.node_id, k.id LIMIT 1`)
     .get(morph);
   return row ? { txt: row.txt, art: fromXSystem(row.art) } : null;
 }
@@ -318,12 +318,12 @@ function trdByForm(db: SqlReader, lang: string, forms: string[]): TrdRow[] {
   return db
     .query<TrdRow, []>(
       `SELECT k.txt AS eo, a.file AS art, t.txt AS txt
-         FROM trd t
+         FROM translation t
          JOIN node n ON n.id = t.node_id
-         JOIN art a ON a.id = n.art_id
-         JOIN kap k ON k.id = n.kap_id
+         JOIN article a ON a.id = n.article_id
+         JOIN headword k ON k.id = n.kap_id
         WHERE t.lng = ? AND COALESCE(t.ind, t.txt) COLLATE NOCASE IN (${qs})
-        ORDER BY t.id`)
+        ORDER BY t.node_id, t.id`)
     .all(...([lang, ...forms] as unknown as []));
 }
 
@@ -429,8 +429,8 @@ function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string; roo
   const row = db
     .query<{ txt: string; art: string; root: string }, [string]>(
       `SELECT k.txt AS txt, a.file AS art, a.rad AS root
-         FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-        WHERE k.norm = ? ORDER BY k.id LIMIT 1`)
+         FROM headword k JOIN node n ON n.id = k.node_id JOIN article a ON a.id = n.article_id
+        WHERE k.norm = ? ORDER BY k.node_id, k.id LIMIT 1`)
     .get(norm);
   return row ?? null;
 }
@@ -444,8 +444,8 @@ function tokenByNorm(
     .query<{ n: number; art: string; root: string; headword: string | null }, [string]>(
       `SELECT t.n AS n, a.file AS art, a.rad AS root, k.txt AS headword
          FROM x_token t
-         JOIN art a ON a.id = t.art_id
-         LEFT JOIN kap k ON k.id = t.lemma_kap_id
+         JOIN article a ON a.id = t.article_id
+         LEFT JOIN headword k ON k.id = t.lemma_kap_id
         WHERE t.norm = ? ORDER BY t.n DESC, t.id`)
     .all(norm);
   if (rows.length === 0) return null;
@@ -583,9 +583,9 @@ function headwordSplits(db: SqlReader, norm: string): StoredSplit[] {
   return db
     .query<StoredSplit, [string]>(
       `SELECT m.seg AS seg, m.kinds AS kinds, a.file AS art, a.rad AS root
-         FROM x_morph m JOIN art a ON a.id = m.art_id
+         FROM x_morph m JOIN article a ON a.id = m.article_id
         WHERE m.form = ? AND m.ok = 1 AND m.seg NOT LIKE '% %'
-        ORDER BY m.kap_id`)
+        ORDER BY m.node_id, m.kap_id`)
     .all(norm);
 }
 
@@ -594,7 +594,7 @@ function attestedSplits(db: SqlReader, norm: string): StoredSplit[] {
   return db
     .query<StoredSplit, [string]>(
       `SELECT t.seg AS seg, t.kinds AS kinds, a.file AS art, a.rad AS root
-         FROM x_token t JOIN art a ON a.id = t.art_id
+         FROM x_token t JOIN article a ON a.id = t.article_id
         WHERE t.norm = ? AND t.ok = 1
         ORDER BY t.n DESC, t.id`)
     .all(norm);

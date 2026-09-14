@@ -8,8 +8,8 @@ parses it; `src/corpus/` builds and enriches the database.
 ```sh
 bun run setup                       # both of the next two steps, for a fresh clone
 bun run fonto                       # check out both submodules, generate the parser's tables
-bun run corpus:build                # XML → data/voko.db, then all passes (~1.5 min, ~260 MB, + voko.db.gz)
-bun run corpus:build --stage core   # what a browser downloads: L2 + search (~100 MB, ~40 MB gzipped)
+bun run corpus:build                # XML → data/voko.db, then all passes (~4 min, ~280 MB, + voko.db.gz)
+bun run corpus:build --stage core   # what a browser downloads: articles + structure + search (~140 MB, ~60 MB gzipped)
 bun run start                       # serve from data/voko.db; REVO_DB=… overrides the path
 bun run corpus:validate             # parity report against data/revo.db → data/parity.md
 bun run corpus:eval                 # stemming recall on attested word forms
@@ -25,31 +25,31 @@ flattened or lost there. Building from the XML keeps all of it, and enrichment
 passes add what the XML only implies (word forms, morphology, inverse links).
 
 Design rules: the XML stays in upstream's format, so edits can go to
-`revuloj/revo-fonto` as PRs; L2 holds only what the XML states, and everything
-inferred belongs to a versioned pass.
+`revuloj/revo-fonto` as PRs; the database stores the articles whole, exactly as
+the XML states them, and everything derived belongs to a versioned pass.
 
 ## Layers
 
 ```
 L0  source XML        vendor/revo-fonto (verbatim) + corpus/overlay/*.xml
-L1  canonical model   packages/voko-xml: lossless DOM + typed walkers, round-trips to XML
-L2  canonical DB      data/voko.db tables mirroring the XML 1:1, as text
-L3  derived           data/voko.db serĉo, fts_*, x_* tables, one versioned pass each
+L1  stored articles   data/voko.db: one table per DTD element, every article DOM-equal to its file
+L2  derived           data/voko.db: node, headword, translation, serĉo, fts_*, x_*; one versioned pass each
 ```
 
-- L2 holds only what the XML says. No heuristics.
-- Every L3 table is owned by one pass (`src/corpus/passes/*.ts`) with a name and
+- L1 holds only what the XML says, all of it: markup, citations, remarks,
+  comments, whitespace. No heuristics.
+- Every L2 table is owned by one pass (`src/corpus/passes/*.ts`) with a name and
   version, recorded in `meta_pass`. Re-running a pass rewrites only its tables.
 - Stable keys: `mrk` where the XML has one, else the path key
   (`san/drv[0]/snc[2]`), which `nodes()` in voko-xml computes and the database
-  does not store: a node is its parent, kind and `ord`. Integer ids change
-  between builds; L3 tables are rebuilt with the database and use ids, anything
-  kept outside it must use keys.
-- The database holds text, not markup. A pass that needs the XML itself
-  (`tld-links`, `morph`) reads the articles from the sources again
-  (`src/corpus/sources.ts`), so it must run against the sources the database was
-  built from; it fails when an article is gone or its elements no longer match
-  the rows.
+  does not store. Integer ids are positions in the corpus and change between
+  builds; L2 tables are rebuilt with the database and use ids, anything kept
+  outside it must use keys.
+- The passes read the articles back from L1 (`articleTrees` in
+  `src/corpus/documents.ts`), not from the sources, so `--pass` runs on a
+  database alone. The runtime reads an entry the same way, as the id range of
+  its node, and renders its text with `src/content.ts`, the module the passes
+  render with: an entry's text is derived one way.
 - Content we author goes to XML, never the DB: upstream-acceptable edits in the
   submodule on a fork branch; the rest in `corpus/overlay/` (see its README).
 
@@ -71,13 +71,14 @@ packages/voko-xml/           the parser package (no SQLite; usable by other proj
   data/cfg/*.json            lingvoj / fakoj / stiloj / mallongigoj — generated, not committed
 scripts/fonto.sh             submodule checkout + entity generation (bun run fonto)
 scripts/gen-entities.ts      vendor/voko-grundo → packages/voko-xml/data (bun run corpus:entities)
-src/corpus/schema.sql        L2 DDL, its core indexes + compat views
+src/corpus/schema.sql        the build's records (meta, meta_pass) and the cfg lists
 src/corpus/build.ts          XML → data/voko.db   (bun run corpus:build [--stage core|full] [--limit N] [--no-passes] [--pass NAME] [--out F])
-src/corpus/sources.ts        where the articles are read from, for the build and the passes
-src/corpus/documents.ts      articles → one table per element (L1), each batch read back and compared
+src/corpus/sources.ts        where the import reads the articles from
+src/corpus/documents.ts      articles → one table per element (L1), each batch read back and compared; articleTrees for the passes
 src/articles.ts              reading L1: id ranges back into voko-xml trees (runtime-safe)
+src/content.ts               what a node's elements say: content, owners, rendered text, senses (runtime-safe)
 src/corpus/pass.ts           pass contract, meta_pass bookkeeping
-src/corpus/passes/           search.ts, index.ts, fts.ts, tld-links.ts, refs.ts, morph.ts (one per table group)
+src/corpus/passes/           structure.ts, search.ts, index.ts, fts.ts, tld-links.ts, refs.ts, morph.ts (one per table group)
 src/search.ts                the search and entry tools' ranking over serĉo
 src/morph.ts                 runtime-safe morphology: lemmaCandidates(), segment() (no DB, no voko-xml)
 src/db-voko.ts               entry assembly over node ranges; which passes a database has
@@ -108,48 +109,78 @@ scripts/eval-stemming.ts     stemming recall on attested tilde forms (bun run co
 - Old-DB row counts are not clean floors (`traduko` has 12.5k exact duplicates
   and sense rows re-attached at drv level); parity compares key sets.
 
-## L2 schema
+## Schema
 
-Schema version 2 (`meta.schema_version`; the server refuses older files).
-Integer PK everywhere, `mrk` kept where present. `owner_kind`/`owner_id` say
-which element a row sits in (node, dif, ekz, rim, klr, …); `node_id` is always
-the nearest enclosing structural node.
+Schema version 3 (`meta.schema_version`; the server refuses older files).
+
+### L1: the articles
 
 ```
-art    (id, file UNIQUE, rad, rev, modified, source fonto|overlay)
-node   (id, art_id, parent_id, kind, mrk, mrk_near, num, ref, ord, kap_id, last_id)
-kap    (id, node_id, parent_kap_id, txt, tilde, norm, ofc, rad_var, ord)   variants: parent_kap_id set
-dif    (id, node_id, ord, lng, txt)
-ekz    (id, node_id, owner_kind, owner_id, ord, mrk, txt, ind)
-trd    (id, node_id, owner_kind, owner_id, lng, grp, ord, txt, ind, baz, pr, klr, ofc, kod, fnt)
-ref    (id, node_id, owner_kind, owner_id, tip, cel, lst, val, grp, ord, txt)
-fnt    (id, node_id, owner_kind, owner_id, ord, bib, aut, vrk, lok, url, txt)
-uzo    (id, node_id, owner_kind, owner_id, tip, txt, ord)
-bld    (id, node_id, owner_kind, owner_id, lok, mrk, tip, alt, lrg, prm, txt)
-rim · gra · mlg · tezrad · lstref · adm · sncref
-lng · fako · stilo · mallongigo (data/cfg) · bib (cfg/bibliogr.xml in the submodule)
+<element> (id, up, parent, txt, <its declared attributes>, ws, ws_end, open)   one table per DTD element
+text      (id, up, parent, txt)            text runs in mixed content
+comment   (id, up, parent, txt, ws)
+article   (id, last_id, file UNIQUE, source fonto|overlay, rad)
+meta      elements (the tables and their columns), xml_decl, doctype
+```
+
+- All tables share one id sequence in document order over the whole corpus,
+  so an element's subtree is `id BETWEEN element.id AND last_id` in every
+  table, and an article is `article.id..last_id`. `up` is the distance back to
+  the parent (`parent` = `id - up`, a virtual column); NULL at the root and for
+  a comment outside it.
+- An element whose only child is one text node keeps it in `txt`. `ws` is the
+  whitespace before the tag and `ws_end` before the closing tag: NULL is the
+  standard indentation (a newline, two spaces per level below `<art>`), `''`
+  none. `open` = 1 for `<x></x>` rather than `<x/>`.
+- Table names are the tags: `art` is the `<art>` element, `article` the file;
+  `bib` the `<bib>` element, `bibliogr` the list from `cfg/bibliogr.xml`.
+- The import (`src/corpus/documents.ts`) refuses an element or attribute the
+  DTD does not declare and an XML declaration or doctype other than the
+  corpus's, and reads each batch back and compares it with the parsed files.
+  Not kept: the order of attributes (XML gives it no meaning; 1,526 articles
+  write theirs in another order) and entity spelling (resolved at parse;
+  `serialize(doc, { encode: "entities" })` re-encodes).
+- `readRange` (`src/articles.ts`) turns an id range back into voko-xml trees
+  on any `SqlReader`, over HTTP too; with a node's `mask` it queries only the
+  tables that have rows in the range.
+
+### L2: nodes, headwords, translations
+
+The `structure` pass writes what finds an entry and names it, each row under
+its element's id:
+
+```
+node        (id, article_id, parent_id, kind, mrk, kap_id, last_id, mask)
+headword    (id, node_id, main_id, txt, norm)       variants: main_id = the headword they vary
+translation (id, node_id, lng, txt, ind, in_ekz)
+lng · fako · stilo · mallongigo (data/cfg) · bibliogr (cfg/bibliogr.xml in the submodule)
 meta (key, value) · meta_pass (pass, version, input_hash, rows, ms, at)
 ```
 
-- Rows are written in document order and node ids are preorder: a node's
-  subtree is `id BETWEEN node.id AND node.last_id`, and its rows in every table
-  are one `node_id` range, stored side by side. An entry with its senses is
-  read with a few range scans instead of a recursive walk, which is what keeps
-  it to a few pages when the file is read over HTTP.
-- `mrk_near` = own mrk, else the nearest ancestor's (10k `snc` have none).
-- `kap_id` = the node's own headword, else the nearest ancestor's.
-- Text columns: citations dropped, `<tld/>` expanded (`lit` rule applied),
-  `<ctl>` quoted „…“. `dif.txt` keeps an inline `<trd>` (Latin names) but not a
-  `<trdgrp>`; `kap.txt` drops the separator before `<var>`.
+- `node`: the structural elements (`art`, `subart`, `drv`, `subdrv`, `snc`,
+  `subsnc`). `kap_id` = the node's own headword, else the nearest ancestor's.
+  `mask` is a bit set over the L1 tables with rows in `id..last_id`.
+- `translation.lng` is the `<trd>`'s own, else its `<trdgrp>`'s; `txt` leaves
+  out `klr`, `pr`, `baz` and `ofc`; `in_ekz` marks the translations of example
+  sentences, which no lookup lists.
+- Content (`src/content.ts`): a node's content is the elements inside it up to
+  the nodes nested in it, each with an owner (the node itself, or the nearest
+  `dif`, `ekz`, `rim`, `trd`, `ref`, `bld`, `klr`, `ke`, `mrk`, `kap` or `var`).
+  Rendered text drops citations, expands `<tld/>` (`lit` rule applied) and
+  quotes `<ctl>` „…“; a definition keeps an inline `<trd>` (Latin names) but
+  not a `<trdgrp>`; a headword drops the separator before `<var>`.
+- An entry is read as its node: `readRange` over its id range and mask, then
+  `entryContent` for senses, references and usage domains, with the roots
+  from `article.rad` and, only when a `<tld var>` needs them, the `<rad var>`
+  rows of the article (the pass checks these equal the article's roots for
+  every article). Its translations come from `translation` by id range. That
+  keeps an entry to a few pages when the file is read over HTTP.
 
-Compat views keep upstream's shape for scripts and ad-hoc queries
-(`scripts/compare-db.ts`): `nodo`, `var` (article-level variants filed under
-the first drv, as upstream does), `traduko` (`rowid` = `fts_trd.rowid`; `trd` =
-the `<ind>` form when marked, as upstream), `referenco`, `uzo_compat`
-(upstream's tip names). The runtime reads the tables and `serĉo` instead.
-`fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`), `fts_ekz` (trigram over
-`ekzemplo`) and `fts_dif` (definitions, for reverse lookup) come from the `fts`
-pass.
+Upstream's shapes (`nodo`, `var`, `traduko`, `referenco`, `uzo`) are computed
+by `scripts/compare-db.ts` from these tables and the articles; the runtime
+reads the tables and `serĉo`. `fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`),
+`fts_ekz` (trigram over `ekzemplo`) and `fts_dif` (definitions, for reverse
+lookup) come from the `fts` pass.
 
 ## Stages and revisions
 
@@ -157,12 +188,15 @@ A build is one of two stages of the same file, recorded in `meta.stage`:
 
 | stage | passes | size | gzipped | answers |
 |---|---|---:|---:|---|
-| `core` | `search` | 103.8 MB | 40.2 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages` |
-| `full` (default) | `search`, `index`, `fts`, `tld-links`, `refs`, `morph` | 256.8 MB | 110.3 MB | every tool |
+| `core` | `structure`, `search` | 141.0 MB | 62.5 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages` |
+| `full` (default) | `structure`, `search`, `index`, `fts`, `tld-links`, `refs`, `morph` | 280.9 MB | 131.6 MB | every tool |
 
-Measured at `d18ad4f` (13,079 articles). The core file leaves `fnt` (the
-citations) empty, since no tool reads them, and has only the indexes of
-`schema.sql`. `hasPass`/`requirePasses` in `db-voko.ts` read `meta_pass`, so on
+Measured at `d18ad4f` (13,079 articles). Both files hold every article whole;
+the core one has only the index on `node(mrk)`. Of the core file, the articles
+take 92 MB (text runs 28.5 MB, `trd` 19.5 MB, comments 6.6 MB), `serĉo`
+24.2 MB, `translation` 21.6 MB, `node` 4.0 MB and `headword` 1.5 MB. A core
+file becomes a full one by running the enrichment passes on it with `--pass`;
+no sources needed. `hasPass`/`requirePasses` in `db-voko.ts` read `meta_pass`, so on
 a core file `examples`, `thesaurus`, `reverse_lookup` and `gloss` say which
 passes they need instead of failing on a missing table; `lookup` skips its FTS
 fallback.
@@ -174,16 +208,17 @@ file header, so a browser compares its stored copy with the published file by
 reading the first 100 bytes; publish `voko.db` and `voko.db.gz` together, as
 the browser checks that the download is the revision it saw.
 
-## Passes (L3)
+## Passes (L2)
 
 `bun run corpus:build --pass NAME` reruns one pass on an existing `voko.db`
-(and finishes the file again). Order matters: `morph` reads `x_tld_occ`. Rows
-at `d18ad4f`:
+(and finishes the file again). Order matters: every pass reads `structure`'s
+tables, and `morph` reads `x_tld_occ`. Rows at `d18ad4f`:
 
 | pass | tables | rows |
 |---|---|---:|
+| `structure` | `node`, `headword`, `translation` | 887,186 |
 | `search` | `serĉo`, `serĉo_lng` | 758,070 |
-| `index` | the L2 indexes the enrichment tools read through | 5 |
+| `index` | the indexes the enrichment tools read through | 4 |
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 955,026 |
 | `tld-links` | `x_tld_occ` | 176,088 |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 113,867 |
@@ -202,27 +237,27 @@ domains, so ranking, counting languages and domains, and narrowing read no other
 table; only the page of results shown loads entries. `serĉo_lng` counts each
 language's entries and translations for the `languages` tool.
 
-**`index`** — `kap(node_id)`, `kap(norm)`, `node(parent_id)`,
-`node(mrk_near)` and `trd(lng, COALESCE(ind, txt) COLLATE NOCASE)`, which the
-thesaurus, gloss and the compat views read through and the core file does
-without. With the last one present, SQLite would scan a whole language for an
+**`structure`** — `node`, `headword` and `translation`, above.
+
+**`index`** — `headword(node_id)`, `headword(norm)`, `node(parent_id)` and
+`translation(lng, COALESCE(ind, txt) COLLATE NOCASE)`, which the thesaurus and
+gloss read through and the core file does without. With the last one present, SQLite would scan a whole language for an
 entry's translations; `db-voko.ts` writes `+lng` to keep it on the entry's
 node range.
 
-**`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35k, `ekz`
-115k, `dif` 14k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
+**`tld-links`** — one row per `<tld/>`: the owner it sits in (`kap` 35.6k, `ekz`
+117k, `dif` 14.5k, `ref` 4.7k, `rim` 2.8k, `bld` 1.3k, a few directly in a node),
 the root it stands for (`rad`, `var`, `lit`), and the letters glued to it on
 either side (`pre`/`post`, across adjacent `<tld/>`s), so `token` is the written
-word form: `mal<tld/>ulejo` → pre `mal`, rad `san`, post `ulejo`. The pass
-reads each article from the sources, re-walks its DOM in build order and maps an
-owner element to its L2 row by position; it fails if an article's element counts
-differ from its rows or a headword owner spells another headword than its row.
+word form: `mal<tld/>ulejo` → pre `mal`, rad `san`, post `ulejo`. `owner_id`
+is the owner element's own id, so an owner that is a headword is its
+`headword` row.
 
 **`refs`** — `x_ref_tip` is the tip vocabulary with its `owl/voko.ttl`
 semantics (parent property, SKOS mapping, inverse, symmetric, transitive).
 `x_ref_edge` resolves `cel` to a node (by `mrk`, then article file, then a
-`rim` mark): 66,066 authored edges (111k to nodes, 343 to whole articles, 69 to
-remarks) plus 45,645 inferred ones — the inverse of each authored edge
+`rim` mark): 67,245 authored edges (67,013 to nodes, 163 to whole articles, 69
+to remarks) plus 46,600 inferred ones — the inverse of each authored edge
 (`prt`→`malprt`, `super`→`sub`, `drv`→`snc`, symmetric `vid`/`sin`/`ant`/`hom`)
 unless the article already states it. `inferred` keeps the two apart. Every ref
 is an edge or an issue; the only issues are 9 self-references. Deviation from the
@@ -302,7 +337,7 @@ name, version, rows and time in `meta_pass`.
 4. Bump `version` whenever its output changes.
 5. Test it in `test/corpus-build.test.ts`; the slice build there runs all passes.
 
-Passes never change the L2 tables. Content missing from the XML goes into the
+Passes never change the articles' tables. Content missing from the XML goes into the
 XML (see `corpus/overlay/README.md`), not into a pass.
 
 ## Docker
@@ -343,8 +378,13 @@ deliberately; `test/deploy-pins.test.ts` checks every stage uses the `ARG`.
 
 ## Validation
 
-1. Coverage: XML element counts == table rows; inventory has no unknown markup.
-2. Losslessness: DOM round-trip over every file (`packages/voko-xml/test/corpus.test.ts`).
+1. Losslessness: every file parses and serializes back DOM-equal
+   (`packages/voko-xml/test/corpus.test.ts`), and every article reads back from
+   its tables DOM-equal at import (`test/documents.test.ts` checks a slice and
+   hand-written edge cases).
+2. Golden outputs: a schema change is checked by dumping every tool's answers
+   for a fixed set of about 300 calls from the old and the new build and
+   diffing them.
 3. Parity vs `data/revo.db`: key-set diffs, old-only items zero or explained.
 4. Tools: `bun test`, which reads `data/voko.db`; `scripts/render-all-articles.ts`
    renders every headword.
@@ -356,8 +396,8 @@ deliberately; `test/deploy-pins.test.ts` checks every stage uses the `ARG`.
 
 `bun run corpus:validate` → `data/parity.md`. Same 2026-02-28 snapshot on both sides;
 key sets, not row counts. Measured with schema 1, when `artikolo` still held the
-XML; the compat views read the same text columns in schema 2, and `artikolo` is
-now compared by article file.
+XML; since schema 3 `compare-db.ts` computes upstream's shapes from the derived
+tables and the articles, and `artikolo` is compared by article file.
 
 | set | old | new | old-only | new-only |
 |---|---:|---:|---:|---:|
@@ -375,7 +415,7 @@ Old-only, explained — nothing found that we lose:
 
 - **Invented sense mrks** (nodo 1,166, uzo 305, a few hundred elsewhere): upstream
   makes up `abon.0o.1`, `abrazi.0o.TEK.1.a` for unmarked senses. We keep those
-  senses mrk-less (`mrk_near` = the drv) with all their content.
+  senses mrk-less (filed under the drv's mark) with all their content.
 - **Placement** (traduko 93.3k, referenco 25.6k, nodo 1.1k): the same value one
   level up or down — upstream files a single-sense drv's rows under the drv, we
   under the `snc` that holds them. db.ts reads drv + `drv.*`, so lookups see both.
@@ -389,9 +429,9 @@ Old-only, explained — nothing found that we lose:
   unexplained.
 
 New-only is granularity upstream drops: 17k sense mrks, usage tags per sense,
-translations and references at the node they really sit in. Upstream semantics
-are mirrored in the views on purpose: `traduko.trd` is the `<ind>` form, and
-translations of examples are left out (they stay in `trd`).
+translations and references at the node they really sit in. `compare-db.ts`
+mirrors upstream's semantics on purpose: `traduko.trd` is the `<ind>` form, and
+translations of examples are left out (they stay in `translation`, `in_ekz` = 1).
 
 `scripts/render-all-articles.ts` renders all 64,122 headwords on voko.db
 (48,076 on revo.db) with 0 empty / 0 no-senses / 0 crashes.

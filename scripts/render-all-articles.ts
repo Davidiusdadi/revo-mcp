@@ -35,7 +35,9 @@ function fmtDuration(seconds: number): string {
 
 const db = new Database(DB_PATH, { readonly: true });
 const rows = db
-  .query<Row, []>(`SELECT kap, art, mrk FROM nodo ORDER BY art, mrk`)
+  .query<Row, []>(
+    `SELECT h.txt AS kap, a.file AS art, n.mrk FROM node n JOIN headword h ON h.id = n.kap_id
+       JOIN article a ON a.id = n.article_id WHERE n.mrk IS NOT NULL AND n.kind <> 'art' ORDER BY art, mrk`)
   .all();
 db.close();
 

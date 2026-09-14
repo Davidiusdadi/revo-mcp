@@ -7,6 +7,9 @@
  */
 import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
+import { idOf } from "../../articles";
+import { contentOf } from "../../content";
+import { articleTrees } from "../documents";
 
 export interface RefTip {
   tip: string;
@@ -60,7 +63,7 @@ interface Edge {
 
 export const refsPass: Pass = {
   name: "refs",
-  version: 1,
+  version: 2,
   tables: ["x_ref_tip", "x_ref_edge", "x_ref_issue"],
   run(db, log) {
     db.run(`
@@ -130,19 +133,26 @@ function resolve(db: Database): { authored: Edge[]; issues: { ref: number; cel: 
   }
   const byArt = new Map<string, number>();
   for (const r of db.query<{ file: string; id: number }, []>(
-    "SELECT a.file, n.id FROM art a JOIN node n ON n.art_id = a.id AND n.kind = 'art'").iterate()) {
+    "SELECT a.file, n.id FROM article a JOIN node n ON n.article_id = a.id AND n.kind = 'art'").iterate()) {
     byArt.set(r.file, r.id);
   }
+
+  // the references in reading order, node by node, and the marked remarks
+  const refs: { id: number; node: number; tip: string | null; cel: string }[] = [];
   const byRim = new Map<string, { id: number; node: number }>();
-  for (const r of db.query<{ id: number; node_id: number; mrk: string }, []>(
-    "SELECT id, node_id, mrk FROM rim WHERE mrk IS NOT NULL").iterate()) {
-    byRim.set(r.mrk, { id: r.id, node: r.node_id });
+  for (const { nodes } of articleTrees(db)) {
+    for (const n of nodes) {
+      const node = idOf(n.el)!;
+      for (const c of contentOf(n.el)) {
+        if (c.el.name === "ref") refs.push({ id: idOf(c.el)!, node, tip: c.tip ?? null, cel: c.el.attrs.cel ?? "" });
+        else if (c.el.name === "rim" && c.el.attrs.mrk !== undefined) byRim.set(c.el.attrs.mrk, { id: idOf(c.el)!, node });
+      }
+    }
   }
 
   const authored: Edge[] = [];
   const issues: { ref: number; cel: string; problem: string }[] = [];
-  for (const r of db.query<{ id: number; node_id: number; tip: string | null; cel: string }, []>(
-    "SELECT id, node_id, tip, cel FROM ref ORDER BY id").iterate()) {
+  for (const r of refs) {
     let dst = byMrk.get(r.cel);
     let kind: Edge["kind"] = "node";
     let rim: number | null = null;
@@ -152,8 +162,8 @@ function resolve(db: Database): { authored: Edge[]; issues: { ref: number; cel: 
       if (m) [dst, kind, rim] = [m.node, "rim", m.id];
     }
     if (dst === undefined) issues.push({ ref: r.id, cel: r.cel, problem: "dangling" });
-    else if (dst === r.node_id) issues.push({ ref: r.id, cel: r.cel, problem: "self" });
-    else authored.push({ ref: r.id, src: r.node_id, dst, kind, rim, tip: r.tip, inferred: 0 });
+    else if (dst === r.node) issues.push({ ref: r.id, cel: r.cel, problem: "self" });
+    else authored.push({ ref: r.id, src: r.node, dst, kind, rim, tip: r.tip, inferred: 0 });
   }
   return { authored, issues };
 }

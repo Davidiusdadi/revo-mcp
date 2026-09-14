@@ -1,7 +1,12 @@
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import type { ArticleSource } from "voko-xml";
+import { importDocuments } from "../src/corpus/documents";
 import { searchPass } from "../src/corpus/passes/search";
+import { structurePass } from "../src/corpus/passes/structure";
 import { getDb } from "../src/db";
 import { searchDefinitions, thesaurusOf } from "../src/db-voko";
 import { searchDictionary } from "../src/search";
@@ -125,34 +130,44 @@ describe("search ranking", () => {
     domains?: string[];
   }
 
-  /** A database of the given entries, an article per mark root, with the rows the search pass reads. */
+  /** A database of the given entries, an article per mark root, built as the corpus is. */
   function fixture(entries: FixtureEntry[]): SqlReader {
-    const db = new Database(":memory:");
-    db.exec(readFileSync("src/corpus/schema.sql", "utf8"));
-    const articles = new Map<string, { art: number; root: number }>();
-    let node = 0;
-    entries.forEach(({ mrk, headword, translations = [], domains = [] }, index) => {
+    const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const articles = new Map<string, string[]>();
+    for (const { mrk, headword, translations = [], domains = [] } of entries) {
       const key = mrk.split(".")[0];
-      let article = articles.get(key);
-      if (!article) {
-        article = { art: articles.size + 1, root: ++node };
-        articles.set(key, article);
-        db.run("INSERT INTO art (id, file, rad, source) VALUES (?, ?, ?, 'fonto')", [article.art, key, key]);
-        db.run("INSERT INTO node (id, art_id, kind, mrk, ord, last_id) VALUES (?, ?, 'art', ?, 0, ?)",
-          [article.root, article.art, key, article.root]);
-      }
-      const entry = ++node;
-      db.run("INSERT INTO kap (id, node_id, txt, tilde, norm, ord) VALUES (?, ?, ?, ?, ?, 0)",
-        [index + 1, entry, headword, headword, headword.toLowerCase()]);
-      db.run("INSERT INTO node (id, art_id, parent_id, kind, mrk, ord, kap_id, last_id) VALUES (?, ?, ?, 'drv', ?, 0, ?, ?)",
-        [entry, article.art, article.root, mrk, index + 1, entry]);
-      db.run("UPDATE node SET last_id = ? WHERE id = ?", [entry, article.root]);
-      translations.forEach(({ lng, txt, ind }, ord) => db.run(
-        "INSERT INTO trd (node_id, owner_kind, lng, ord, txt, ind) VALUES (?, 'node', ?, ?, ?, ?)",
-        [entry, lng, ord, txt, ind ?? null]));
-      domains.forEach((txt, ord) => db.run(
-        "INSERT INTO uzo (node_id, owner_kind, tip, txt, ord) VALUES (?, 'node', 'fak', ?, ?)", [entry, txt, ord]));
+      const drvs = articles.get(key) ?? [];
+      articles.set(key, drvs);
+      drvs.push([
+        `<drv mrk="${mrk}">`,
+        `  <kap>${escape(headword)}</kap>`,
+        ...domains.map((txt) => `  <uzo tip="fak">${txt}</uzo>`),
+        // an index form files the translation under a word of its own text
+        ...translations.map(({ lng, txt, ind }) => `  <trd lng="${lng}">${
+          ind ? escape(txt).replace(escape(ind), `<ind>${escape(ind)}</ind>`) : escape(txt)}</trd>`),
+        "</drv>",
+      ].join("\n"));
+    }
+    const dir = mkdtempSync(join(tmpdir(), "search-ranking-"));
+    const sources = [...articles].map(([key, drvs]): ArticleSource => {
+      const path = join(dir, `${key}.xml`);
+      writeFileSync(path, `<?xml version="1.0"?>\n<!DOCTYPE vortaro SYSTEM "../dtd/vokoxml.dtd">\n<vortaro>
+<art mrk="$Id: ${key}.xml,v 1.1 2026/01/01 00:00:00 revo Exp $">
+<kap><rad>${key}</rad></kap>
+${drvs.join("\n")}
+</art>
+</vortaro>
+`);
+      return { key, path, source: "overlay" };
     });
+    const db = new Database(":memory:");
+    try {
+      db.exec(readFileSync("src/corpus/schema.sql", "utf8"));
+      importDocuments(db, sources);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    structurePass.run(db, () => undefined);
     searchPass.run(db, () => undefined);
     return db as unknown as SqlReader;
   }

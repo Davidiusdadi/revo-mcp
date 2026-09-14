@@ -11,13 +11,16 @@
  * written, whether it is only filed under the key, and the entry's usage
  * domains.
  *
- * An entry is a derivation with a mark ("hund.0o"); its rows are those of its
- * subtree, node ids id..last_id. `serĉo_lng` counts each language once, so
- * listing languages reads a few pages instead of every translation.
+ * An entry is a derivation with a mark ("hund.0o"); what is in it is its
+ * subtree, ids id..last_id. The pass reads the `structure` pass's tables and
+ * the usage tags of the stored articles. `serĉo_lng` counts each language
+ * once, so listing languages reads a few pages instead of every translation.
  */
-import type { Database } from "bun:sqlite";
 import type { Pass } from "../pass";
 import { normalizeQuery } from "../../stemmer";
+import { idOf } from "../../articles";
+import { contentOf, textIn } from "../../content";
+import { articleTrees } from "../documents";
 
 interface Row {
   norm: string;
@@ -31,7 +34,7 @@ interface Row {
 
 export const searchPass: Pass = {
   name: "search",
-  version: 1,
+  version: 2,
   tables: ["serĉo", "serĉo_lng"],
   run(db, log) {
     db.run(`
@@ -52,21 +55,28 @@ export const searchPass: Pass = {
         translations INTEGER NOT NULL   -- the language's translations outside examples; eo: 0
       ) WITHOUT ROWID`);
 
-    const maxNode = db.query<{ id: number }, []>("SELECT MAX(id) id FROM node").get()!.id ?? 0;
-    const entryOf = new Int32Array(maxNode + 1);
+    const maxId = db.query<{ id: number | null }, []>("SELECT MAX(last_id) id FROM node").get()!.id ?? 0;
+    const entryOf = new Int32Array(maxId + 1);
     const entries = new Map<number, { kap: string; fak: string[] }>();
     for (const e of db.query<{ id: number; last_id: number; kap: string }, []>(
-      `SELECT n.id, n.last_id, k.txt kap FROM node n JOIN kap k ON k.id = n.kap_id
+      `SELECT n.id, n.last_id, h.txt kap FROM node n JOIN headword h ON h.id = n.kap_id
         WHERE n.kind = 'drv' AND n.mrk IS NOT NULL AND instr(n.mrk, '.') > 0 AND n.mrk NOT GLOB '*.*.*'
         ORDER BY n.id`).iterate()) {
       entries.set(e.id, { kap: e.kap, fak: [] });
       entryOf.fill(e.id, e.id, e.last_id + 1);
     }
 
-    for (const u of db.query<{ node_id: number; txt: string }, []>(
-      `SELECT node_id, txt FROM uzo WHERE tip IN ('fak', 'stl') AND owner_kind <> 'ekz' ORDER BY id`).iterate()) {
-      const e = entries.get(entryOf[u.node_id]);
-      if (e && !e.fak.includes(u.txt)) e.fak.push(u.txt);
+    // an entry's domains: its fak and stl tags outside examples, node by node
+    for (const { roots, nodes } of articleTrees(db)) {
+      for (const n of nodes) {
+        const e = entries.get(entryOf[idOf(n.el)!]);
+        if (!e) continue;
+        for (const c of contentOf(n.el)) {
+          if (c.el.name !== "uzo" || c.owner === "ekz" || (c.el.attrs.tip !== "fak" && c.el.attrs.tip !== "stl")) continue;
+          const txt = textIn(c.el, roots);
+          if (!e.fak.includes(txt)) e.fak.push(txt);
+        }
+      }
     }
 
     const byLanguage = new Map<string, Row[]>();
@@ -86,13 +96,13 @@ export const searchPass: Pass = {
         WHERE n.id = ? AND d.kind = 'drv' AND d.mrk IS NOT NULL AND instr(d.mrk, '.') > 0 AND d.mrk NOT GLOB '*.*.*'
         ORDER BY d.id LIMIT 1`);
     for (const v of db.query<{ node_id: number; txt: string }, []>(
-      "SELECT node_id, txt FROM kap WHERE parent_kap_id IS NOT NULL ORDER BY id").iterate()) {
+      "SELECT node_id, txt FROM headword WHERE main_id IS NOT NULL ORDER BY node_id, id").iterate()) {
       const nid = entryOf[v.node_id] || firstEntryAfter.get(v.node_id)?.id;
       if (nid) add("eo", v.txt, nid, v.txt, 1, v.txt);
     }
 
     for (const t of db.query<{ node_id: number; lng: string; txt: string; ind: string | null }, []>(
-      "SELECT node_id, lng, txt, ind FROM trd WHERE owner_kind <> 'ekz' ORDER BY id").iterate()) {
+      "SELECT node_id, lng, txt, ind FROM translation WHERE in_ekz = 0 ORDER BY node_id, id").iterate()) {
       const nid = entryOf[t.node_id];
       const e = entries.get(nid);
       if (!e) continue;
@@ -104,7 +114,7 @@ export const searchPass: Pass = {
     const ins = db.prepare("INSERT INTO serĉo (lng, norm, ord, nid, txt, ind, fak) VALUES (?,?,?,?,?,?,?)");
     const insLng = db.prepare("INSERT INTO serĉo_lng (lng, entries, translations) VALUES (?,?,?)");
     const translations = new Map(db.query<{ lng: string; n: number }, []>(
-      "SELECT lng, COUNT(*) n FROM trd WHERE owner_kind <> 'ekz' GROUP BY lng").all().map((r) => [r.lng, r.n]));
+      "SELECT lng, COUNT(*) n FROM translation WHERE in_ekz = 0 GROUP BY lng").all().map((r) => [r.lng, r.n]));
     let written = 0;
     for (const [lng, rows] of [...byLanguage].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       rows.sort((a, b) => collator.compare(a.norm, b.norm) || (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0) ||

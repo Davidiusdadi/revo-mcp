@@ -2,28 +2,26 @@
  * Reads that go at the XML-built schema directly (data/voko.db).
  *
  * Words are found through the search pass's `serĉo` rows, clustered by
- * language and folded form. An entry is a derivation with a mark; node ids are
- * preorder, so everything under it is the one range id..last_id, and its
- * translations, references, domains and senses are each one range scan
- * instead of a walk. The L3 enrichment reads at the bottom of the file need
- * passes a core database is built without; hasPass tells them apart.
+ * language and folded form. An entry is a derivation with a mark; ids are
+ * document order, so everything under it is the one range id..last_id in
+ * every table. Its translations are one range of `translation`; its senses,
+ * references and domains are read off the derivation itself, rebuilt from the
+ * stored articles (articles.ts readRange) and read the way the build reads it
+ * (content.ts). The enrichment reads at the bottom of the file need passes a
+ * core database is built without; hasPass tells them apart.
  */
 
 import type { SqlReader } from "./sql";
+import type { Element, Roots } from "voko-xml/view";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
+import { readRange } from "./articles";
+import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry } from "./content";
 
-/** Version 2: no stored XML, node.last_id, the search pass's tables. */
-export const SCHEMA_VERSION = 2;
+export type { SenseEntry } from "./content";
 
-/** One sense of a derivation, as `lookup` renders it under a headword. */
-export interface SenseEntry {
-  mrk?: string;
-  num?: string;
-  definition: string;
-  examples: string[];
-  domain?: string;
-}
+/** Version 3: the articles stored whole, one table per element; node, headword and translation derived. */
+export const SCHEMA_VERSION = 3;
 
 export interface LookupResult {
   headword: string;
@@ -62,7 +60,7 @@ export function schemaVersionOf(db: SqlReader): number {
 
 const passesByDb = new WeakMap<SqlReader, Set<string>>();
 
-/** Whether the database was built with a pass (meta_pass); a core database has only `search`. */
+/** Whether the database was built with a pass (meta_pass); a core database has only `structure` and `search`. */
 export function hasPass(db: SqlReader, name: string): boolean {
   let passes = passesByDb.get(db);
   if (!passes) {
@@ -135,17 +133,22 @@ export function indexForm(key: string, expression: string | null): string {
 // Entries
 // ---------------------------------------------------------------------------
 
-/** The derivation node an entry is, with what names it. */
+/** The derivation node an entry is, with what names it and what reading it back needs. */
 export interface EntryNode {
   id: number;
   last_id: number;
   mrk: string;
   headword: string;
   article: string;
+  /** the tables with rows in id..last_id */
+  mask: Uint8Array;
+  article_id: number;
+  /** the article's main root */
+  rad: string;
 }
 
-const ENTRY_NODE = `SELECT n.id, n.last_id, n.mrk, k.txt AS headword, a.file AS article
-  FROM node n JOIN kap k ON k.id = n.kap_id JOIN art a ON a.id = n.art_id`;
+const ENTRY_NODE = `SELECT n.id, n.last_id, n.mrk, h.txt AS headword, a.file AS article, n.mask, a.id AS article_id, a.rad
+  FROM node n JOIN headword h ON h.id = n.kap_id JOIN article a ON a.id = n.article_id`;
 /** An entry's node: a derivation whose mark has exactly one dot ("hund.0o"). */
 export const IS_ENTRY = "n.kind = 'drv' AND instr(n.mrk, '.') > 0 AND n.mrk NOT GLOB '*.*.*'";
 
@@ -184,68 +187,77 @@ export function translationsOf(
   languages?: string[],
 ): { lng: string; trd: string }[] {
   if (languages?.length === 0) return [];
-  // `+lng`: the entry's node range is the narrow index; a full build's
-  // idx_trd_lng_key would otherwise scan a whole language.
+  // `+lng`: the entry's range is the narrow index; a full build's
+  // idx_translation_lng_key would otherwise scan a whole language.
   const only = languages ? ` AND +lng IN (${languages.map(() => "?").join(",")})` : "";
   return db
     .query<{ lng: string; trd: string }, unknown[]>(
-      `SELECT lng, COALESCE(ind, txt) AS trd FROM trd
-        WHERE node_id BETWEEN ? AND ? AND owner_kind <> 'ekz'${only}
-        ORDER BY lng, node_id <> ?, id`,
+      `SELECT lng, COALESCE(ind, txt) AS trd FROM translation
+        WHERE id BETWEEN ? AND ? AND in_ekz = 0${only}
+        ORDER BY lng, node_id <> ?, node_id, id`,
     )
     .all(node.id, node.last_id, ...(languages ?? []), node.id);
 }
 
-/** An entry's usage domains (fak and stl tags outside examples), in document order. */
-export function usageDomainsOf(db: SqlReader, node: { id: number; last_id: number }): string[] {
-  const tags = db
-    .query<{ txt: string }, [number, number]>(
-      `SELECT txt FROM uzo WHERE node_id BETWEEN ? AND ? AND tip IN ('fak', 'stl') AND owner_kind <> 'ekz' ORDER BY id`,
+/** The roots an entry's tildes stand for: the article's root, and its variant roots where a tilde names one. */
+function rootsAt(db: SqlReader, node: EntryNode, drv: Element): Roots {
+  if (!usesVariantRoots(drv)) return rootsFrom(node.rad, []);
+  const variants = db
+    .query<{ var: string; txt: string | null }, [number, number]>(
+      `SELECT var, txt FROM rad
+        WHERE id BETWEEN ? AND (SELECT last_id FROM article WHERE id = ?) AND var IS NOT NULL ORDER BY id`,
     )
-    .all(node.id, node.last_id);
-  return [...new Set(tags.map((t) => t.txt))];
+    .all(node.article_id, node.article_id);
+  return rootsFrom(node.rad, variants);
+}
+
+/** What an entry's derivation says: its senses, references and usage domains. */
+function contentOf(db: SqlReader, node: EntryNode): EntryContent {
+  const [drv] = readRange(db, node.id, node.last_id, { mask: node.mask });
+  if (drv?.type !== "element") throw new Error(`${node.mrk}: no element at ${node.id}`);
+  return entryContent(drv, rootsAt(db, node, drv));
+}
+
+/** An entry's usage domains (fak and stl tags outside examples), in document order. */
+export function usageDomainsOf(db: SqlReader, node: EntryNode): string[] {
+  return contentOf(db, node).usageDomains;
+}
+
+/** The headword of each mark that names a node, as far as the marks do. */
+function headwordsByMark(db: SqlReader, marks: string[]): Map<string, string> {
+  const unique = [...new Set(marks)];
+  const headwords = new Map<string, string>();
+  if (unique.length === 0) return headwords;
+  const rows = db
+    .query<{ mrk: string; txt: string }, string[]>(
+      `SELECT t.mrk, h.txt FROM node t JOIN headword h ON h.id = t.kap_id
+        WHERE t.mrk IN (${unique.map(() => "?").join(",")}) AND t.kind <> 'art' ORDER BY t.id`,
+    )
+    .all(...unique);
+  for (const row of rows) if (!headwords.has(row.mrk)) headwords.set(row.mrk, row.txt);
+  return headwords;
 }
 
 export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOptions = {}): LookupResult {
   const full = (options.detail ?? "full") === "full";
-  const crossRefs = full
-    ? db
-        .query<{ target: string; type: string; targetKap: string | null }, [number, number]>(
-          `SELECT r.cel AS target, COALESCE(r.tip, '') AS type,
-                  (SELECT k.txt FROM node t JOIN kap k ON k.id = t.kap_id
-                    WHERE t.mrk = r.cel AND t.kind <> 'art' LIMIT 1) AS targetKap
-             FROM ref r WHERE r.node_id BETWEEN ? AND ? ORDER BY r.id`,
-        )
-        .all(node.id, node.last_id)
-        .map(({ target, type, targetKap }) => (targetKap === null ? { target, type } : { target, type, targetKap }))
-    : [];
+  const content = full || !options.domains ? contentOf(db, node) : null;
+  let crossRefs: LookupResult["crossRefs"] = [];
+  if (full) {
+    const targets = headwordsByMark(db, content!.crossRefs.map((ref) => ref.target));
+    crossRefs = content!.crossRefs.map(({ target, type }) => {
+      const targetKap = targets.get(target);
+      return targetKap === undefined ? { target, type } : { target, type, targetKap };
+    });
+  }
   return {
     headword: node.headword,
     article: node.article,
     mrk: node.mrk,
-    senses: full ? sensesOf(db, node) : [],
+    senses: full ? content!.senses : [],
     translations: translationsOf(db, node, options.languages),
     crossRefs,
-    usageDomains: options.domains ?? usageDomainsOf(db, node),
+    usageDomains: options.domains ?? content!.usageDomains,
   };
-}
-
-interface SenseNode {
-  id: number;
-  parent_id: number;
-  kind: string;
-  mrk: string | null;
-}
-
-/** Rows of a node range grouped by node, keeping their order. */
-function byNode<Row extends { node_id: number }>(rows: Row[]): Map<number, Row[]> {
-  const grouped = new Map<number, Row[]>();
-  for (const row of rows) {
-    const list = grouped.get(row.node_id);
-    if (list) list.push(row);
-    else grouped.set(row.node_id, [row]);
-  }
-  return grouped;
 }
 
 /**
@@ -253,79 +265,13 @@ function byNode<Row extends { node_id: number }>(rows: Row[]): Map<number, Row[]
  * rendering: snc "1." "2." (unnumbered when alone), subsnc "a)" "b)",
  * subdrv "A." "B.". Each sense carries only its own examples — a subsnc's
  * examples are listed under the subsnc, not repeated under its parent snc.
- * Definitions, examples and domains are read once each for the whole range.
  */
-export function sensesOf(db: SqlReader, root: { id: number; last_id: number; mrk: string }): SenseEntry[] {
-  const range = [root.id, root.last_id] as [number, number];
-  const nodes = db
-    .query<SenseNode, [number, number]>(
-      "SELECT id, parent_id, kind, mrk FROM node WHERE id > ? AND id <= ? ORDER BY id",
-    )
-    .all(...range);
-  const difs = byNode(db
-    .query<{ node_id: number; txt: string }, [number, number]>(
-      "SELECT node_id, txt FROM dif WHERE node_id BETWEEN ? AND ? ORDER BY node_id, ord",
-    )
-    .all(...range));
-  // No <dif>: the sense is defined by reference (<ref tip="dif">X</ref> = "see X").
-  const difRefs = byNode(db
-    .query<{ node_id: number; txt: string }, [number, number]>(
-      "SELECT node_id, txt FROM ref WHERE node_id BETWEEN ? AND ? AND owner_kind = 'node' AND tip = 'dif' ORDER BY id",
-    )
-    .all(...range));
-  const examples = byNode(db
-    .query<{ node_id: number; txt: string }, [number, number]>(
-      "SELECT node_id, txt FROM ekz WHERE node_id BETWEEN ? AND ? ORDER BY node_id, ord",
-    )
-    .all(...range));
-  const fak = byNode(db
-    .query<{ node_id: number; txt: string }, [number, number]>(
-      "SELECT node_id, txt FROM uzo WHERE node_id BETWEEN ? AND ? AND owner_kind = 'node' AND tip = 'fak' ORDER BY node_id, ord",
-    )
-    .all(...range));
-
-  const senseAt = (nodeId: number, mrk: string | undefined): SenseEntry => {
-    let definition = (difs.get(nodeId) ?? []).map((d) => d.txt).join(" ");
-    const refs = difRefs.get(nodeId) ?? [];
-    if (!definition && refs.length > 0) definition = `= ${refs.map((r) => r.txt).join(", ")}`;
-    const sense: SenseEntry = {
-      mrk,
-      definition,
-      examples: (examples.get(nodeId) ?? []).map((e) => e.txt).filter((t) => t.length > 0),
-    };
-    const domains = (fak.get(nodeId) ?? []).map((u) => u.txt);
-    if (domains.length > 0) sense.domain = domains.join(", ");
-    return sense;
-  };
-
-  const siblings = new Map<string, number>(); // `${parent}/${kind}` → count
-  for (const n of nodes) {
-    const k = `${n.parent_id}/${n.kind}`;
-    siblings.set(k, (siblings.get(k) ?? 0) + 1);
-  }
-  const seen = new Map<string, number>();
-
-  const senses: SenseEntry[] = [];
-  const own = senseAt(root.id, root.mrk);
-  if (own.definition || own.examples.length > 0 || nodes.length === 0) senses.push(own);
-
-  for (const n of nodes) {
-    const k = `${n.parent_id}/${n.kind}`;
-    const i = seen.get(k) ?? 0;
-    seen.set(k, i + 1);
-    const num =
-      n.kind === "subsnc" ? `${String.fromCharCode(97 + i)})`
-      : n.kind === "subdrv" ? `${String.fromCharCode(65 + i)}.`
-      : siblings.get(k)! > 1 ? `${i + 1}.` : "";
-    const s = senseAt(n.id, n.mrk ?? undefined);
-    s.num = num;
-    senses.push(s);
-  }
-  return senses;
+export function sensesOf(db: SqlReader, node: EntryNode): SenseEntry[] {
+  return contentOf(db, node).senses;
 }
 
 // ---------------------------------------------------------------------------
-// Enrichment reads (L3): the x_* tables and fts_dif, written by the passes in
+// Enrichment reads: the x_* tables and fts_dif, written by the passes in
 // src/corpus/passes and recorded in meta_pass.
 // ---------------------------------------------------------------------------
 
@@ -356,9 +302,9 @@ function nodesByKap(
 ): { ids: number[]; headword: string; article: string; norm: string } | null {
   const rows = db
     .query<{ id: number; txt: string; file: string }, [string]>(
-      `SELECT n.id, k.txt, a.file
-         FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-        WHERE k.norm = ? ORDER BY n.id`
+      `SELECT n.id, h.txt, a.file
+         FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
+        WHERE h.norm = ? ORDER BY n.id, h.id`
     )
     .all(norm);
   if (rows.length === 0) return null;
@@ -418,7 +364,7 @@ export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | nul
          SELECT id FROM node WHERE id IN (${placeholders})
          UNION
          SELECT n.id FROM node n JOIN src s ON n.parent_id = s.id
-          WHERE NOT EXISTS (SELECT 1 FROM kap k WHERE k.node_id = n.id)
+          WHERE NOT EXISTS (SELECT 1 FROM headword h WHERE h.node_id = n.id)
        )
        SELECT e.tip AS tip, e.inferred AS inferred,
               COALESCE(t.label, 'ligilo') AS label,
@@ -427,8 +373,8 @@ export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | nul
          JOIN src ON src.id = e.src_node
          LEFT JOIN x_ref_tip t ON t.tip = e.tip
          JOIN node dn ON dn.id = e.dst_node
-         JOIN art a ON a.id = dn.art_id
-         LEFT JOIN kap k ON k.id = dn.kap_id
+         JOIN article a ON a.id = dn.article_id
+         LEFT JOIN headword k ON k.id = dn.kap_id
         ORDER BY e.inferred, e.tip, k.txt`
     )
     .all(...(hit.ids as []));
@@ -491,10 +437,9 @@ export function searchDefinitions(db: SqlReader, query: string, limit = 20): Def
       `SELECT a.file AS article, k.txt AS headword,
               snippet(fts_dif, 0, '**', '**', '…', 14) AS snippet
          FROM fts_dif f
-         JOIN dif ON dif.id = f.rowid
-         JOIN node n ON n.id = dif.node_id
-         JOIN art a ON a.id = n.art_id
-         LEFT JOIN kap k ON k.id = n.kap_id
+         JOIN node n ON n.id = f.node_id
+         JOIN article a ON a.id = n.article_id
+         LEFT JOIN headword k ON k.id = n.kap_id
         WHERE fts_dif MATCH ?
         ORDER BY rank
         LIMIT ?`
