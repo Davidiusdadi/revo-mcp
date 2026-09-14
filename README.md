@@ -151,24 +151,26 @@ it (too little storage, a second tab, a failed download) and `revo:error` for
 what does, such as an unreachable file without a copy
 (`src/browser/protocol.ts`).
 
-Measured in Chromium against the core build (13,079 articles, 103.8 MB,
-40.2 MB gzipped), requests and bytes per interaction in remote mode:
+Measured in Chromium against the core build (13,079 articles, 141.0 MB,
+62.5 MB gzipped), requests and bytes per interaction in remote mode:
 
 | interaction | range requests | bytes |
 |---|---:|---:|
-| open + first search (`Hund`, de/en) | 47 | 202 KB |
-| `amikojn` | 15 | 70 KB |
-| `Haus` | 19 | 90 KB |
-| `dogs` (de/en/fr) | 5 | 20 KB |
-| `mal`, first 30 of 923 results | 74 | 463 KB |
-| `mal`, next 30 | 72 | 406 KB |
-| entry `hund.0o` | 39 | 193 KB |
+| open + first search (`Hund`, de/en) | 39 | 169 KB |
+| `amikojn` | 11 | 49 KB |
+| `Haus` | 15 | 70 KB |
+| `dogs` (de/en/fr) | 6 | 25 KB |
+| `mal`, first 30 of 923 results | 50 | 406 KB |
+| `mal`, next 30 | 45 | 246 KB |
+| entry `hund.0o` | 57 | 365 KB |
 | languages | 1 | 8 KB |
 
+A search reads `serĉo` and `translation`; an entry rebuilds its derivation
+from the tables of the elements in it, a few pages each, and so reads more.
 The count of requests, not their size, is what a slow connection feels: they
 are made one after another, so at a 100 ms round trip a `mal` page takes about
-7 s and `Haus` about 2 s. Once the copy is stored a search makes no request
-(`mal` ~110 ms, `Haus` ~20 ms) and a start makes one, the revision check.
+5 s and `Haus` about 1.5 s. Once the copy is stored a search makes no request
+(`mal` ~120 ms, `Haus` ~25 ms) and a start makes one, the revision check.
 
 The core file (141 MB, 62.5 MB gzipped) holds every article whole, one table
 per XML element (92 MB, citations, remarks and markup included), plus the
