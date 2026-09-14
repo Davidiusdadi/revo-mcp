@@ -88,10 +88,12 @@ export const ENDINGS: ReadonlySet<string> = new Set([
   "o", "a", "e", "i", "u", "as", "is", "os", "us", "oj", "on", "ojn", "aj", "an", "ajn", "en",
 ]);
 const WORD_ENDINGS: ReadonlySet<string> = new Set(["n", "j", "jn"]);
+/** Endings a root may keep inside a compound besides o (certa|grade, multe|nombra, daŭri|pova). */
+const VOWEL_LINK: ReadonlySet<string> = new Set(["a", "e", "i"]);
 const MAX_MORPH = 24;
 
-// phases: 0 start / after a prefix · 1 after a root or suffix · 2 after a linking
-// vowel (a root must follow) · 3 after an endingless word · 4 done
+// phases: 0 start / after a prefix · 1 after a root or suffix · 2 after an inner
+// ending (a root must follow) · 3 after an endingless word · 4 done
 interface Cell {
   cost: number;
   from: number;
@@ -117,9 +119,10 @@ export function pinFits(word: string, fixed: { at: number; root: string }): bool
 // the corpus marks; each term earned its place there, and a term that lowered
 // the score (a bigger length bonus, a penalty on proper-name roots, linking
 // a/e/i) was left out.
+const ONE_LETTER = 3; // a one-letter root (the letter's own article): ŝip|el|ir over ŝip|e|lir
 const LEN_BONUS = 0.005; // × len², so faj|rob|rig loses to fajr|o|brigad
 const DRV_BONUS = 0.02; // × ln(1 + derivations): mont over tar, by a hair
-const LINK = 0.25; // the linking o
+const LINK = 0.25; // an ending kept inside the word: the linking o, a/e, n after an endingless word
 const WORD_LATE = 2; // an endingless word (ĝis) as anything but the first piece
 const PAIR_BONUS = 0.25; // × ln(1 + n) for a pair the corpus writes
 const PAIR_UNSEEN = 0.5; // for a pair it never writes
@@ -134,6 +137,12 @@ const PAIR_UNSEEN = 0.5; // for a pair it never writes
  * is why the search keeps the last piece in its state. Affix articles are
  * roots too (ulo, ejo), so an affix reading is priced just below the root
  * reading of the same string. `fixed` pins a root at a known offset.
+ *
+ * A piece may keep its ending inside a compound: the linking o always
+ * (hund|o|ŝip|o), n after an endingless word (ĉio|n|pov|a, si|n|defend|o),
+ * and a, e or i after a root (cert|a|grad|e, mult|e|nombr|a, daŭr|i|pov|a) —
+ * those only before a root the corpus writes after that vowel, or brit|e|lir|o
+ * (the lira) would undercut brit|el|ir|o.
  */
 export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
   const w = word.toLowerCase();
@@ -152,7 +161,7 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
 
   const bonus = (s: string) => LEN_BONUS * s.length * s.length;
   const rootCost = (s: string) =>
-    (s.length <= 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
+    (s.length === 1 ? ONE_LETTER : s.length === 2 ? 2.5 : 1) - bonus(s) - (rootWeight ? DRV_BONUS * Math.log1p(rootWeight.get(s) ?? 0) : 0);
 
   for (let i = 0; i < n; i++) {
     if (best[i].size === 0) continue;
@@ -179,16 +188,23 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
           if (inv.words.has(s)) relax(3, "W", 0.5);
           continue;
         }
-        if (inv.roots.has(s)) relax(1, "R", rootCost(s));
-        if (ph === 2) continue; // after a linking vowel only a root fits
+        // after an inner a/e/i only a root the corpus writes after that vowel fits
+        const backed = !(ph === 2 && pairs && VOWEL_LINK.has(prev!.m) && !pairs.has(`${prev!.m}+${s}`));
+        if (inv.roots.has(s) && backed) relax(1, "R", rootCost(s));
+        if (ph === 2) continue; // after an inner ending only a root fits
         if (inv.words.has(s)) relax(3, "W", (s.length <= 2 ? 2.5 : 1) - bonus(s) + (ph === 0 ? 0 : WORD_LATE));
         if (inv.prefixes.has(s)) relax(0, "P", (ph === 0 ? 0.9 : 2.5) - bonus(s));
         if (ph === 1 || ph === 3) {
           if (inv.suffixes.has(s)) relax(1, "S", 0.9 - bonus(s));
           if (atEnd && ENDINGS.has(s)) relax(4, "E", 0.5);
         }
-        if (ph === 1 && s === "o" && !atEnd) relax(2, "L", LINK);
+        // without pair evidence (the build's first pass over the marked words)
+        // an inner a/e/i is not offered at all: the pass then reads the vowel
+        // as the letter's root only where nothing else fits (daŭr|i|pov|a) and
+        // learns i+pov from that, instead of nepr|i|pens from a cheap vowel
+        if (ph === 1 && !atEnd && (s === "o" || (VOWEL_LINK.has(s) && pairs))) relax(2, "L", LINK);
         if (ph === 3 && atEnd && WORD_ENDINGS.has(s)) relax(4, "E", 0.5);
+        if (ph === 3 && !atEnd && s === "n") relax(2, "L", LINK);
       }
     }
   }

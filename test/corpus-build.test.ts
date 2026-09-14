@@ -26,7 +26,7 @@ let db: Database;
 // synonyms belong to malbeligi and plibeligi, not to bela (figur and ornam hold them);
 // fer writes the headword hufofero without a tilde, and ofer is the root that
 // swallows the linking o when nothing pins fer
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer"];
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -328,6 +328,23 @@ describe("pass morph", () => {
     expect(one<{ seg: string; source: string }>(
       "SELECT seg, source FROM x_morph WHERE form = 'hufofero'")).toEqual(
       { seg: "huf|o|fer|o", source: "tilde" });
+  });
+
+  test("an ending article is an ending, not a root", () => {
+    // "-is" (the past tense) has <rad>is</rad> like any article; as a root it
+    // could sit inside a word (esperant|is|oj). "aso" (the ace) is a real root
+    const kinds = (m: string) => all<{ kind: string }>("SELECT kind FROM x_morpheme WHERE morph = ? ORDER BY kind", m).map((r) => r.kind);
+    expect(kinds("is")).toEqual(["E"]);
+    expect(kinds("as")).toEqual(["E", "R"]);
+  });
+
+  test("an exclamation is not a root", () => {
+    // "ej!" (doubt; spelt "eh" too) is marked ekkrio and derives nothing: no
+    // root, or mult|eh|ar|a would read. "paf!" is a root because ReVo builds
+    // pafi, pafilo on it
+    const kinds = (m: string) => all<{ kind: string }>("SELECT kind FROM x_morpheme WHERE morph = ? ORDER BY kind", m).map((r) => r.kind);
+    expect(kinds("eh")).not.toContain("R");
+    expect(kinds("paf")).toContain("R");
   });
 
   test("x_pair counts the neighbours of a marked root", () => {

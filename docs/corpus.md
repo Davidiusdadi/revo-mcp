@@ -183,7 +183,7 @@ at `d18ad4f`:
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 955,026 |
 | `tld-links` | `x_tld_occ` | 176,088 |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 113,867 |
-| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 151,999 |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 152,018 |
 
 **`search`** — one row in `serĉo` for every way into an entry (a marked drv):
 its headword and variants under `lng` 'eo', and each translation outside the
@@ -226,8 +226,10 @@ OWL: `hom` is treated as symmetric (the ontology only makes it transitive).
 
 **`morph`** — a lexicon-driven segmenter (`src/morph.ts`, a DP over morpheme
 classes with costs) over an inventory built from the corpus itself: 13.3k roots
-(`art.rad` and `<rad var>`), 106 prefixes and 58 suffixes from the affix
-articles (`mal-`, `-ul`; the grammatical endings excluded), 304 endingless
+(`art.rad` and `<rad var>`; not the ending articles such as `-is`, nor an
+article that is only an exclamation and derives nothing, such as `eh`), 106
+prefixes and 58 suffixes from the affix articles (`mal-`, `-ul`; the
+grammatical endings excluded), 304 endingless
 words (`ĉar`, `kiu`) from drv headwords with a bare tilde. A `<tld/>` pins the
 root span, so the segmenter only has to place affixes around a known root. A
 headword written out in full (`hufofero` in `fer`) is pinned where the
@@ -252,7 +254,7 @@ cheaper, one it never writes dearer, which is how `montaro` becomes
   `x_tld_occ` outside headwords), segmented with the root pinned (99.3 %), and
   tied to a headword of the same article when one of its dictionary forms is one
   (84 %, `how` = `kap` / `infl` / `class` / `ptcp`).
-- `x_pair`: 21,184 morpheme pairs next to a marked root, each with the number
+- `x_pair`: 21,266 morpheme pairs next to a marked root, each with the number
   of derivations that write it.
 
 Without a pin, the segmenter puts the marked root in the right place for

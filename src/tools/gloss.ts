@@ -172,20 +172,24 @@ function renderEo(g: EoGloss): string {
     out.push("");
   }
 
-  const twice = g.terms.filter((t) => t.also);
+  // a word filed under two articles, or one whose long root hides a second reading
+  const hasTwo = (t: EoTerm) => Boolean(t.also) || (t.readings?.length ?? 0) > 1;
+  const twice = g.terms.filter(hasTwo);
   if (twice.length > 0) {
     out.push("**Two readings** — the context has to decide", "");
     for (const t of twice) {
       const first = t.headword ? `${t.headword} (${t.art})` : `\`${t.seg}\``;
+      const others = (t.readings ?? []).slice(1).map((r) => `\`${r.seg}\` (${r.art}) — ${build(r.parts)}`);
+      if (t.also) others.push(`\`${t.also.seg}\` — ${build(t.also.parts)}`);
       out.push(
         `- **${t.word}**${times(t)} — ${first}` +
-          `${t.seg && t.headword ? ` \`${t.seg}\`` : ""}; also \`${t.also!.seg}\` — ${build(t.also!.parts)}`
+          `${t.seg && t.headword ? ` \`${t.seg}\`` : ""}; also ${others.join("; also ")}`
       );
     }
     out.push("");
   }
 
-  const fine = [...pick("headword"), ...pick("inflection")].filter((t) => !t.also);
+  const fine = [...pick("headword"), ...pick("inflection")].filter((t) => !hasTwo(t));
   if (fine.length > 0) {
     const listed = fine
       .map((t) => (t.verdict === "inflection" ? `${t.word} → ${t.headword}` : t.word))

@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
-import { lemmaCandidates, segment, formatSegments, type Inventory } from "../src/morph";
+import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "../src/morph";
+import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
 const lemmas = (w: string) => lemmaCandidates(w).map((c) => c.lemma);
@@ -85,6 +86,14 @@ describe("segment", () => {
     expect(formatSegments(segment("hundoŝipo", ships)!).seg).toBe("hund|o|ŝip|o");
   });
 
+  test("a one-letter root is dearer than a two-letter one", () => {
+    // ŝipeliro: ŝip + e + lir (the lira) or ŝip + el + ir; the letter e is in
+    // the inventory because it has an article of its own
+    const roots = new Set([...inv.roots, "ŝip", "e", "el", "ir", "lir"]);
+    const pairs = new Map([["el+ir", 7]]);
+    expect(formatSegments(segment("ŝipeliro", { ...inv, roots, pairs })!).seg).toBe("ŝip|el|ir|o");
+  });
+
   test("compounds and the linking vowel", () => {
     expect(seg("ĉashundo")).toEqual({ seg: "ĉas|hund|o", kinds: "RRE" });
     expect(seg("vivodaŭro")).toEqual({ seg: "viv|o|daŭr|o", kinds: "RLRE" });
@@ -94,6 +103,31 @@ describe("segment", () => {
     expect(seg("ĉar")).toEqual({ seg: "ĉar", kinds: "W" });
     expect(seg("kiun")).toEqual({ seg: "kiu|n", kinds: "WE" });
     expect(seg("ĉiutaga")?.seg).toBe("ĉiu|tag|a");
+  });
+
+  test("a piece keeps its ending inside a compound", () => {
+    // an endingless word keeps its -n: ĉio|n|pov|a, si|n|defend|o
+    const pron: Inventory = { ...inv, roots: new Set([...inv.roots, "pov", "defend"]), words: new Set([...inv.words, "ĉio", "si"]) };
+    expect(formatSegments(segment("ĉionpova", pron)!)).toEqual({ seg: "ĉio|n|pov|a", kinds: "WLRE" });
+    expect(formatSegments(segment("sindefendo", pron)!)).toEqual({ seg: "si|n|defend|o", kinds: "WLRE" });
+    // a root keeps its a/e only before a root the corpus writes after that vowel
+    const grade: Inventory = { ...inv, roots: new Set([...inv.roots, "cert", "grad", "agr"]), suffixes: new Set([...inv.suffixes, "ad"]) };
+    expect(formatSegments(segment("certagrade", { ...grade, pairs: new Map([["a+grad", 3]]) })!)).toEqual({ seg: "cert|a|grad|e", kinds: "RLRE" });
+    expect(formatSegments(segment("certagrade", { ...grade, pairs: new Map([["mal+san", 5]]) })!).seg).toBe("cert|agr|ad|e");
+    // so brit|e|lir|o (the lira) cannot undercut brit|el|ir|o
+    const exits: Inventory = { ...inv, roots: new Set([...inv.roots, "brit", "el", "ir", "lir"]), pairs: new Map([["el+ir", 7]]) };
+    expect(formatSegments(segment("briteliro", exits)!).seg).toBe("brit|el|ir|o");
+    // i as well: daŭr|i|pov|a, the i an ending and not the letter's root
+    const pova: Inventory = { ...inv, roots: new Set([...inv.roots, "pov", "i"]), pairs: new Map([["i+pov", 2]]) };
+    expect(formatSegments(segment("daŭripova", pova)!)).toEqual({ seg: "daŭr|i|pov|a", kinds: "RLRE" });
+  });
+
+  test("without pair evidence only the linking o is kept inside", () => {
+    // the build's first pass has no pairs yet; a cheap inner a would let it
+    // learn a+grad from its own guess
+    const grade: Inventory = { ...inv, roots: new Set([...inv.roots, "cert", "grad", "agr"]), suffixes: new Set([...inv.suffixes, "ad"]) };
+    expect(formatSegments(segment("certagrade", grade)!).seg).toBe("cert|agr|ad|e");
+    expect(seg("vivodaŭro")).toEqual({ seg: "viv|o|daŭr|o", kinds: "RLRE" });
   });
 
   test("a pinned root is kept", () => {
@@ -114,5 +148,20 @@ describe("segment", () => {
   test("uncoverable words give null", () => {
     expect(seg("xyzo")).toBeNull();
     expect(seg("")).toBeNull();
+  });
+});
+
+describe("Pairs", () => {
+  test("each marked root vouches for its own neighbours", () => {
+    // artefarita is filed under art and under far: the same split, two marks
+    const ms: Morph[] = [{ m: "art", k: "R" }, { m: "e", k: "L" }, { m: "far", k: "R" }, { m: "it", k: "S" }, { m: "a", k: "E" }];
+    const pairs = new Pairs();
+    pairs.add(ms, 0);
+    pairs.add(ms, 4);
+    expect(pairs.counts.get("art+e")).toBe(1);
+    expect(pairs.counts.get("e+far")).toBe(1);
+    // an inflection of the same derivation, same mark: counted once
+    pairs.add([...ms.slice(0, 4), { m: "aj", k: "E" }], 4);
+    expect(pairs.counts.get("e+far")).toBe(1);
   });
 });

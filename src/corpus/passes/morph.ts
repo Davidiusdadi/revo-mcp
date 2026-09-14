@@ -1,9 +1,10 @@
 /**
  * Pass `morph`: lexicon-driven morphology (src/morph.ts does the work).
  *
- * - x_morpheme: the inventory — article roots (and `<rad var>` roots), prefixes
- *   and suffixes from the affix articles (kap "mal-", "-ul"), the endings,
- *   and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
+ * - x_morpheme: the inventory — article roots (and `<rad var>` roots; not the
+ *   ending articles "-is", nor exclamations that derive nothing "eh"),
+ *   prefixes and suffixes from the affix articles (kap "mal-", "-ul"), the
+ *   endings, and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
  * - x_morph: a segmentation of every headword, the root pinned where the kap
  *   marks it (`<tld/>`, or the "/" after an article's root).
  * - x_token: every distinct word written with a `<tld/>` outside headwords,
@@ -27,7 +28,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 5,
+  version: 7,
   tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
   run(db, log) {
     const inv = buildInventory(db);
@@ -67,10 +68,25 @@ export function buildInventory(db: Database): Built {
     rootArts.set(r, a);
     rootWeight.set(r, (rootWeight.get(r) ?? 0) + (drv.get(art) ?? 0));
   };
+  // the ending articles ("-is": the past tense) have a root column like any
+  // other, but is/as/n/j are not roots: read as one, "is" could sit inside a
+  // word and esperant|is|oj would pass
+  const endingArts = new Set(db.query<{ id: number }, []>(
+    `SELECT a.id FROM art a JOIN node n ON n.art_id = a.id AND n.kind = 'art' JOIN kap k ON k.node_id = n.id
+     WHERE k.txt LIKE '-%'`).all().map((r) => r.id));
+  // An article that is only an exclamation or a sound ("eh", "brr", "kva":
+  // marked ekkrio/sonimit, nothing derived from it) has a root column too, but
+  // an exclamation does not join other roots: mult|eh|ar|a is no reading of
+  // multehara. Exclamations ReVo builds on (pafi, halti, jesi) stay roots.
+  const EXCLAMATION = /<vspec>(ekkrio|sonimito)<\/vspec>/;
   const radOf = db.query<{ rad: string }, [number]>("SELECT rad FROM art WHERE id = ?");
   for (const a of articlesOf(db)) {
-    addRoot(radOf.get(a.id)!.rad, a.id);
-    for (const m of outerXml(a.art).matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
+    const rad = radOf.get(a.id)!.rad;
+    const xml = outerXml(a.art);
+    if (endingArts.has(a.id) && GRAMMATICAL.has(rad.toLowerCase())) continue;
+    if (EXCLAMATION.test(xml) && (drv.get(a.id) ?? 0) <= 1) continue;
+    addRoot(rad, a.id);
+    for (const m of xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), a.id);
   }
   // affix articles: kap "mal-" / "-ul"; the ending articles ("-o", "-as", "-j") are not
   // affixes, but "-an" and "-on" are (member, fraction) even though they spell endings too
@@ -113,14 +129,17 @@ function writeInventory(db: Database, inv: Built): number {
  * before "port", "ist" after it. Only those two neighbours, because the rest
  * of a pinned split is the segmenter's own guess, and its guesses must not
  * become its evidence (a wrong "mon|tar" in montarĉeno would teach it to split
- * montaro the same way). A derivation and its inflections count once.
+ * montaro the same way). A derivation and its inflections count once per
+ * marked root.
  */
 export class Pairs {
   readonly counts = new Map<string, number>();
   private readonly seen = new Set<string>();
   add(ms: Morph[], at: number) {
     const core = ms.filter((m) => m.k !== "E");
-    const stem = core.map((m) => m.m).join("|");
+    // one count per derivation and pin: artefarita is filed under art and
+    // under far, and each mark vouches for its own neighbours (art+e, e+far)
+    const stem = `${core.map((m) => m.m).join("|")}@${at}`;
     if (this.seen.has(stem)) return;
     this.seen.add(stem);
     let off = 0;

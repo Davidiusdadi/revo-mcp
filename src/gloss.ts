@@ -18,11 +18,18 @@
  * segmenter (`src/morph.ts`) rebuilds the word from the morpheme inventory and
  * the affix articles supply each part's own definition, so what comes back is
  * assembled from the corpus rather than invented.
+ *
+ * The segmenter guesses only for words the dictionary does not have. A
+ * headword, an inflection of one, or a form written in the examples is split
+ * the way the `morph` pass stored it, which follows ReVo's own root marks —
+ * and a word filed under two articles keeps both readings.
  */
 
 import type { SqlReader } from "./sql";
 import { fromXSystem, normalizeQuery } from "./stemmer";
-import { lemmaCandidates, segment, formatSegments, type Inventory, type Morph } from "./morph";
+import {
+  lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph, type MorphKind,
+} from "./morph";
 import { sourceFormAttempts } from "./source-forms";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +77,15 @@ export interface Part {
   art?: string;
 }
 
+/** One way of taking a word apart, and the article it comes from. */
+export interface Reading {
+  seg: string;
+  kinds: string;
+  parts: Part[];
+  /** The article the word is filed under, or whose root the example marked. */
+  art: string;
+}
+
 export interface EoTerm {
   word: string;
   n: number;
@@ -81,12 +97,20 @@ export interface EoTerm {
   how?: string;
   /** attested: occurrences in the example corpus. */
   attested?: number;
+  /** The morphological reading: the first of `readings` when there are any, else the segmenter's guess. */
   seg?: string;
   kinds?: string;
   parts?: Part[];
   /**
-   * The reading is built on a different root than the matched headword, so it
-   * is a second sense rather than the same word taken apart.
+   * headword / inflection / attested: the splits the corpus itself records,
+   * one per article the word is filed under, longest root first. `resumi` is
+   * filed under `resum` and under `sum`, so it reads `resum|i` and `re|sum|i`.
+   */
+  readings?: Reading[];
+  /**
+   * The guessed reading is built on a different root than the matched
+   * headword, so it is a second sense rather than the same word taken apart.
+   * Only set when the corpus stored no split to go by.
    */
   altReading?: boolean;
   /**
@@ -253,19 +277,28 @@ function rootsByLength(db: SqlReader): Map<number, string[]> {
 }
 
 /**
- * An article's own primary headword — what its root means on its own.
+ * The primary headword of the article a root belongs to — what the root means
+ * on its own — and that article's name.
  *
- * A plain word wins over the affix spelling: the `end` article leads with the
- * headword `-end`, but `endi` is what names the root.
+ * The root is looked up through the morpheme inventory, not by article file
+ * name: the files are x-system (`sxangx` for `ŝanĝ`) and homonyms are numbered
+ * (`tar1`), so the morph itself names no file. A root shared by several
+ * articles goes to the one with the most derivations. A plain word wins over
+ * the affix spelling: the `end` article leads with the headword `-end`, but
+ * `endi` is what names the root.
  */
-function rootHeadword(db: SqlReader, art: string): string | null {
+function rootHeadword(db: SqlReader, morph: string): { txt: string; art: string } | null {
   const row = db
-    .query<{ txt: string }, [string]>(
-      `SELECT k.txt FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-        WHERE a.file = ?
-        ORDER BY (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
-    .get(art);
-  return row?.txt ?? null;
+    .query<{ txt: string; art: string }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art
+         FROM x_morpheme x
+         JOIN art a ON a.id = x.art_id
+         JOIN node n ON n.art_id = a.id
+         JOIN kap k ON k.node_id = n.id
+        WHERE x.morph = ? AND x.kind IN ('R', 'W')
+        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.id LIMIT 1`)
+    .get(morph);
+  return row ? { txt: row.txt, art: fromXSystem(row.art) } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,10 +424,11 @@ function countOf(text: string, phrase: string): number {
 // Esperanto text → audit
 // ---------------------------------------------------------------------------
 
-function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string } | null {
+/** The first headword spelled `norm`, with its article's file name and root. */
+function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string; root: string } | null {
   const row = db
-    .query<{ txt: string; art: string }, [string]>(
-      `SELECT k.txt AS txt, a.file AS art
+    .query<{ txt: string; art: string; root: string }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art, a.rad AS root
          FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
         WHERE k.norm = ? ORDER BY k.id LIMIT 1`)
     .get(norm);
@@ -402,18 +436,20 @@ function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string } | 
 }
 
 /** A form written with a `<tld/>` somewhere in the examples, with its count. */
-function tokenByNorm(db: SqlReader, norm: string): { n: number; art: string; headword: string | null } | null {
+function tokenByNorm(
+  db: SqlReader, norm: string
+): { n: number; art: string; root: string; headword: string | null } | null {
   // one row per article the form was written under; the most frequent one names it
   const rows = db
-    .query<{ n: number; art: string; headword: string | null }, [string]>(
-      `SELECT t.n AS n, a.file AS art, k.txt AS headword
+    .query<{ n: number; art: string; root: string; headword: string | null }, [string]>(
+      `SELECT t.n AS n, a.file AS art, a.rad AS root, k.txt AS headword
          FROM x_token t
          JOIN art a ON a.id = t.art_id
          LEFT JOIN kap k ON k.id = t.lemma_kap_id
         WHERE t.norm = ? ORDER BY t.n DESC, t.id`)
     .all(norm);
   if (rows.length === 0) return null;
-  return { n: rows.reduce((s, r) => s + r.n, 0), art: rows[0].art, headword: rows[0].headword };
+  return { n: rows.reduce((s, r) => s + r.n, 0), art: rows[0].art, root: rows[0].root, headword: rows[0].headword };
 }
 
 /**
@@ -511,6 +547,162 @@ function suffixReadings(word: string, inv: Inventory): Morph[][] {
   return out;
 }
 
+/** Suffixes any verb takes: the participles and the three modal ones. */
+const VERBAL = new Set(["ant", "int", "ont", "at", "it", "ot", "end", "ebl", "ind"]);
+
+/**
+ * Whether a root + suffix reading is one somebody would mean, not merely one
+ * the inventory allows. `dolaroj` also parses as `dol|ar|oj`, a collection of
+ * pains, and `vespera` as `vesp|er|a`; on a sample of 7,639 real words every
+ * such reading was of that kind. The reading stands when the corpus writes
+ * the root and suffix together, or the suffix is a verbal one on a root that
+ * has a verb headword — `leg|end|a` is a word because `legi` is, whether or
+ * not any article writes it.
+ */
+function grounded(db: SqlReader, inv: Inventory, ms: Morph[]): boolean {
+  const [root, suf] = ms;
+  if ((inv.pairs?.get(`${root.m}+${suf.m}`) ?? 0) > 0) return true;
+  return VERBAL.has(suf.m) && kapByNorm(db, root.m + "i") !== null;
+}
+
+interface StoredSplit {
+  seg: string;
+  kinds: string;
+  /** The article's file name, x-system, at times shortened (`distor`, `hxamel`). */
+  art: string;
+  /** The article's root as ReVo writes it (`distord`, `ĥameleon`) — what its root mark stands for. */
+  root: string;
+}
+
+/**
+ * The splits the `morph` pass stored for every headword spelled `norm`, one
+ * per article it is filed under. Multi-word headwords cannot be one token of
+ * the text and are left out.
+ */
+function headwordSplits(db: SqlReader, norm: string): StoredSplit[] {
+  return db
+    .query<StoredSplit, [string]>(
+      `SELECT m.seg AS seg, m.kinds AS kinds, a.file AS art, a.rad AS root
+         FROM x_morph m JOIN art a ON a.id = m.art_id
+        WHERE m.form = ? AND m.ok = 1 AND m.seg NOT LIKE '% %'
+        ORDER BY m.kap_id`)
+    .all(norm);
+}
+
+/** The splits stored for a form the examples write with a root mark, most frequent first. */
+function attestedSplits(db: SqlReader, norm: string): StoredSplit[] {
+  return db
+    .query<StoredSplit, [string]>(
+      `SELECT t.seg AS seg, t.kinds AS kinds, a.file AS art, a.rad AS root
+         FROM x_token t JOIN art a ON a.id = t.art_id
+        WHERE t.norm = ? AND t.ok = 1
+        ORDER BY t.n DESC, t.id`)
+    .all(norm);
+}
+
+/**
+ * A stored split back into morphemes, with two kinds read differently from
+ * how the build stamped them.
+ *
+ * The build marks the span a root mark covers as a root, whatever the
+ * article: `farenda`, written under the `-end` article, is stored as
+ * `far|end|a` with `end` a root. Read here, a marked root that the
+ * inventory lists as a suffix is the suffix when a root precedes it, and
+ * one it lists as a prefix is the prefix when a root follows it — so the
+ * part is glossed from the affix article, "kiun oni devas fari", not as the
+ * verb `endi`.
+ *
+ * A one-letter root between two roots is a linking vowel. The letters have
+ * articles of their own (`e` is the name of the letter), so `artefarita` is
+ * stored as `art|e|far|it|a` with three roots; `e` joins the two, it is not a
+ * third.
+ */
+function storedMorphs(s: StoredSplit, inv: Inventory): Morph[] {
+  const ms = s.seg.split("|").map((m, i) => ({ m, k: s.kinds[i] as MorphKind }));
+  const rootish = (x: Morph | undefined) => x !== undefined && (x.k === "R" || x.k === "W");
+  for (let i = 0; i < ms.length; i++) {
+    const { m, k } = ms[i];
+    if (k !== "R") continue;
+    const prev = ms[i - 1];
+    const next = ms[i + 1];
+    if (m.length === 1 && (rootish(prev) || prev?.k === "P") && rootish(next)) ms[i].k = "L";
+    else if (inv.suffixes.has(m) && (rootish(prev) || prev?.k === "S")) ms[i].k = "S";
+    else if (inv.prefixes.has(m) && (prev === undefined || prev.k === "P") && rootish(next)) ms[i].k = "P";
+  }
+  return ms;
+}
+
+/**
+ * The dictionary form's stored split carried over to an inflected word: the
+ * stem as filed, then whatever replaced the lemma's ending — the ending
+ * alone (`skrib|is`), or a participle suffix and the ending (`ŝanĝ|it|a`).
+ * Null when the word is not that stem plus a tail the inventory can name.
+ */
+function carryOver(lemma: Morph[], word: string, inv: Inventory): Morph[] | null {
+  const base = lemma[lemma.length - 1].k === "E" ? lemma.slice(0, -1) : lemma;
+  const stem = base.map((m) => m.m).join("");
+  if (word.length <= stem.length || !word.startsWith(stem)) return null;
+  const tail = tailMorphs(word.slice(stem.length), inv);
+  return tail && [...base, ...tail];
+}
+
+/** `ita` → -it- -a, `ojn` → -ojn; null unless the tail is suffixes followed by an ending. */
+function tailMorphs(tail: string, inv: Inventory): Morph[] | null {
+  if (ENDINGS.has(tail) || tail === "n" || tail === "j" || tail === "jn") return [{ m: tail, k: "E" }];
+  const fits = [...inv.suffixes].filter((s) => tail.length > s.length && tail.startsWith(s));
+  fits.sort((a, b) => b.length - a.length);
+  for (const s of fits) {
+    const rest = tailMorphs(tail.slice(s.length), inv);
+    if (rest) return [{ m: s, k: "S" }, ...rest];
+  }
+  return null;
+}
+
+/**
+ * Distinct readings, the one with the longest root first.
+ *
+ * Each stored split honours the root its own article marks and guesses the
+ * rest, so where several articles mark the same word the guesses can
+ * disagree. A split that keeps whole the root another split was made for,
+ * and more marked roots besides, is the better guess, and the other is
+ * dropped: `hufofero` is `huf|o|fer|o` under `fer` and `huf|ofer|o` under
+ * `huf`, and only the first has both `huf` and `fer` in it. Splits made for
+ * different roots are all kept — `turdedoj` is `turded|oj` under `turded`
+ * and `turd|ed|oj` under `turd`, and neither contains the other's root. A
+ * one-letter mark (`birdoj` is written in the `o` article, `kolumbio` in
+ * `-i`) is no evidence for a split, so it neither counts nor gets a reading
+ * dropped.
+ */
+function readingsOf(db: SqlReader, rows: { ms: Morph[]; art: string; root: string }[]): Reading[] {
+  const marks = new Set(rows.map((r) => r.root.toLowerCase()).filter((r) => r.length > 1));
+  const keeps = (ms: Morph[]) => new Set([...marks].filter((root) => ms.some((m) => m.m === root)));
+  const bySeg = new Map<string, { reading: Reading; keeps: Set<string>; own: Set<string> }>();
+  for (const r of rows) {
+    const f = formatSegments(r.ms);
+    const hit = bySeg.get(f.seg);
+    if (hit) hit.own.add(r.root.toLowerCase());
+    else {
+      bySeg.set(f.seg, {
+        reading: { ...f, parts: partsOf(db, r.ms), art: fromXSystem(r.art) },
+        keeps: keeps(r.ms),
+        own: new Set([r.root.toLowerCase()]),
+      });
+    }
+  }
+  const all = [...bySeg.values()];
+  const outdone = (a: { keeps: Set<string>; own: Set<string> }) =>
+    all.some((b) =>
+      b.keeps.size > a.keeps.size &&
+      [...a.keeps].every((root) => b.keeps.has(root)) &&
+      [...a.own].every((root) => b.keeps.has(root)));
+  const longest = (r: Reading) =>
+    Math.max(0, ...r.parts.filter((p) => p.k === "R" || p.k === "W").map((p) => p.m.length));
+  return all
+    .filter((x) => !outdone(x))
+    .map((x) => x.reading)
+    .sort((a, b) => longest(b) - longest(a));
+}
+
 /** The morphemes of a segmentation, each with what the corpus says about it. */
 function partsOf(db: SqlReader, ms: Morph[]): Part[] {
   const affixes = affixesOf(db);
@@ -525,8 +717,8 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
     } else if (m.k === "R" || m.k === "W") {
       const head = rootHeadword(db, m.m);
       if (head) {
-        part.art = m.m;
-        part.gloss = head;
+        part.art = head.art;
+        part.gloss = head.txt;
       }
     }
     return part;
@@ -548,7 +740,8 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
  *
  * The third row is the rule used. The numbers predate the pair evidence and
  * the retuned costs in `segment()`; the rule they justify did not change.
- * Tightening further costs real words —
+ * It applies to guesses only: a split the corpus stored is ReVo's and is
+ * reported as it is. Tightening further costs real words —
  * `ĉirkaŭ|ir|ad|o` needs its two-letter root — and buys less than it looks,
  * because most of what survives is *legal*: `fin|sit|a` is a well-formed
  * compound of two real roots and merely the wrong word. Morphology cannot rule
@@ -601,41 +794,77 @@ export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions =
  * inflection of one, a form the examples attest, a word the inventory can
  * build out of known morphemes, or nothing.
  *
- * Every verdict but `headword` also carries the morphological reading when
- * there is a plausible one, since that is what tells a translator whether an
- * unlisted word is well formed.
+ * A word the corpus has is split the way the corpus stored it; the segmenter
+ * only guesses when there is no stored split to go by. Every verdict but
+ * `headword` also carries the reading a long root hides, when there is one,
+ * since that is what tells a translator whether an unlisted word is well
+ * formed.
  */
 export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
-  const ms = segment(word, inv);
-  const morph = ms && plausible(ms, word, inv) ? { ms, ...formatSegments(ms) } : null;
-
-  /** Attach the decomposition, plus any reading a long root hides. */
-  const withMorph = (term: EoTerm, art?: string): EoTerm => {
-    if (morph) {
-      term.seg = morph.seg;
-      term.kinds = morph.kinds;
-      term.parts = partsOf(db, morph.ms);
-      const roots = morph.ms.filter((m) => m.k === "R").map((m) => m.m);
-      if (art && roots.length > 0 && !roots.includes(art)) term.altReading = true;
+  let guess: { ms: Morph[]; seg: string; kinds: string } | null | undefined;
+  const guessed = () => {
+    if (guess === undefined) {
+      const ms = segment(word, inv);
+      guess = ms && plausible(ms, word, inv) ? { ms, ...formatSegments(ms) } : null;
     }
+    return guess;
+  };
+
+  /** Attach the stored readings, or failing those a guess, plus any reading a long root hides. */
+  const withMorph = (term: EoTerm, readings: Reading[], root?: string): EoTerm => {
+    const seen = new Set<string>();
+    if (readings.length > 0) {
+      const [first] = readings;
+      Object.assign(term, { seg: first.seg, kinds: first.kinds, parts: first.parts, readings });
+      for (const r of readings) seen.add(r.seg);
+    } else {
+      const morph = guessed();
+      if (morph) {
+        term.seg = morph.seg;
+        term.kinds = morph.kinds;
+        term.parts = partsOf(db, morph.ms);
+        seen.add(morph.seg);
+        const roots = morph.ms.filter((m) => m.k === "R").map((m) => m.m);
+        if (root && roots.length > 0 && !roots.includes(root.toLowerCase())) term.altReading = true;
+      }
+    }
+    if (term.verdict === "headword") return term;
     for (const alt of suffixReadings(word, inv)) {
       const f = formatSegments(alt);
-      if (morph && f.seg === morph.seg) continue;
+      if (seen.has(f.seg) || !grounded(db, inv, alt)) continue;
       term.also = { ...f, parts: partsOf(db, alt) };
       break;
     }
     return term;
   };
 
+  // The examples can write a headword under another article with a root mark
+  // of their own — turdedoj is a headword on the root turded and is written
+  // in the turd article as turd|ed|oj — so their splits join the readings
+  // whatever the verdict.
+  const attested = () => attestedSplits(db, word).map((s) => ({ ms: storedMorphs(s, inv), art: s.art, root: s.root }));
+
   const exact = kapByNorm(db, word);
-  if (exact) return { word, n: 1, verdict: "headword", headword: exact.txt, art: exact.art };
+  if (exact) {
+    const stored = headwordSplits(db, word).map((s) => ({ ms: storedMorphs(s, inv), art: s.art, root: s.root }));
+    return withMorph(
+      { word, n: 1, verdict: "headword", headword: exact.txt, art: exact.art },
+      readingsOf(db, [...stored, ...attested()])
+    );
+  }
 
   for (const c of lemmaCandidates(word)) {
     const hit = kapByNorm(db, c.lemma);
     if (hit) {
+      const rows: { ms: Morph[]; art: string; root: string }[] = [];
+      for (const s of headwordSplits(db, c.lemma)) {
+        const ms = carryOver(storedMorphs(s, inv), word, inv);
+        if (ms) rows.push({ ms, art: s.art, root: s.root });
+      }
       return withMorph(
         { word, n: 1, verdict: "inflection", headword: hit.txt, art: hit.art, how: c.how },
-        hit.art
+        readingsOf(db, [...rows, ...attested()]),
+        hit.root
       );
     }
   }
@@ -644,9 +873,10 @@ export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
   if (tok) {
     const term: EoTerm = { word, n: 1, verdict: "attested", attested: tok.n, art: tok.art };
     if (tok.headword) term.headword = tok.headword;
-    return withMorph(term, tok.art);
+    return withMorph(term, readingsOf(db, attested()), tok.root);
   }
 
+  const morph = guessed();
   if (morph) {
     // a legal formation can still be a slip of the finger: `finsita` is a real
     // compound of `fin` and `sit`, and one letter from `finita`
