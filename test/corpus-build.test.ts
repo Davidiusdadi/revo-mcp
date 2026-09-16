@@ -19,7 +19,8 @@ import { runPass } from "../src/corpus/pass";
 import { tldOccurrences, tokenGroups } from "../src/corpus/passes/tld-links";
 import { IS_ENTRY, trigramMatch, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
 import { lemmaCandidates, parseSpans } from "../src/morph";
-import { familyExamples, familyOf } from "../src/family";
+import { familyOf } from "../src/family";
+import { wordExamples, wordForms } from "../src/word-examples";
 import { classify, inventoryOf } from "../src/gloss";
 
 let dir: string;
@@ -34,7 +35,8 @@ let trees: ArticleTree[];
 // fer writes the headword hufofero without a tilde, and ofer is the root that
 // swallows the linking o when nothing pins fer; ĉashundo is in the families of hund
 // and cxas, hundherbo is filed under herb, and hundiĉo and hundedoj have roots of their own;
-// cxas and ras quote "hundo bonrasa estas bona por ĉaso ;" alike, and hund at more length
+// cxas and ras quote "hundo bonrasa estas bona por ĉaso ;" alike, and hund at more length;
+// li and unu are short words that many longer ones begin with
 const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf", "cxas", "herb", "hundicx", "hunded", "ras"];
 
 beforeAll(() => {
@@ -579,7 +581,7 @@ describe("core stage", () => {
   });
 
   test("carries the word families and the example index, not the full stage's indexes", () => {
-    expect(tables()).toEqual(expect.arrayContaining(["x_family", "idx_x_family_node", "ekzemplo", "fts_ekz"]));
+    expect(tables()).toEqual(expect.arrayContaining(["x_family", "idx_x_family_node", "ekzemplo", "fts_ekz", "fts_ekz_word"]));
     for (const t of ["fts_kap", "fts_trd", "fts_ekz_fold", "idx_ekzemplo_drv", "idx_ekzemplo_art"]) expect(tables()).not.toContain(t);
   });
 
@@ -618,59 +620,87 @@ describe("core stage", () => {
     expect(new Set(whole.members.map((m) => m.mrk)).size).toBe(whole.entries);
   });
 
-  test("family examples: the family's words, whole, each example under the first root it uses", () => {
-    const out = familyExamples(core as never, ["hund", "cxas"], { languages: ["de"] });
-    expect(out.available).toBe(true);
-    const [hund, cxas] = out.groups;
-    expect([hund.root, cxas.root]).toEqual(["hund", "ĉas"]);
-    const words = (group: typeof hund) =>
-      group.examples.flatMap((e) => e.matches.filter((m) => m.root === group.root).map((m) => e.text.slice(m.at, m.at + m.length).toLowerCase()));
-    // an elided noun counts; hundiĉo and hundedoj are words of their own roots
-    expect(words(hund)).toContain("hundaĉ");
-    expect(words(hund).filter((w) => /hundiĉ|hunded/.test(w))).toEqual([]);
-    for (const group of out.groups) {
-      expect(group.totalExact).toBe(true);
-      expect(group.total).toBe(group.examples.length);
-      expect(group.candidates).toBeGreaterThanOrEqual(group.total);
-      // the family's own entries first
-      const member = group.examples.map((e) => e.memberEntry);
-      expect(member.slice(member.indexOf(false)).includes(true)).toBe(false);
-      for (const e of group.examples) {
-        expect(e.matches.some((m) => m.root === group.root)).toBe(true);
-        for (const m of e.matches) expect(e.text.toLowerCase().startsWith(m.root, m.rootAt)).toBe(true);
-        expect(e.translations.every((t) => t.lng === "de")).toBe(true);
-      }
-    }
-    // hundo bonrasa estas bona por ĉaso: under hund, with the words of both, the
-    // family's own entry first, and the same sentence of cxas and ras once
-    const ids = new Set(hund.examples.map((e) => e.id));
-    expect(cxas.examples.filter((e) => ids.has(e.id))).toEqual([]);
-    const bonrasa = (group: typeof hund) => group.examples.filter((e) => e.text.startsWith("hundo bonrasa estas bona por ĉaso"));
-    expect(bonrasa(cxas)).toEqual([]);
-    expect(bonrasa(hund).map((e) => [e.article, e.headword, e.memberEntry])).toEqual([["hund", "hundo", true], ["cxas", "ĉaso", false]]);
-    for (const both of bonrasa(hund)) expect(both.matches.map((m) => m.root)).toEqual(["hund", "ĉas"]);
-    // the entry's own examples can be left out, and so can the same sentences elsewhere
-    const own = entryNodeByMark(core as never, "hund.0o")!;
-    const without = familyExamples(core as never, ["hund"], { mark: "hund.0o" }).groups[0];
-    expect(without.examples.filter((e) => e.id >= own.id && e.id <= own.last_id)).toEqual([]);
-    expect(without.examples.length).toBeLessThan(hund.examples.length);
-    const fromCxas = familyExamples(core as never, ["hund"], { mark: "cxas.0o" }).groups[0];
-    expect(bonrasa(fromCxas).map((e) => e.article)).toEqual(["hund"]);
+  /** What an entry's examples should be, read from every sentence: those with a form of the word, each once, none of the entry's own. */
+  const expectedExamples = (mark: string, form: RegExp) => {
+    const node = entryNodeByMark(core as never, mark)!;
+    const key = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const rows = core.query<{ rowid: number; ekz_md: string }, []>("SELECT rowid, ekz_md FROM ekzemplo ORDER BY rowid").all();
+    const seen = new Set(rows.filter((r) => r.rowid >= node.id && r.rowid <= node.last_id).map((r) => key(r.ekz_md)));
+    return rows.filter((r) => {
+      if (r.rowid >= node.id && r.rowid <= node.last_id) return false;
+      if (!new RegExp(`(?<!\\p{L})(?:${form.source})(?!\\p{L})`, "iu").test(r.ekz_md) || seen.has(key(r.ekz_md))) return false;
+      seen.add(key(r.ekz_md));
+      return true;
+    }).map((r) => r.rowid);
+  };
+  const matched = (out: ReturnType<typeof wordExamples>) =>
+    out.examples.flatMap((e) => e.matches.map((m) => e.text.slice(m.at, m.at + m.length).toLowerCase()));
+
+  test("a word's forms: its inflections, and nothing a short word would take in", () => {
+    expect(wordForms("hundo")).toEqual(["hundo", "hundoj", "hundon", "hundojn", "hund'"]);
+    expect(wordForms("pafi")).toEqual(["pafi", "pafin", "pafas", "pafis", "pafos", "pafus", "pafu"]);
+    expect(wordForms("si")).toEqual(["si", "sin"]);
+    expect(wordForms("kiu")).toEqual(["kiu", "kiuj", "kiun", "kiujn"]);
+    expect(wordForms("hejme")).toEqual(["hejme", "hejmen"]);
+    expect(wordForms("nu")).toEqual(["nu"]);
+    expect(wordForms("je")).toEqual(["je"]);
+    expect(wordForms("l’")).toEqual(["l'"]);
   });
 
-  test("family examples come in pages, counted exactly or bounded by the candidates", () => {
-    const all10 = familyExamples(core as never, ["hund"], { limit: 10 }).groups[0];
-    const page1 = familyExamples(core as never, ["hund"], { limit: 5 }).groups[0];
-    const page2 = familyExamples(core as never, ["hund"], { limit: 5, offset: 5 }).groups[0];
+  test("an entry's examples: its headword as a word of its own, inflected or not, and nothing built on it", () => {
+    const out = wordExamples(core as never, "hund.0o", { languages: ["de"], limit: 5000 });
+    expect(out).toMatchObject({ available: true, headwords: ["hundo"], totalExact: true, offset: 0 });
+    expect(out.examples.map((e) => e.id)).toEqual(expectedExamples("hund.0o", /hundoj?n?|hund['’]/));
+    expect(out.examples.length).toBeGreaterThan(0);
+    expect(out.total).toBe(out.examples.length);
+    expect(out.candidates).toBeGreaterThanOrEqual(out.total);
+    expect(new Set(matched(out))).toEqual(new Set(matched(out).filter((w) => /^(hundoj?n?|hund['’])$/.test(w))));
+    for (const e of out.examples) expect(e.translations.every((t) => t.lng === "de")).toBe(true);
+    // ĉashundo is ĉashundo's
+    expect(matched(out).some((w) => w.includes("ĉashund"))).toBe(false);
+  });
+
+  test("a short word is found only whole, a verb in its tenses", () => {
+    const li = wordExamples(core as never, "li.0", { limit: 5000 });
+    expect(li.examples.length).toBeGreaterThan(10);
+    expect(li.examples.map((e) => e.id)).toEqual(expectedExamples("li.0", /lin?/));
+    expect(new Set(matched(li))).toEqual(new Set(["li", "lin"].filter((w) => matched(li).includes(w))));
+    const unu = wordExamples(core as never, "unu.0", { limit: 5000 });
+    expect(unu.examples.map((e) => e.id)).toEqual(expectedExamples("unu.0", /unuj?n?/));
+    const pafi = wordExamples(core as never, "paf.0i", { limit: 5000 });
+    expect(pafi.examples.map((e) => e.id)).toEqual(expectedExamples("paf.0i", /pafi|pafas|pafis|pafos|pafus|pafu/));
+    expect(pafi.examples.length).toBeGreaterThan(0);
+    // the index knows a word from the words it begins: few candidates are not examples
+    expect(li.candidates).toBeLessThan(li.total * 1.2 + 5);
+  });
+
+  test("a headword of several words is found as one", () => {
+    const out = wordExamples(core as never, "hund.GrandaH0o");
+    expect(out.headwords).toEqual(["Granda Hundo"]);
+    for (const e of out.examples) {
+      expect(e.matches.length).toBeGreaterThan(0);
+      for (const m of e.matches) expect(e.text.slice(m.at, m.at + m.length)).toMatch(/^grand(?:aj?n?)[\s-]+hund(?:oj?n?)$/iu);
+    }
+  });
+
+  test("a sentence several articles quote alike is listed once, and not when the entry shows it", () => {
+    // hundo bonrasa estas bona por ĉaso: hund quotes it at more length, cxas and ras alike
+    const bonrasa = (out: ReturnType<typeof wordExamples>) =>
+      out.examples.filter((e) => e.text.startsWith("hundo bonrasa estas bona por ĉaso")).map((e) => e.article);
+    expect(bonrasa(wordExamples(core as never, "hund.0o"))).toEqual(["cxas"]);
+    expect(bonrasa(wordExamples(core as never, "cxas.0o"))).toEqual(["hund"]);
+    expect(() => wordExamples(core as never, "hund.nenio0o")).toThrow("No dictionary entry has the mark hund.nenio0o.");
+  });
+
+  test("an entry's examples come in pages, counted exactly or bounded by the candidates", () => {
+    const all10 = wordExamples(core as never, "li.0", { limit: 10 });
+    const page1 = wordExamples(core as never, "li.0", { limit: 5 });
+    const page2 = wordExamples(core as never, "li.0", { limit: 5, offset: 5 });
     expect([...page1.examples, ...page2.examples].map((e) => e.id)).toEqual(all10.examples.map((e) => e.id));
     expect(page2).toMatchObject({ offset: 5, total: all10.total, totalExact: true });
-    const bounded = familyExamples(core as never, ["hund"], { limit: 3, exactTotal: false }).groups[0];
+    const bounded = wordExamples(core as never, "li.0", { limit: 3, exactTotal: false });
     expect(bounded.examples.map((e) => e.id)).toEqual(all10.examples.slice(0, 3).map((e) => e.id));
     expect(bounded).toMatchObject({ totalExact: false, total: bounded.candidates });
-    // `only` keeps one group, and the roots before it still claim their examples
-    const onlyCxas = familyExamples(core as never, ["hund", "ĉas"], { only: "ĉas" }).groups;
-    expect(onlyCxas.map((g) => g.root)).toEqual(["ĉas"]);
-    expect(onlyCxas[0].examples.map((e) => e.id)).toEqual(familyExamples(core as never, ["hund", "ĉas"]).groups[1].examples.map((e) => e.id));
   });
 
   test("the affix table says what each affix means, from the article's first telling definition", () => {

@@ -23,7 +23,7 @@ afterAll(async () => {
 describe("MessagePortTransport", () => {
   test("discovers the ReVo tools across a MessageChannel", async () => {
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["search", "entry", "family", "familyExamples"]));
+    expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["search", "entry", "family", "wordExamples"]));
   });
 
   test("glosses a word with its mark and translations, validated against the output schema", async () => {
@@ -57,17 +57,18 @@ describe("MessagePortTransport", () => {
     expect((result.content as any[])[0].text).toContain("No dictionary entry has the mark hund.nenio0o.");
   });
 
-  test("finds the examples of word families, validated against the output schema", async () => {
+  test("finds the examples of an entry's word, validated against the output schema", async () => {
     const result = await client.callTool({
-      name: "familyExamples",
-      arguments: { roots: ["hund", "cxas"], languages: ["de"], limit: 5, exactTotal: false },
+      name: "wordExamples",
+      arguments: { mark: "spec.sia0a", languages: ["de"], limit: 5, exactTotal: false },
     });
     expect(result.isError).toBeFalsy();
     const structured = result.structuredContent as any;
-    expect(structured.groups.map((group: any) => group.root)).toEqual(["hund", "ĉas"]);
-    for (const group of structured.groups) {
-      expect(group.examples.length).toBeLessThanOrEqual(5);
-      expect(group.total).toBeGreaterThanOrEqual(group.examples.length);
+    expect(structured.headwords).toEqual(["siaspeca"]);
+    expect(structured.examples.length).toBeGreaterThan(0);
+    for (const example of structured.examples) {
+      const words = example.matches.map((m: any) => example.text.slice(m.at, m.at + m.length).toLowerCase());
+      expect(words.every((word: string) => /^siaspecaj?n?$/.test(word))).toBe(true);
     }
   });
 

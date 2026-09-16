@@ -9,8 +9,9 @@ import { searchPass } from "../src/corpus/passes/search";
 import { structurePass } from "../src/corpus/passes/structure";
 import { getDb } from "../src/db";
 import { searchDefinitions, thesaurusOf } from "../src/db-voko";
-import { familyExamples, familyOf } from "../src/family";
+import { familyOf } from "../src/family";
 import { searchDictionary } from "../src/search";
+import { wordExamples } from "../src/word-examples";
 import type { SqlReader } from "../src/sql";
 import { executeEntry, type SearchInput } from "../src/tools/search";
 
@@ -287,8 +288,8 @@ ${drvs.join("\n")}
     expect(() => searchDefinitions(db, "mano")).toThrow("Reverse lookup needs the fts pass");
   });
 
-  test("a database built without word families says they are not available", () => {
+  test("a database built without word families or examples says they are not available", () => {
     expect(familyOf(db, "man.0o")).toMatchObject({ available: false, entry: { headword: "mano", mrk: "man.0o" }, families: [] });
-    expect(familyExamples(db, ["man"])).toEqual({ available: false, groups: [] });
+    expect(wordExamples(db, "man.0o")).toMatchObject({ available: false, headwords: ["mano"], examples: [] });
   });
 });

@@ -9,7 +9,7 @@ parses it; `src/corpus/` builds and enriches the database.
 pnpm db:setup                   # both of the next two steps, for a fresh clone
 pnpm fonto                      # check out both submodules, generate the parser's tables
 pnpm corpus:build               # XML → data/voko.db, then all passes (~4 min, ~300 MB, + voko.db.gz)
-pnpm corpus:build --stage core  # what a browser downloads: articles + structure + search + morph + examples (~176 MB, ~84 MB gzipped)
+pnpm corpus:build --stage core  # what a browser downloads: articles + structure + search + morph + usage + examples (~184 MB, ~89 MB gzipped)
 pnpm start                      # serve from data/voko.db; REVO_DB=… overrides the path
 pnpm corpus:validate            # parity report against data/revo.db → data/parity.md
 pnpm corpus:eval                # stemming recall on attested word forms
@@ -185,8 +185,8 @@ meta (key, value) · meta_pass (pass, version, input_hash, rows, ms, at)
 
 Upstream's shapes (`nodo`, `var`, `traduko`, `referenco`, `uzo`) are computed
 by `scripts/compare-db.ts` from these tables and the articles; the runtime
-reads the tables and `serĉo`. `ekzemplo` and `fts_ekz` (trigram over it) come
-from the `examples` pass; `fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`),
+reads the tables and `serĉo`. `ekzemplo`, `fts_ekz` (trigram over it) and
+`fts_ekz_word` (its words) come from the `examples` pass; `fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`),
 `fts_ekz_fold` (trigram over `ekzemplo`, diacritics folded) and `fts_dif`
 (definitions, for reverse lookup) from the `fts` pass.
 
@@ -196,15 +196,15 @@ A build is one of two stages of the same file, recorded in `meta.stage`:
 
 | stage | passes | size | gzipped | answers |
 |---|---|---:|---:|---|
-| `core` | `structure`, `search`, `morph`, `usage`, `examples` | 176.1 MB | 84.0 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages`, `gloss` for Esperanto text, `family`, `familyExamples`, `examples` (case folded only) |
-| `full` (default) | `structure`, `search`, `morph`, `usage`, `examples`, `index`, `fts`, `tld-links`, `refs`, `splits`, `freq` | 301.4 MB | 147.4 MB | every tool |
+| `core` | `structure`, `search`, `morph`, `usage`, `examples` | 184.0 MB | 89.1 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages`, `gloss` for Esperanto text, `family`, `wordExamples`, `examples` (case folded only) |
+| `full` (default) | `structure`, `search`, `morph`, `usage`, `examples`, `index`, `fts`, `tld-links`, `refs`, `splits`, `freq` | 321.4 MB | 156.8 MB | every tool |
 
 Measured at 13,079 articles (revo-fonto d18ad4f). Both files hold every
 article whole; the core one has only the indexes on `node(mrk)`,
 `headword(norm)`, `x_morpheme(morph, kind)` and `x_family(node_id)`. Of the
 core file, the articles take 92 MB (text runs 28.5 MB, `trd` 19.5 MB, comments
-6.6 MB), `serĉo` 24.2 MB, `translation` 21.6 MB, the example sentences 27.8 MB
-(`ekzemplo` 14.2 MB, `fts_ekz` 13.6 MB), the word families 5.4 MB
+6.6 MB), `serĉo` 24.2 MB, `translation` 21.6 MB, the example sentences 32.4 MB
+(`ekzemplo` 14.2 MB, `fts_ekz` 13.6 MB, `fts_ekz_word` 4.6 MB), the word families 5.4 MB
 (`x_family` 4.45 MB, its node index 0.96 MB), `node` 4.0 MB, `headword`
 1.5 MB, and the morpheme inventory a gloss segments with 0.95 MB
 (`x_morpheme` 0.35 MB and its index 0.22 MB, `x_pair` 0.36 MB, `x_affix`),
@@ -243,7 +243,7 @@ the counts file. Rows:
 |---|---|---:|
 | `structure` | `node`, `headword`, `translation` | 887,186 |
 | `search` | `serĉo`, `serĉo_lng` | 758,070 |
-| `examples` | `ekzemplo`, `fts_ekz` | 114,441 |
+| `examples` | `ekzemplo`, `fts_ekz`, `fts_ekz_word` | 114,441 |
 | `index` | the indexes the enrichment tools read through | 5 |
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz_fold` | 840,585 |
 | `tld-links` | `x_tld_occ` | 176,088 |
@@ -277,7 +277,8 @@ citations and translations, and `last_id`, so the example's own translations
 are the `in_ekz` rows of `translation` in `rowid..last_id`; `trd` counts them,
 and a reader skips that lookup for the 97 % that have none (3,483 have some).
 `fts_ekz` is a trigram index over the text that finds a word inside another
-("hund" in "ĉashundojn").
+("hund" in "ĉashundojn"); `fts_ekz_word` (`unicode61`, case folded, diacritics
+kept) finds a word as a word of its own ("si" and "sin", not "sinjoro").
 
 A browser reads the core file with the SQLite that sqlite-wasm-http bundles
 (3.44.2), whose trigram tokenizer refuses `remove_diacritics`; a table it
@@ -289,7 +290,9 @@ instead of 28.9 MB (11 MB less gzipped). Without positions FTS5 answers no
 phrase longer than a trigram, so a query asks for all of a text's trigrams
 (`trigramMatch()` in `db-voko.ts`) and the reader checks the text itself; the
 trigrams are in the sentence without the text in a few cases in a thousand
-(hund: 355 sentences for 354, domo: 1,051 for 1,030).
+(hund: 355 sentences for 354, domo: 1,051 for 1,030). `fts_ekz_word` keeps no
+positions either (4.6 MB), so the words of a headword of several are asked for
+together and their order checked in the text.
 
 **`index`** — `headword(node_id)`, `node(parent_id)`,
 `translation(lng, COALESCE(ind, txt) COLLATE NOCASE)` and `ekzemplo(drv_mrk)`
@@ -549,21 +552,25 @@ or the chosen ones, and per family how many listed members each language
 translates. A root that is an affix (`x_affix`) says `affix: "P" | "S"`, and
 its family holds the words that use it as an affix.
 
-`familyExamples(db, roots)` (the `familyExamples` tool) finds the examples
-that use a word of each family, a group per root, an example in the group of
-the first root it uses and with every root's words marked. Candidates come from
-`fts_ekz` (for a two-letter root, the root with each vowel and the letters its
-members put next to it), the family's own entries first. A word counts when it,
-its elided noun (`hundaĉ'`) or a dictionary form `lemmaCandidates` gives is a
-member's word with the root in place, or else when `segment()` reads the root
-in it — so hundiĉo, hundedoj and Hundertwasser do not. The splits are cached
-per inventory, up to 100,000 words. A sentence that several articles quote
-alike is listed once, and not at all when `mark` names the entry that shows it.
-With `exactTotal` every candidate is read and `total` counts the examples;
-without it the scan stops once the page is full and `total` is the candidates,
-which is what a browser reading the file over HTTP asks for. Measured locally:
-hund and ĉas with exact totals 165 ms, a 200-example page ≤ 163 ms, the exact
-totals of in and re about 2.3 s.
+`wordExamples(db, mark)` (`src/word-examples.ts`, the `wordExamples` tool)
+finds the examples, in every article, that use the entry's headword or a
+variant of it as a word of its own: the word and its inflections
+(`wordForms()`: -j, -n, -jn for a noun, an adjective, a correlative in -iu and
+unu; -n for a pronoun in -i (sin, ilin) and an adverb in -e (hejmen); a
+verb's tenses, moods and imperative; a noun's elision, hund'). A word built on it is another
+entry's (sia, siaspeca and sinjoro are not examples of si), and so are the
+participles. What does not inflect gets no endings, so nu does not take in
+nun. The candidates are the sentences `fts_ekz_word` finds a form in, a
+headword of several words (Granda Hundo) all its words in some form; the text
+then says where each occurrence is, its words next to each other. The entry's
+own examples are left out, and so is the same sentence quoted elsewhere; a
+sentence several articles quote alike is listed once. With `exactTotal` every
+candidate is read and `total` counts the examples; without it the scan stops
+once the page is full and `total` is the candidates, which is what a browser
+reading the file over HTTP asks for. The candidates exceed the examples by
+about 5 %, the sentences an entry repeats (si 3,389 for 3,214, hundo 237 for
+225, siaspeca 7 for 7). Measured locally on the core file: a 200-example page
+≤ 15 ms, the exact totals of si 40 ms, kaj 323 ms, la (63,288) 645 ms.
 
 ## Adding a pass
 

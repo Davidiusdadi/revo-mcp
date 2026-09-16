@@ -9,7 +9,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import sqlite3InitModule from "sqlite-wasm-http/sqlite3.js";
 import { Database } from "../src/runtime/node-database";
-import { EKZ_FTS_DDL } from "../src/corpus/passes/examples";
+import { EKZ_FTS_DDL, EKZ_WORD_FTS_DDL } from "../src/corpus/passes/examples";
 import { trigramMatch } from "../src/db-voko";
 
 let dir: string;
@@ -38,7 +38,7 @@ describe("the browser's SQLite", () => {
     expect(sqlite3.version.libVersion).toBe("3.44.2");
   });
 
-  test("reads the example index the core stage writes", () => {
+  test("reads the example indexes the core stage writes", () => {
     const path = join(dir, "ekz.db");
     const node = new Database(path);
     node.run("CREATE TABLE ekzemplo (rowid INTEGER PRIMARY KEY, ekz_md TEXT NOT NULL)");
@@ -48,6 +48,8 @@ describe("the browser's SQLite", () => {
     ins.run(3, "hundo bonrasa estas bona por ĉaso");
     node.run(EKZ_FTS_DDL);
     node.run("INSERT INTO fts_ekz(fts_ekz) VALUES('rebuild')");
+    node.run(EKZ_WORD_FTS_DDL);
+    node.run("INSERT INTO fts_ekz_word(fts_ekz_word) VALUES('rebuild')");
     node.close();
 
     const db = openInWasm(path);
@@ -59,6 +61,12 @@ describe("the browser's SQLite", () => {
       // it keeps no positions: a longer text is asked for as its trigrams
       expect(() => db.selectValues(`SELECT rowid FROM fts_ekz WHERE fts_ekz MATCH '"ĉashund"'`)).toThrow(/phrase queries are not supported/);
       expect(db.selectValues("SELECT rowid FROM fts_ekz WHERE fts_ekz MATCH ?", [trigramMatch("ĉashund")])).toEqual([2]);
+      // the word index: whole words, case folded, diacritics kept
+      const words = (query: string) => db.selectValues("SELECT rowid FROM fts_ekz_word WHERE fts_ekz_word MATCH ? ORDER BY rowid", [query]);
+      expect(words('"ĉasi" OR "ĉaso"')).toEqual([1, 3]);
+      expect(words('"ĉas"')).toEqual([]);
+      expect(words('"hundo" AND "bona"')).toEqual([3]);
+      expect(words('"casi"')).toEqual([]);
     } finally {
       db.close();
     }

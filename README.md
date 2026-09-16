@@ -105,7 +105,7 @@ database file. It needs no server of its own: a static host serving `voko.db`
 with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
-# The database a browser reads: search, lookup, entries, languages, Esperanto glossing, word families and examples (~176 MB, ~84 MB gzipped)
+# The database a browser reads: search, lookup, entries, languages, Esperanto glossing, word families and examples (~184 MB, ~89 MB gzipped)
 pnpm corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
@@ -175,17 +175,18 @@ are made one after another, so at a 100 ms round trip a `mal` page takes about
 (`mal` ~120 ms, `Haus` ~25 ms) and a start makes one, the revision check.
 
 Word families and examples read more. In Kunirado, against the core build of
-`d18ad4f` with families (176.1 MB), opening `hund.0o` with its family of 22
-words and their translations in every language took 106 requests (710 KB),
-its first 200 examples 260 (2.0 MB), each a row far from the next, and the
-first 200 examples of -ig- 94 (528 KB).
+`d18ad4f` with families, the examples' word index and usage counts (184.0 MB), opening
+`hund.0o` with its family of 22 words and their translations in every language
+took 125 requests (1.54 MB, of which about 0.8 MB the morpheme inventory that
+glosses the headword on a fresh page), and the first 200 examples of hundo 238
+(1.1 MB), each a row far from the next.
 
-The core file (176 MB, 84 MB gzipped) holds every article whole, one table
+The core file (184 MB, 89 MB gzipped) holds every article whole, one table
 per XML element (92 MB, citations, remarks and markup included), plus the
 search table (24 MB), the translations (22 MB), the example sentences and
-their trigram index (28 MB), the nodes and headwords (5.5 MB), the word
-families (5.4 MB), and the morpheme inventory that glosses an Esperanto word
-(1 MB). The full build (`pnpm db:setup`, 301 MB, 147 MB gzipped) adds the
+their trigram and word indexes (32 MB), the nodes and headwords (5.5 MB), the word
+families (5.4 MB), the morpheme inventory that glosses an Esperanto word
+(1 MB), and the usage counts that weigh its suggestions (3.7 MB). The full build (`pnpm db:setup`, 321 MB, 157 MB gzipped) adds the
 enrichment passes, their indexes, and the stored split of every headword and
 attested form.
 
@@ -213,7 +214,7 @@ The `search` and `entry` tools are the same on the Node server;
 without Node globals.
 
 A core database answers `search`, `entry`, `lookup`, `lookup_root`,
-`languages`, `gloss` for Esperanto text, `family`, `familyExamples`, and
+`languages`, `gloss` for Esperanto text, `family`, `wordExamples`, and
 `examples` with case folded but not diacritics ("songo" finds sonĝo only in a
 full build); `thesaurus`, `reverse_lookup` and a source-language `gloss` need
 the enrichment of a full build and say so on a core one.
@@ -318,21 +319,22 @@ places in the headword (for writing `ĉas~hund~o`) and ReVo's tilde form.
 | `offset` | number | `0` | Members skipped per family |
 | `only` | string | | Only the family of this root |
 
-### `familyExamples`
+### `wordExamples`
 
-Example sentences from every article that use a word of each family, grouped
-by root; an example is listed under the first root it uses, with the words of
-every root marked. A sentence quoted alike in several articles is listed once.
+Example sentences from every article that use an entry's headword as a word of
+its own, inflected or not: `siaspeca` finds siaspeca and siaspecajn, `si`
+finds si and sin but not sia or siaspeca, which are entries of their own. The
+occurrences are marked. The entry's own examples are left out, and so is a
+sentence quoted alike elsewhere; a sentence several articles quote is listed
+once.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `roots` | string[] | (required) | 1-8 roots in priority order, such as `["hund", "ĉas"]` |
+| `mark` | string | (required) | The entry's mark, such as `spec.sia0a` |
 | `languages` | string[] | all | Languages of the examples' translations |
-| `limit` | number | `200` | Examples listed per root (1-5000) |
-| `offset` | number | `0` | Examples skipped per root |
+| `limit` | number | `200` | Examples listed (1-5000) |
+| `offset` | number | `0` | Examples skipped |
 | `exactTotal` | boolean | `true` | Count every example; otherwise stop at the page and report the candidates as `total` |
-| `only` | string | | Only this root's group; earlier roots still claim their examples |
-| `mark` | string | | An entry whose own examples, and the same sentences elsewhere, are left out |
 
 ### `thesaurus`
 

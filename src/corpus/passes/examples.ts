@@ -1,7 +1,9 @@
 /**
  * Pass `examples`, in the core stage: every example sentence as a row of
- * `ekzemplo`, and `fts_ekz`, the trigram index over them that finds a word
- * anywhere inside another ("hund" in "ĉashundojn").
+ * `ekzemplo`; `fts_ekz`, the trigram index over them that finds a word
+ * anywhere inside another ("hund" in "ĉashundojn"); and `fts_ekz_word`, the
+ * index of their words, which finds a word as a word of its own ("si" and
+ * "sin", not "sinjoro").
  *
  * A row is its <ekz> under the element's id, so the example's own translations
  * are the in_ekz rows of `translation` with ids rowid..last_id, and `trd`
@@ -17,6 +19,12 @@
  * refuses `remove_diacritics`, and a table it cannot construct fails every
  * query that reaches it. The full stage adds `fts_ekz_fold`, which folds them
  * too, for the server's example search (the `fts` pass).
+ *
+ * `fts_ekz_word` keeps no positions either (4.7 MB) and does not fold
+ * diacritics, so "ĉu" is not "cu". A word too short for a trigram is found
+ * through it, and so is every word exactly: the examples of an entry's
+ * headword (`wordExamples`) read no sentence that does not hold one of its
+ * forms.
  */
 import type { NodeInfo } from "voko-xml";
 import type { Pass } from "../pass";
@@ -30,10 +38,16 @@ export const EKZ_FTS_DDL = `
     ekz_md, content='ekzemplo', content_rowid='rowid',
     tokenize='trigram case_sensitive 0', detail=none)`;
 
+/** The index of the examples' words, case folded and diacritics kept. */
+export const EKZ_WORD_FTS_DDL = `
+  CREATE VIRTUAL TABLE fts_ekz_word USING fts5(
+    ekz_md, content='ekzemplo', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 0', detail=none)`;
+
 export const examplesPass: Pass = {
   name: "examples",
-  version: 1,
-  tables: ["fts_ekz", "ekzemplo"],
+  version: 2,
+  tables: ["fts_ekz", "fts_ekz_word", "ekzemplo"],
   run(db, log) {
     db.run(`
       CREATE TABLE ekzemplo (
@@ -80,6 +94,10 @@ export const examplesPass: Pass = {
     db.run(EKZ_FTS_DDL);
     db.run(`INSERT INTO fts_ekz(fts_ekz) VALUES('rebuild')`);
     log("fts_ekz: trigram over ekzemplo, case folded");
+    db.run(EKZ_WORD_FTS_DDL);
+    db.run(`INSERT INTO fts_ekz_word(fts_ekz_word) VALUES('rebuild')`);
+    db.run(`INSERT INTO fts_ekz_word(fts_ekz_word) VALUES('optimize')`);
+    log("fts_ekz_word: the words of ekzemplo, case folded");
     return n;
   },
 };

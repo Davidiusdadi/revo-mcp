@@ -18,11 +18,13 @@ import {
   familyOutputSchema,
   executeFamily,
   renderFamily,
-  familyExamplesInputSchema,
-  familyExamplesOutputSchema,
-  executeFamilyExamples,
-  renderFamilyExamples,
 } from "./tools/family";
+import {
+  wordExamplesInputSchema,
+  wordExamplesOutputSchema,
+  executeWordExamples,
+  renderWordExamples,
+} from "./tools/word-examples";
 import { glossInputSchema, glossOutputSchema, executeGloss, renderGloss } from "./tools/gloss";
 import {
   getLanguages,
@@ -113,15 +115,16 @@ export function createMcpServer(): McpServer {
     return { text: renderFamily(structuredContent), structuredContent };
   }));
 
-  server.registerTool("familyExamples", {
-    description: "Find the example sentences, in every article, that use words of the given roots' families, a group " +
-      "per root; a sentence is listed once, under the first root it uses, with the family words it contains marked.",
-    inputSchema: familyExamplesInputSchema,
-    outputSchema: familyExamplesOutputSchema,
+  server.registerTool("wordExamples", {
+    description: "Find the example sentences, in every article, that use an entry's headword as a word of its own, " +
+      "inflected or not (spec.sia0a: siaspeca, siaspecajn; si.0: si, sin), not the words built on it. The entry's " +
+      "own examples, and the same sentences quoted elsewhere, are left out.",
+    inputSchema: wordExamplesInputSchema,
+    outputSchema: wordExamplesOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("familyExamples", args as Record<string, unknown>, () => {
-    const structuredContent = executeFamilyExamples(args);
-    return { text: renderFamilyExamples(structuredContent), structuredContent };
+  }, async (args) => toolResponse("wordExamples", args as Record<string, unknown>, () => {
+    const structuredContent = executeWordExamples(args);
+    return { text: renderWordExamples(structuredContent), structuredContent };
   }));
 
   server.registerTool("lookup", {
