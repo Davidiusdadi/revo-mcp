@@ -13,6 +13,12 @@
  * - x_affix: every affix article (kap "mal-", "-ul") with its definition cut
  *   to the phrase that says what it means, so a gloss names each part of a
  *   word from one row instead of the article's text.
+ * - x_family: the word families. A row for every root and endingless word of
+ *   an entry's headword, split as `splits` splits it, so one range of the
+ *   table lists every entry built on a root, whichever article files it
+ *   (hundherbo is in herb, ĉashundo in hund). An affix is a family's key where
+ *   some entry is built on it as a root (ulo, ino): malsanulejo is in the
+ *   family of ul, not in a family of its own affixes.
  *
  * `splits`, an enrichment pass, stores what that inventory says about every
  * word the corpus writes, for the server's tools and for the evaluation
@@ -40,7 +46,10 @@ import { idOf } from "../../articles";
 import { contentOf, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 import { tldOccurrences, tokenGroups, type TokenGroup } from "./tld-links";
-import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph, type WordClass } from "../../morph";
+import {
+  lemmaCandidates, segment, formatSegments, formatSpans, morphSpans, pinFits, ENDINGS,
+  type Inventory, type Morph, type MorphSpan, type WordClass,
+} from "../../morph";
 
 const WORD = /\p{L}+/gu;
 /** Articles for grammatical endings, not word-building affixes. */
@@ -48,16 +57,18 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 11,
-  tables: ["x_morpheme", "x_pair", "x_affix"],
+  version: 12,
+  tables: ["x_morpheme", "x_pair", "x_affix", "x_family"],
   run(db, log) {
-    const { inv, pairs } = prepare(db, log);
+    const { inv, pairs, heads } = prepare(db, log);
     const nInv = writeInventory(db, inv);
     log(`x_morpheme: ${inv.roots.size} roots, ${inv.prefixes.size} prefixes, ${inv.suffixes.size} suffixes, ${inv.words.size} endingless words`);
     const nAffix = writeAffixes(db, inv);
     log(`x_affix: ${nAffix} affix articles with their definitions`);
     const nPair = writePairs(db, pairs, log);
-    return nInv + nAffix + nPair;
+    // the families split every headword as the splits pass stores it: with the pairs in hand
+    inv.pairs = pairs.counts;
+    return nInv + nAffix + nPair + heads.family(inv);
   },
 };
 
@@ -359,9 +370,11 @@ function writePairs(db: Database, pairs: Pairs, log: (m: string) => void): numbe
 /** Segment every word of `form`; the word equal to `fixed.word` gets its root pinned. */
 function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: number; root: string }, pairs?: Pairs) {
   const segs: string[] = [], kinds: string[] = [], roots: string[] = [];
+  const spans: MorphSpan[] = [];
   let ok = true;
   let pinned = false;
-  for (const [w] of form.matchAll(WORD)) {
+  for (const match of form.matchAll(WORD)) {
+    const w = match[0];
     const candidate = fixed && !pinned && w === fixed.word ? { at: fixed.at, root: fixed.root } : undefined;
     // segment() ignores a pin the word does not bear; say so here too, so the
     // recorded source ("tilde" vs "free") is what actually happened.
@@ -379,8 +392,9 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
     segs.push(f.seg);
     kinds.push(f.kinds);
     roots.push(...s.filter((x) => x.k === "R").map((x) => x.m));
+    spans.push(...morphSpans(s, match.index));
   }
-  return { seg: segs.join(" "), kinds: kinds.join(" "), roots: roots.join(" "), ok, pinned };
+  return { seg: segs.join(" "), kinds: kinds.join(" "), roots: roots.join(" "), spans, ok, pinned };
 }
 
 /** Does `fixed` pin a word of `form`? Mirrors what segmentForm will do with it. */
@@ -392,9 +406,13 @@ interface Deferred {
   write(inv: Inventory): number;
 }
 
+/** An entry is a derivation whose mark has exactly one dot (db-voko.ts IS_ENTRY). */
+const isEntryMark = (kind: string, mrk: string | null): mrk is string =>
+  kind === "drv" && mrk !== null && /^[^.]+\.[^.]+$/.test(mrk);
+
 function segmentHeadwords(
   db: Database, inv: Inventory, tildes: Map<number, string>, marked: Map<number, Pin>, pairs: Pairs, log: (m: string) => void,
-): Deferred {
+): Deferred & { family(inv: Inventory): number } {
   const create = () => db.run(`
     CREATE TABLE x_morph (
       kap_id  INTEGER PRIMARY KEY,
@@ -408,7 +426,10 @@ function segmentHeadwords(
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
   let ins: ReturnType<Database["prepare"]>;
-  type Kap = { id: number; node_id: number; article_id: number; norm: string; rad: string };
+  type Kap = {
+    id: number; node_id: number; article_id: number; norm: string; rad: string;
+    txt: string; file: string; kind: string; mrk: string | null; last_id: number; main: string | null;
+  };
   const rows: { k: Kap; pin?: Pin }[] = [];
   let n = 0, ok = 0, pinned = 0;
   const write = (k: Kap, inv: Inventory, pin?: Pin) => {
@@ -419,8 +440,9 @@ function segmentHeadwords(
     if (r.pinned) pinned++;
   };
   for (const k of db.query<Kap, []>(
-    `SELECT h.id, h.node_id, n.article_id, h.norm, a.rad FROM headword h
-       JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id ORDER BY h.id`).iterate()) {
+    `SELECT h.id, h.node_id, n.article_id, h.norm, a.rad, h.txt, a.file, n.kind, n.mrk, n.last_id, m.txt AS main
+       FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
+       LEFT JOIN headword m ON m.id = h.main_id ORDER BY h.id`).iterate()) {
     let pin = marked.get(k.id);
     // article kap "san/a": the root ends at the "/"
     const tilde = tildes.get(k.id)!;
@@ -458,6 +480,41 @@ function segmentHeadwords(
       ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
       for (const { k, pin } of rows) write(k, inv, pin);
       log(`x_morph: ${n} headwords, ${ok} fully segmented (${pct(ok, n)}), root pinned in ${pinned}`);
+      return n;
+    },
+    family(inv) {
+      db.run(`
+        CREATE TABLE x_family (
+          morph      TEXT NOT NULL,     -- the family: a root or endingless word of some entry (hund, ul)
+          kap_id     INTEGER NOT NULL,  -- a headword of an entry built on it
+          node_id    INTEGER NOT NULL,  -- the entry's derivation
+          last_id    INTEGER NOT NULL,  -- its last id: its translations are node_id..last_id
+          mrk        TEXT NOT NULL,     -- the entry's mark
+          variant_of TEXT,              -- for a variant headword, the headword it is a variant of
+          txt        TEXT NOT NULL,     -- the headword as written
+          tilde      TEXT NOT NULL,     -- as its article writes it, its root a tilde: "ĉas~o" in hund
+          art        TEXT NOT NULL,     -- the article's file name
+          rad        TEXT NOT NULL,     -- the article's root
+          spans      TEXT NOT NULL,     -- the headword's family morphemes: "mal:P@0 san:R@3 ul:S@6 ej:S@8", UTF-16 offsets in txt
+          PRIMARY KEY (morph, kap_id)
+        ) WITHOUT ROWID`);
+      const ins = db.prepare("INSERT INTO x_family VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+      // the offsets are the lowercased form's; they fit the headword as written where lowercasing keeps its length
+      const entries = rows.filter(({ k }) => isEntryMark(k.kind, k.mrk) && k.txt.length === k.norm.length);
+      const split = entries.map(({ k, pin }) => ({ k, spans: segmentForm(k.norm, inv, pin).spans }));
+      // an affix keys a family only where an entry is built on it as a root
+      const keys = new Set(split.flatMap(({ spans }) => spans.filter((x) => (x.k === "R" || x.k === "W") && x.m.length >= 2).map((x) => x.m)));
+      let n = 0, rootless = 0;
+      for (const { k, spans } of split) {
+        const morphs = new Set(spans.filter((x) => keys.has(x.m)).map((x) => x.m));
+        if (!spans.some((x) => x.k === "R" || x.k === "W")) rootless++;
+        for (const m of morphs) {
+          ins.run(m, k.id, k.node_id, k.last_id, k.mrk, k.main, k.txt, tildes.get(k.id) ?? k.txt, k.file, k.rad, formatSpans(spans));
+          n++;
+        }
+      }
+      db.run("CREATE INDEX idx_x_family_node ON x_family(node_id)");
+      log(`x_family: ${n} rows, ${keys.size} families over ${split.length} entry headwords (${rows.length - entries.length} other headwords left out, ${rootless} without a root)`);
       return n;
     },
   };

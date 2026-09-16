@@ -18,7 +18,7 @@ import { articleTrees, type ArticleTree } from "../src/corpus/documents";
 import { runPass } from "../src/corpus/pass";
 import { tldOccurrences, tokenGroups } from "../src/corpus/passes/tld-links";
 import { IS_ENTRY, trigramMatch, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
-import { lemmaCandidates } from "../src/morph";
+import { lemmaCandidates, parseSpans } from "../src/morph";
 import { classify, inventoryOf } from "../src/gloss";
 
 let dir: string;
@@ -31,8 +31,9 @@ let trees: ArticleTree[];
 // aidos has a <var> whose kap carries a <fnt> and a <uzo> next to it; in bel the
 // synonyms belong to malbeligi and plibeligi, not to bela (figur and ornam hold them);
 // fer writes the headword hufofero without a tilde, and ofer is the root that
-// swallows the linking o when nothing pins fer
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf"];
+// swallows the linking o when nothing pins fer; ĉashundo is in the families of hund
+// and cxas, hundherbo is filed under herb, and hundiĉo and hundedoj have roots of their own
+const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf", "cxas", "herb", "hundicx", "hunded"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -423,6 +424,48 @@ describe("pass morph", () => {
   });
 });
 
+describe("x_family", () => {
+  type Row = { morph: string; txt: string; tilde: string; art: string; rad: string; mrk: string; spans: string };
+  const rows = (where: string, ...params: unknown[]) =>
+    all<Row>(`SELECT morph, txt, tilde, art, rad, mrk, spans FROM x_family WHERE ${where}`, ...params);
+
+  test("an entry headword has a row per root, with its spans and its article's tilde form", () => {
+    const cxashundo = { txt: "ĉashundo", tilde: "ĉas~o", art: "hund", mrk: "hund.cxas0o", spans: "ĉas:R@0 hund:R@3" };
+    expect(rows("txt = 'ĉashundo'")).toEqual([
+      { morph: "hund", ...cxashundo, rad: "hund" },
+      { morph: "ĉas", ...cxashundo, rad: "hund" },
+    ].sort((a, b) => (a.morph < b.morph ? -1 : 1)));
+  });
+
+  test("a family reaches into the articles that file its words", () => {
+    expect(rows("morph = 'hund' AND txt = 'hundherbo'")).toEqual([
+      { morph: "hund", txt: "hundherbo", tilde: "hund~o", art: "herb", rad: "herb", mrk: "herb.hund0o", spans: "hund:R@0 herb:R@4" },
+    ]);
+  });
+
+  test("a root that only starts a word is not its family", () => {
+    const hund = rows("morph = 'hund'").map((r) => r.txt);
+    expect(hund).toContain("hundo");
+    expect(hund.filter((txt) => /hundiĉ|hunded/.test(txt))).toEqual([]);
+    expect(rows("mrk = 'hundicx.0o'").map((r) => r.morph)).toEqual(["hundiĉ"]);
+  });
+
+  test("an affix's family holds the words that use it as one", () => {
+    expect(rows("morph = 'ul' AND txt = 'malsanulejo'")).toMatchObject([{ spans: "mal:P@0 san:R@3 ul:S@6 ej:S@8", tilde: "mal~ulejo" }]);
+    expect(rows("morph = 'ul'").map((r) => r.txt)).toContain("ulo");
+  });
+
+  test("every span is its morph at its offset, and a row's morph is one of them", () => {
+    const every = rows("1");
+    expect(every.length).toBeGreaterThan(300);
+    for (const r of every) {
+      const spans = parseSpans(r.spans);
+      for (const span of spans) expect(r.txt.toLowerCase().slice(span.at, span.at + span.m.length), `${r.txt} ${r.spans}`).toBe(span.m);
+      expect(spans.map((span) => span.m)).toContain(r.morph);
+    }
+  });
+});
+
 // The reads behind the thesaurus and reverse_lookup tools. They only work on a
 // corpus with the x_* tables, so they are exercised here on the slice rather
 // than through db.ts, which is bound to whichever DB REVO_DB names.
@@ -533,8 +576,8 @@ describe("core stage", () => {
     expect(hund.translations).toContainEqual({ lng: "de", trd: "Hund" });
   });
 
-  test("carries the example index, not the full stage's indexes", () => {
-    expect(tables()).toEqual(expect.arrayContaining(["ekzemplo", "fts_ekz"]));
+  test("carries the word families and the example index, not the full stage's indexes", () => {
+    expect(tables()).toEqual(expect.arrayContaining(["x_family", "idx_x_family_node", "ekzemplo", "fts_ekz"]));
     for (const t of ["fts_kap", "fts_trd", "fts_ekz_fold", "idx_ekzemplo_drv", "idx_ekzemplo_art"]) expect(tables()).not.toContain(t);
   });
 

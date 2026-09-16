@@ -537,6 +537,39 @@ export function scoreReading(r: Reading, best: number, inv: Inventory, weights: 
   return s;
 }
 
+/** A morpheme a word family is keyed by (a root, an endingless word, a prefix or a suffix) and where it starts. */
+export interface MorphSpan {
+  m: string;
+  k: "R" | "W" | "P" | "S";
+  /** UTF-16 offset in the text the split word was taken from */
+  at: number;
+}
+
+/** The family morphemes of a split, their offsets counted from `at`, where the word starts. */
+export function morphSpans(ms: Morph[], at = 0): MorphSpan[] {
+  const out: MorphSpan[] = [];
+  let off = at;
+  for (const x of ms) {
+    if (x.k === "R" || x.k === "W" || x.k === "P" || x.k === "S") out.push({ m: x.m, k: x.k, at: off });
+    off += x.m.length;
+  }
+  return out;
+}
+
+/** "ĉas:R@0 hund:R@3", as `x_family.spans` stores them. */
+export function formatSpans(spans: MorphSpan[]): string {
+  return spans.map((s) => `${s.m}:${s.k}@${s.at}`).join(" ");
+}
+
+/** The spans `formatSpans` wrote. */
+export function parseSpans(text: string): MorphSpan[] {
+  if (!text) return [];
+  return text.split(" ").map((part) => {
+    const colon = part.lastIndexOf(":");
+    return { m: part.slice(0, colon), k: part[colon + 1] as MorphSpan["k"], at: Number(part.slice(colon + 3)) };
+  });
+}
+
 /** "mal|san|ul|ej|o" and "PRSSE" */
 export function formatSegments(ms: Morph[]): { seg: string; kinds: string } {
   return { seg: ms.map((x) => x.m).join("|"), kinds: ms.map((x) => x.k).join("") };
