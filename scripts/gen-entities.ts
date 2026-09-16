@@ -1,14 +1,14 @@
-#!/usr/bin/env bun
 /**
  * Generates packages/voko-xml/data/entities.json and data/cfg/*.json from the
- * vendor/voko-grundo submodule (`bun run fonto` checks it out and runs this).
+ * vendor/voko-grundo submodule (`pnpm fonto` checks it out and runs this).
  * The VOKO articles depend on ~850 character/abbreviation/URL entities that
  * live in voko-grundo, not in revo-fonto. The generated files are not
  * committed; the submodule pin is the record of where they come from.
  *
- *   bun run corpus:entities                         # from vendor/voko-grundo
- *   VOKO_GRUNDO=/path/to/voko-grundo bun run corpus:entities
+ *   pnpm corpus:entities                            # from vendor/voko-grundo
+ *   VOKO_GRUNDO=/path/to/voko-grundo pnpm corpus:entities
  */
+import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -17,7 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const GRUNDO = process.env.VOKO_GRUNDO || join(ROOT, "vendor", "voko-grundo");
 if (!existsSync(join(GRUNDO, "dtd"))) {
-  console.error(`no voko-grundo at ${GRUNDO} — run \`bun run fonto\`, or set VOKO_GRUNDO`);
+  console.error(`no voko-grundo at ${GRUNDO} — run \`pnpm fonto\`, or set VOKO_GRUNDO`);
   process.exit(1);
 }
 const OUT = join(ROOT, "packages", "voko-xml", "data");
@@ -118,12 +118,13 @@ function main() {
   // Best-effort provenance line: a container build has the DTDs but neither
   // git nor a .git directory to ask.
   let rev = "(revision unknown — no git here)";
-  try {
-    const p = Bun.spawnSync(["git", "-C", GRUNDO, "rev-parse", "--short", "HEAD"]);
-    if (p.exitCode === 0) rev = p.stdout.toString().trim();
-  } catch {
-    // git is not installed; the pin is recorded by the caller instead.
-  }
+  // Without git, spawnSync reports the error and no exit status; the pin is
+  // recorded by the caller instead.
+  const p = spawnSync("git", ["-C", GRUNDO, "rev-parse", "--short", "HEAD"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (p.status === 0) rev = p.stdout.trim();
   console.log(`from voko-grundo ${rev}`);
 }
 

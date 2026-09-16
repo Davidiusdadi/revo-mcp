@@ -45,11 +45,11 @@ Needs `zstd` and `unzip`, about 1.4 GB under `data/freq/sources/`, and a built
 `data/voko.db`. Intermediate files land in `data/freq/` (git-ignored).
 
 ```bash
-bun run freq:fetch      # downloads both sources, records data/freq/sources/SOURCES.json
-bun run freq:count      # surface forms, then lemmas, per source (~8 min for the web)
-bun run freq:classify   # holds every lemma against ReVo, writes data/freq/REPORT.md (~10 min)
-bun run freq:reduce     # writes corpus/freq/counts.tsv
-bun run corpus:build --pass freq
+pnpm freq:fetch      # downloads both sources, records data/freq/sources/SOURCES.json
+pnpm freq:count      # surface forms, then lemmas, per source (~10 min for the web)
+pnpm freq:classify   # holds every lemma against ReVo, writes data/freq/REPORT.md (~10 min)
+pnpm freq:reduce     # writes corpus/freq/counts.tsv
+pnpm corpus:build --pass freq
 ```
 
 `REPORT.md` is the full picture the file is cut from: coverage curves, the
@@ -59,7 +59,7 @@ published lists.
 ## Words ReVo lacks
 
 ```bash
-bun run freq:candidates   # after freq:classify; ~15 min for the web pass
+pnpm freq:candidates   # after freq:classify; ~15 min for the web pass
 ```
 
 writes `data/freq/candidates.md`: the words used at least 1,000 times on the

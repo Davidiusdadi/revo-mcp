@@ -18,12 +18,13 @@
  *   language (xml:lang other than "" or "eo") are left out, and so is the
  *   reformed-Esperanto material; the `_` morpheme boundaries are removed.
  *
- *   bun run scripts/freq/count-forms.ts [--only hplt|tekstaro]
+ *   tsx scripts/freq/count-forms.ts [--only hplt|tekstaro]
  */
-import { existsSync, mkdirSync, readdirSync } from "fs";
+import { spawn } from "child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { fromXSystem, hasXSystem } from "../../src/stemmer";
-import { FREQ, formsFile, TOTALS_FILE, SOURCE_NAMES, type SourceName } from "./paths";
+import { FREQ, formsFile, isMain, TOTALS_FILE, SOURCE_NAMES, type SourceName } from "./paths";
 
 export const HPLT_FILE = join(FREQ, "sources", "hplt", "1.jsonl.zst");
 export const TEKSTARO_DIR = join(FREQ, "sources", "tekstaro", "xml", "tekstaro_de_esperanto_xml_kun_streketoj", "tekstoj");
@@ -96,11 +97,11 @@ export class Counter {
   async write(source: SourceName) {
     this.totals.types = this.counts.size;
     const rows = [...this.counts].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
-    await Bun.write(formsFile(source), rows.map(([w, n]) => `${w}\t${n}\n`).join(""));
+    writeFileSync(formsFile(source), rows.map(([w, n]) => `${w}\t${n}\n`).join(""));
   }
 }
 
-export async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* lines(stream: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let rest = "";
   for await (const chunk of stream) {
@@ -115,10 +116,18 @@ export async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator
   if (rest) yield rest;
 }
 
+/** The lines of a zstd file, decompressed by the `zstd` command. */
+export async function* zstdLines(file: string): AsyncGenerator<string> {
+  const proc = spawn("zstd", ["-dc", file], { stdio: ["ignore", "pipe", "inherit"] });
+  const exited = new Promise<number | null>((ok, fail) => { proc.on("error", fail); proc.on("close", ok); });
+  yield* lines(proc.stdout);
+  const code = await exited;
+  if (code !== 0) throw new Error(`zstd exited with ${code}`);
+}
+
 async function countHplt(c: Counter) {
-  const proc = Bun.spawn(["zstd", "-dc", HPLT_FILE], { stdout: "pipe", stderr: "inherit" });
   const t = c.totals;
-  for await (const line of lines(proc.stdout)) {
+  for await (const line of zstdLines(HPLT_FILE)) {
     if (!line) continue;
     const doc = JSON.parse(line) as { text: string; seg_langs?: string[] };
     t.documents++;
@@ -131,7 +140,6 @@ async function countHplt(c: Counter) {
     }
     if (t.documents % 50000 === 0) console.log(`  ${t.documents} documents, ${t.esperanto} Esperanto tokens, ${c.counts.size} types`);
   }
-  if ((await proc.exited) !== 0) throw new Error(`zstd exited with ${proc.exitCode}`);
 }
 
 /** Elements that sit inside a run of text: their tags are dropped, every other tag counts as a space. */
@@ -172,7 +180,7 @@ export function tekstaroText(xml: string): string {
 async function countTekstaro(c: Counter) {
   const files = readdirSync(TEKSTARO_DIR).filter((f) => f.endsWith(".xml")).sort();
   for (const f of files) {
-    const text = tekstaroText(await Bun.file(join(TEKSTARO_DIR, f)).text());
+    const text = tekstaroText(readFileSync(join(TEKSTARO_DIR, f), "utf8"));
     c.totals.documents++;
     c.totals.lines++;
     c.totals.kept++;
@@ -185,7 +193,7 @@ async function main() {
   const only = process.argv.indexOf("--only");
   const sources = only >= 0 ? [process.argv[only + 1] as SourceName] : [...SOURCE_NAMES];
   mkdirSync(FREQ, { recursive: true });
-  const totals: Partial<Record<SourceName, Totals>> = existsSync(TOTALS_FILE) ? JSON.parse(await Bun.file(TOTALS_FILE).text()) : {};
+  const totals: Partial<Record<SourceName, Totals>> = existsSync(TOTALS_FILE) ? JSON.parse(readFileSync(TOTALS_FILE, "utf8")) : {};
   for (const source of sources) {
     if (!SOURCE_NAMES.includes(source)) throw new Error(`unknown source ${source}`);
     console.log(`${source}`);
@@ -194,9 +202,9 @@ async function main() {
     await (source === "hplt" ? countHplt(c) : countTekstaro(c));
     await c.write(source);
     totals[source] = c.totals;
-    await Bun.write(TOTALS_FILE, JSON.stringify(totals, null, 2) + "\n");
+    writeFileSync(TOTALS_FILE, JSON.stringify(totals, null, 2) + "\n");
     console.log(`  ${JSON.stringify(c.totals)} in ${((Date.now() - started) / 1000).toFixed(1)}s → ${formsFile(source)}`);
   }
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta.url)) await main();

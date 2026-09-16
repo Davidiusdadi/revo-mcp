@@ -21,10 +21,10 @@
  * Without the file the tables are created empty, so a checkout without the
  * counts still builds.
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../../runtime/node-database";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import { plausible, storedMorphs, inventoryOf } from "../../gloss";
+import { plausible, relabel, inventoryOf } from "../../gloss";
 import { FREQ_SOURCES, type FreqSource, type FreqSourceInfo } from "../../freq";
 import { formatSegments, lemmaCandidates, pinFits, segment, type Inventory, type Morph, type MorphKind } from "../../morph";
 import { ROOT } from "../sources";
@@ -76,14 +76,15 @@ interface Token { seg: string; kinds: string; ok: number; lemma_kap_id: number |
 /** The lookups `classify` makes per word, read once: headword by norm (first by node, id) and attested form by norm (the most frequent). */
 function judge(db: Database, inv: Inventory) {
   const kapByNorm = new Map<string, number>();
-  for (const r of db.query<{ norm: string; id: number }, []>("SELECT norm, id FROM headword ORDER BY node_id, id").iterate())
+  for (const r of db.query<{ norm: string; id: number }, []>("SELECT norm, id FROM headword ORDER BY node_id, id").all())
     if (!kapByNorm.has(r.norm)) kapByNorm.set(r.norm, r.id);
   const tokenByNorm = new Map<string, Token>();
-  for (const r of db.query<Token & { norm: string }, []>("SELECT norm, seg, kinds, ok, lemma_kap_id FROM x_token ORDER BY n DESC, id").iterate())
+  for (const r of db.query<Token & { norm: string }, []>("SELECT norm, seg, kinds, ok, lemma_kap_id FROM x_token ORDER BY n DESC, id").all())
     if (!tokenByNorm.has(r.norm)) tokenByNorm.set(r.norm, r);
   const morph = db.query<{ seg: string; kinds: string }, [number]>(
     "SELECT seg, kinds FROM x_morph WHERE kap_id = ? AND ok = 1 AND seg NOT LIKE '% %'");
-  const stored = (s: { seg: string; kinds: string } | null) => s && storedMorphs({ ...s, art: "", root: "" }, inv);
+  const stored = (s: { seg: string; kinds: string } | null) =>
+    s && relabel(s.seg.split("|").map((m, i) => ({ m, k: s.kinds[i] as MorphKind })), inv);
 
   /** A lemma held against ReVo in `classify`'s order, with the cheapest split the corpus supports. */
   return function verdictOf(lemma: string): Verdict {

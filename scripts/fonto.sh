@@ -17,4 +17,4 @@ git -C vendor/voko-grundo sparse-checkout set --cone dtd cfg
 git -C vendor/voko-grundo checkout --quiet
 echo "vendor/voko-grundo at $(git -C vendor/voko-grundo rev-parse --short HEAD)"
 
-bun run scripts/gen-entities.ts
+pnpm exec tsx scripts/gen-entities.ts

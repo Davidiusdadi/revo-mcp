@@ -5,7 +5,7 @@
  * `meta_pass`. New enrichment = a new pass, never a change to the articles'
  * tables (L1).
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../runtime/node-database";
 
 export interface Pass {
   name: string;

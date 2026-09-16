@@ -14,13 +14,13 @@
  * the last root, where ReVo files a derivation; several for homonyms), hplt,
  * tekstaro, pm (per million, both corpora added), suffix (the last suffix).
  *
- *   bun run scripts/freq/candidates.ts
+ *   tsx scripts/freq/candidates.ts
  */
-import { Database } from "bun:sqlite";
+import { Database } from "../../src/runtime/node-database";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tsvRows } from "./lemmatise";
-import { DB, FREQ, ROOT, TOTALS_FILE, WORDS_FILE, type SourceName } from "./paths";
+import { DB, FREQ, isMain, ROOT, TOTALS_FILE, WORDS_FILE, type SourceName } from "./paths";
 
 const HPLT_MIN = 1000;
 const TEKSTARO_MIN = 10;
@@ -80,4 +80,4 @@ async function main() {
   console.log(`${CANDIDATES_FILE}: ${out.length} candidates (derived ${by("derived")}, unknown ${by("unknown")}), ${skipped} already vetted`);
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta.url)) await main();

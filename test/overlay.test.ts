@@ -8,8 +8,8 @@
  * that `gloss` could only call a *regular derivation* becomes an *attested*
  * form. That is how a word ReVo never lists gets evidence behind it.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "../src/runtime/node-database";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";

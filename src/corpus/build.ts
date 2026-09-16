@@ -1,19 +1,18 @@
-#!/usr/bin/env bun
 /**
  * Builds data/voko.db from the VOKO XML: the articles stored as tables (L1,
  * src/corpus/documents.ts), then the passes of the requested stage.
  *
- *   bun run corpus:build                 full rebuild: core + enrichment passes
- *   bun run corpus:build --stage core    articles + structure + search, what a browser downloads
- *   bun run corpus:build --pass fts      run one pass on the existing DB
- *   bun run corpus:build --limit 200     dev: first N articles only
- *   bun run corpus:build --overlay DIR   merge that directory instead of corpus/overlay
- *   bun run corpus:build --freq FILE     read usage counts from FILE instead of corpus/freq/counts.tsv
- *   bun run corpus:build --out x.db
+ *   pnpm corpus:build                    full rebuild: core + enrichment passes
+ *   pnpm corpus:build --stage core       articles + structure + search + morph, what a browser downloads
+ *   pnpm corpus:build --pass fts         run one pass on the existing DB
+ *   pnpm corpus:build --limit 200        dev: first N articles only
+ *   pnpm corpus:build --overlay DIR      merge that directory instead of corpus/overlay
+ *   pnpm corpus:build --freq FILE        read usage counts from FILE instead of corpus/freq/counts.tsv
+ *   pnpm corpus:build --out x.db
  *
- * The core stage answers search, lookup, entries and languages; the full stage
- * adds the enrichment the server's other tools read (FTS, morphology, the
- * reference graph) and the indexes they need. Both hold every article whole,
+ * The core stage answers search, lookup, entries, languages and the Esperanto
+ * gloss; the full stage adds the enrichment the server's other tools read
+ * (FTS, the tilde occurrences, the reference graph) and the indexes they need. Both hold every article whole,
  * so a core file is raised to full later with `--pass` on each enrichment pass,
  * without the sources. Every build ends with VACUUM, so tables lie in
  * contiguous pages, and writes `<out>.gz` next to the file.
@@ -22,10 +21,12 @@
  * on an article that does not read back from the tables as its file parsed,
  * so nothing upstream adds slips through.
  */
-import { Database } from "bun:sqlite";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { Database } from "../runtime/node-database";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { plainText, childElements, substituteEntities, parse, type Roots } from "voko-xml";
 import lingvoj from "voko-xml/data/cfg/lingvoj.json";
 import fakoj from "voko-xml/data/cfg/fakoj.json";
@@ -39,7 +40,7 @@ import { indexPass } from "./passes/index";
 import { ftsPass } from "./passes/fts";
 import { tldLinksPass } from "./passes/tld-links";
 import { refsPass } from "./passes/refs";
-import { morphPass } from "./passes/morph";
+import { morphPass, splitsPass } from "./passes/morph";
 import { freqPass, freqPassFor } from "./passes/freq";
 import { ROOT, VENDOR, FONTO, GRUNDO, corpusArticles } from "./sources";
 
@@ -47,10 +48,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
 export type Stage = "core" | "full";
-/** What every runtime needs: nodes, headwords and translations, and the search tables over them. */
-export const CORE_PASSES: Pass[] = [structurePass, searchPass];
-/** Enrichment for the server's other tools, and the indexes they read through. */
-export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, morphPass, freqPass];
+/** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology a gloss reads. */
+export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass];
+/** Enrichment for the server's other tools, the indexes they read through, the stored splits, and usage counts. */
+export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, splitsPass, freqPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
 
 export function passesOf(stage: Stage): Pass[] {
@@ -125,8 +126,8 @@ function pinnedRev(name: string): string | null {
  */
 function gitRev(dir: string, name: string): string {
   try {
-    const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"]);
-    if (p.exitCode === 0) return p.stdout.toString().trim();
+    const p = spawnSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" });
+    if (p.status === 0) return p.stdout.trim();
   } catch {
     // No git binary: not an error here, the pins below are authoritative.
   }
@@ -186,7 +187,7 @@ export function finish(db: Database, out: string): void {
   db.exec("ANALYZE");
   db.exec("VACUUM");
   db.close();
-  writeFileSync(`${out}.gz`, Bun.gzipSync(readFileSync(out), { level: 9 }));
+  writeFileSync(`${out}.gz`, gzipSync(readFileSync(out), { level: 9 }));
 }
 
 function main() {
@@ -217,7 +218,8 @@ function main() {
   }
   finish(db, out);
   const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
-  console.log(`${out}: ${mb(Bun.file(out).size)} MB, ${out}.gz: ${mb(Bun.file(`${out}.gz`).size)} MB`);
+  console.log(`${out}: ${mb(statSync(out).size)} MB, ${out}.gz: ${mb(statSync(`${out}.gz`).size)} MB`);
 }
 
-if (import.meta.main) main();
+// Run as a script, not imported (tsx leaves import.meta.main unset).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main();

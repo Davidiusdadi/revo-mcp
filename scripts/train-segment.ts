@@ -15,13 +15,15 @@
  * below); minimised by L-BFGS from "hand cost only".
  * The weights written are in the features' own units.
  *
- *   bun run scripts/train-segment.ts [--db data/voko.db] [--lambda 0.001] [--cv 0.0001,0.001,0.01] [--dry]
+ *   pnpm corpus:train-segment [--db data/voko.db] [--lambda 0.001] [--cv 0.0001,0.001,0.01] [--dry]
  *
  * --cv prints, for each λ, the misses on each half of the tune part when
  * fitted on the other half (halves by stem, see foldOf). --dry does not
  * write the weights file.
  */
-import { Database } from "bun:sqlite";
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { Database } from "../src/runtime/node-database";
 import { readings, readingFeatures, type Reading } from "../src/morph";
 import { segmentCases, foldOf, type Case } from "./segment-cases";
 
@@ -32,7 +34,7 @@ const opt = (name: string, dflt: string) => {
 };
 const db = new Database(opt("--db", "data/voko.db"), { readonly: true });
 const lambda = Number(opt("--lambda", "0.001"));
-const OUT = new URL("../src/morph-weights.ts", import.meta.url).pathname;
+const OUT = fileURLToPath(new URL("../src/morph-weights.ts", import.meta.url));
 const CORRELATIVE = /^(ki|ti|i|ĉi|neni)(a|al|am|e|el|es|o|om|u)(j|n|jn)?$/;
 
 const t0 = performance.now();
@@ -225,10 +227,10 @@ for (const j of [...keys.keys()].sort((a, b) => Math.abs(w[b]) - Math.abs(w[a]))
 if (!args.includes("--dry")) {
   raw.sort((a, b) => a[0].localeCompare(b[0]));
   const lines = raw.filter(([, x]) => x !== 0).map(([k, x]) => `  ${JSON.stringify(k)}: ${x},`);
-  await Bun.write(OUT, `/**
+  writeFileSync(OUT, `/**
  * Weights of segment()'s learned scorer (src/morph.ts, readingFeatures):
  * a reading's score is the sum of weight × feature, the lowest wins. Written
- * by \`bun run corpus:train-segment\` — edit the features or the trainer, not
+ * by \`pnpm corpus:train-segment\` — edit the features or the trainer, not
  * this file.
  *
  * Fitted on ${rows.length} root-marked words of the Reta Vortaro (the tune part,

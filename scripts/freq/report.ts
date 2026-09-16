@@ -5,14 +5,15 @@
  * data/freq/sources/ref/, never redistributed), and the size of a reduced
  * counts file at candidate thresholds.
  *
- *   bun run scripts/freq/report.ts
+ *   tsx scripts/freq/report.ts
  */
-import { existsSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { gzipSync } from "zlib";
 import { join } from "path";
 import { tsvRows } from "./lemmatise";
 import { lemmaOf } from "../../src/morph";
-import { Database } from "bun:sqlite";
-import { DB, FREQ, lemmasFile, REPORT_FILE, ROOTS_FILE, SOURCES_FILE, SOURCE_NAMES, TOTALS_FILE, WORDS_FILE, type SourceName, type SourceRecord } from "./paths";
+import { Database } from "../../src/runtime/node-database";
+import { DB, FREQ, isMain, lemmasFile, REPORT_FILE, ROOTS_FILE, SOURCES_FILE, SOURCE_NAMES, TOTALS_FILE, WORDS_FILE, type SourceName, type SourceRecord } from "./paths";
 import type { Totals } from "./count-forms";
 
 const REF = join(FREQ, "sources", "ref");
@@ -52,8 +53,8 @@ function spearman(a: string[], b: string[]): { shared: number; rho: number } {
 }
 
 async function main() {
-  const totals = JSON.parse(await Bun.file(TOTALS_FILE).text()) as Record<SourceName, Totals>;
-  const sources = JSON.parse(await Bun.file(SOURCES_FILE).text()) as Record<SourceName, SourceRecord>;
+  const totals = JSON.parse(readFileSync(TOTALS_FILE, "utf8")) as Record<SourceName, Totals>;
+  const sources = JSON.parse(readFileSync(SOURCES_FILE, "utf8")) as Record<SourceName, SourceRecord>;
   const words: Word[] = [];
   const byLemma = new Map<string, Word>();
   let header = true;
@@ -213,7 +214,7 @@ async function main() {
   // ---- cross-checks
   h("Cross-checks against published lists");
   if (existsSync(VANEGE)) {
-    const theirs = (await Bun.file(VANEGE).text()).split("\n").map((l) => l.trim()).filter(Boolean);
+    const theirs = readFileSync(VANEGE, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
     const ours = lemmaTotals.tekstaro.ranked;
     const ourRank = new Map(ours.map((l, i) => [l, i + 1]));
     for (const n of [1000, 5000, 15000]) {
@@ -252,15 +253,15 @@ async function main() {
   const size = (label: string, ws: Word[]) => {
     const text = ws.map((w) => `${w.lemma}\t${w.n.hplt}\t${w.n.tekstaro}\n`).join("");
     const bytes = Buffer.byteLength(text);
-    sizeRows.push([label, fmt(ws.length), fmt(bytes), fmt(Bun.gzipSync(Buffer.from(text)).length)]);
+    sizeRows.push([label, fmt(ws.length), fmt(bytes), fmt(gzipSync(Buffer.from(text)).length)]);
   };
   size("ReVo lemmas only", revo);
   for (const [h, t] of [[20, 3], [50, 5], [100, 10], [200, 20]] as const) size(`ReVo + others at hplt ≥ ${h} or tekstaro ≥ ${t}`, [...revo, ...others.filter((w) => w.n.hplt >= h || w.n.tekstaro >= t)]);
   size("everything classified (≥ 2 in either)", words);
   out.push(table(["file", "rows", "bytes", "gzipped"], sizeRows));
 
-  await Bun.write(REPORT_FILE, out.join("\n") + "\n");
+  writeFileSync(REPORT_FILE, out.join("\n") + "\n");
   console.log(`${REPORT_FILE}: ${fmt(Buffer.byteLength(out.join("\n")))} bytes`);
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta.url)) await main();

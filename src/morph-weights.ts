@@ -1,7 +1,7 @@
 /**
  * Weights of segment()'s learned scorer (src/morph.ts, readingFeatures):
  * a reading's score is the sum of weight × feature, the lowest wins. Written
- * by `bun run corpus:train-segment` — edit the features or the trainer, not
+ * by `pnpm corpus:train-segment` — edit the features or the trainer, not
  * this file.
  *
  * Fitted on 23312 root-marked words of the Reta Vortaro (the tune part,

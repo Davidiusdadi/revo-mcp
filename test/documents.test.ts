@@ -3,8 +3,8 @@
  * files go in, and must come back as the trees they parsed to. The full corpus
  * is checked the same way by the import itself.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "../src/runtime/node-database";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

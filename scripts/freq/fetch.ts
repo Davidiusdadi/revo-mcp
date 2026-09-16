@@ -1,11 +1,10 @@
-#!/usr/bin/env bun
 /**
  * Downloads the corpora the word frequencies are counted from, into
  * data/freq/sources/, and records what was fetched (URL, date, bytes, sha256,
  * licence) in data/freq/sources/SOURCES.json — the provenance every later
  * step quotes.
  *
- *   bun run scripts/freq/fetch.ts [--only hplt|tekstaro]
+ *   tsx scripts/freq/fetch.ts [--only hplt|tekstaro]
  *
  * A file whose sha256 already matches the record is not downloaded again.
  *
@@ -14,7 +13,10 @@
  * - Tekstaro de Esperanto, TEI XML with morpheme boundaries: the corpus ReVo
  *   cites. No licence stated; the text is used locally, only counts leave.
  */
-import { existsSync, mkdirSync, statSync } from "fs";
+import { spawn } from "child_process";
+import { createHash } from "crypto";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
+import { once } from "events";
 import { join } from "path";
 import { FREQ, SOURCES_FILE, type SourceRecord } from "./paths";
 
@@ -47,16 +49,17 @@ const SOURCES: Source[] = [
     urls: async () => ["https://tekstaro.com/elshutebla/tekstaro_de_esperanto_xml_kun_streketoj.zip"],
     after: async (dir, files) => {
       for (const f of files) {
-        const p = Bun.spawn(["unzip", "-oq", f, "-d", join(dir, "xml")], { stdout: "inherit", stderr: "inherit" });
-        if ((await p.exited) !== 0) throw new Error(`unzip ${f} failed`);
+        const p = spawn("unzip", ["-oq", f, "-d", join(dir, "xml")], { stdio: "inherit" });
+        const [code] = await once(p, "close");
+        if (code !== 0) throw new Error(`unzip ${f} failed`);
       }
     },
   },
 ];
 
 async function sha256(path: string): Promise<string> {
-  const h = new Bun.CryptoHasher("sha256");
-  for await (const chunk of Bun.file(path).stream()) h.update(chunk);
+  const h = createHash("sha256");
+  for await (const chunk of createReadStream(path)) h.update(chunk);
   return h.digest("hex");
 }
 
@@ -65,22 +68,22 @@ async function download(url: string, dest: string): Promise<void> {
   if (!res.ok || !res.body) throw new Error(`${url} → HTTP ${res.status}`);
   const total = Number(res.headers.get("content-length") ?? 0);
   const tmp = `${dest}.part`;
-  const out = Bun.file(tmp).writer();
+  const out = createWriteStream(tmp);
   let done = 0, shown = -1;
   for await (const chunk of res.body) {
-    out.write(chunk);
+    if (!out.write(chunk)) await once(out, "drain");
     done += chunk.length;
     const pct = total ? Math.floor((100 * done) / total) : -1;
     if (pct !== shown && pct % 5 === 0) { shown = pct; process.stdout.write(`\r  ${(done / 1e6).toFixed(0)} MB${total ? ` (${pct} %)` : ""}`); }
   }
-  await out.end();
+  out.end();
+  await once(out, "finish");
   process.stdout.write("\n");
-  await Bun.write(dest, Bun.file(tmp));
-  await Bun.file(tmp).delete();
+  renameSync(tmp, dest);
 }
 
 mkdirSync(FREQ, { recursive: true });
-const records: Record<string, SourceRecord> = existsSync(SOURCES_FILE) ? await Bun.file(SOURCES_FILE).json() : {};
+const records: Record<string, SourceRecord> = existsSync(SOURCES_FILE) ? JSON.parse(readFileSync(SOURCES_FILE, "utf8")) : {};
 
 for (const s of SOURCES) {
   if (only && s.name !== only) continue;
@@ -107,6 +110,6 @@ for (const s of SOURCES) {
   }
   if (s.after) await s.after(dir, files);
   records[s.name] = rec;
-  await Bun.write(SOURCES_FILE, JSON.stringify(records, null, 2) + "\n");
+  writeFileSync(SOURCES_FILE, JSON.stringify(records, null, 2) + "\n");
 }
 console.log(`wrote ${SOURCES_FILE}`);

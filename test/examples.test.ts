@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "vitest";
 import { searchExamples, closeDb } from "../src/db";
 import { handleExamples } from "../src/tools/examples";
 import { handleLookup } from "../src/tools/lookup";

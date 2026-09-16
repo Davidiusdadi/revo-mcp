@@ -26,7 +26,7 @@ import type { Pass } from "../pass";
 
 export const structurePass: Pass = {
   name: "structure",
-  version: 1,
+  version: 2,
   tables: ["node", "headword", "translation"],
   run(db, log) {
     db.run(`
@@ -115,6 +115,8 @@ export const structurePass: Pass = {
       }
     }
     db.run("CREATE INDEX idx_node_mrk ON node(mrk)");
+    // a gloss asks whether a word is a headword; over HTTP a scan of the table is 400 pages
+    db.run("CREATE INDEX idx_headword_norm ON headword(norm)");
     log(`node ${nNodes}, headword ${nHeadwords}, translation ${nTranslations}; roots of every article check`);
     return nNodes + nHeadwords + nTranslations;
   },

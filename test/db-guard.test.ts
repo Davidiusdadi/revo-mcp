@@ -1,5 +1,6 @@
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "../src/runtime/node-database";
+import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
@@ -23,20 +24,23 @@ beforeAll(() => {
   const script = join(dir, "ask-twice.ts");
   writeFileSync(
     script,
-    `import { configureBunDatabase } from ${JSON.stringify(join(ROOT, "src", "runtime", "bun-database.ts"))};
+    `import { configureNodeDatabase } from ${JSON.stringify(join(ROOT, "src", "runtime", "node-database.ts"))};
      import { getDb } from ${JSON.stringify(join(ROOT, "src", "db.ts"))};
      const say = (f: () => unknown) => {
        try { f(); return "no error"; } catch (e) { return (e as Error).message; }
      };
-     // configureBunDatabase opens the connection eagerly, so it is the first to be refused.
-     say(configureBunDatabase);
+     // configureNodeDatabase opens the connection eagerly, so it is the first to be refused.
+     say(configureNodeDatabase);
      console.log(JSON.stringify({ first: say(getDb), second: say(getDb) }));\n`
   );
 
-  const proc = Bun.spawnSync(["bun", "run", script], {
+  // cwd ROOT, so that `--import tsx` resolves from the project's dependencies.
+  const proc = spawnSync(process.execPath, ["--import", "tsx", script], {
+    cwd: ROOT,
     env: { ...process.env, REVO_DB: wrong },
+    encoding: "utf8",
   });
-  out = JSON.parse(proc.stdout.toString().trim().split("\n").pop() ?? "{}");
+  out = JSON.parse(proc.stdout.trim().split("\n").pop() ?? "{}");
 });
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

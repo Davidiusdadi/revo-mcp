@@ -1,8 +1,8 @@
-import { Database } from "bun:sqlite";
+import { Database } from "../src/runtime/node-database";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { ArticleSource } from "voko-xml";
 import { importDocuments } from "../src/corpus/documents";
 import { searchPass } from "../src/corpus/passes/search";
@@ -22,7 +22,7 @@ describe("search over the dictionary", () => {
     expect(result.results[0].entry.headword).toBe("hundo");
     expect(result.results[0].matchReasons).toContainEqual({ language: "de", text: "Hund", kind: "translation" });
     expect(result.results[0].entry.translations.length).toBeGreaterThan(0);
-    expect(result.results[0].entry.translations.every(({ lng }) => ["de", "en"].includes(lng))).toBeTrue();
+    expect(result.results[0].entry.translations.every(({ lng }) => ["de", "en"].includes(lng))).toBe(true);
     // Senses are the entry tool's: a result page reads no more than its cards.
     expect(result.results[0].entry.senses).toEqual([]);
   });
@@ -37,7 +37,7 @@ describe("search over the dictionary", () => {
     expect(entry.headword).toBe("Nico");
     expect(entry.usageDomains).toEqual(["GEOG", "POL"]);
     expect(entry.translations.map(({ trd }) => trd)).toContain("Nice");
-    expect(entry.translations.every(({ lng }) => ["de", "en"].includes(lng))).toBeTrue();
+    expect(entry.translations.every(({ lng }) => ["de", "en"].includes(lng))).toBe(true);
     expect(executeEntry({ mark: "hund.0o" }).entry.senses.length).toBeGreaterThan(0);
     expect(() => executeEntry({ mark: "hund.0nenio" })).toThrow("No dictionary entry has the mark hund.0nenio.");
   });
@@ -68,7 +68,7 @@ describe("search over the dictionary", () => {
     const adjective = result.results.find(({ entry }) => entry.headword === "plaĉa");
     // English matched the city exactly and Esperanto only through a stem, so English names it.
     expect(city?.matchReasons[0]).toMatchObject({ language: "en", text: "Nice", kind: "translation" });
-    expect(city?.matchReasons.some(({ language, text }) => language === "eo" && text === "Nico")).toBeTrue();
+    expect(city?.matchReasons.some(({ language, text }) => language === "eo" && text === "Nico")).toBe(true);
     expect(adjective?.matchReasons[0]).toMatchObject({ language: "en", text: "nice", kind: "translation" });
   });
 
@@ -99,7 +99,7 @@ describe("search over the dictionary", () => {
     const lastMarks = new Set(last.results.map(({ entry }) => entry.mrk));
     const bretonOnly = breton.results.filter(({ matchReasons }) => matchReasons.every(({ language }) => language === "br"));
     expect(bretonOnly.length).toBeGreaterThan(0);
-    for (const { entry } of bretonOnly) expect(lastMarks.has(entry.mrk)).toBeTrue();
+    for (const { entry } of bretonOnly) expect(lastMarks.has(entry.mrk)).toBe(true);
   });
 
   test("narrows a search to the entries of one usage domain", () => {

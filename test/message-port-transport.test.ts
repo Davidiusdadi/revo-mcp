@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpServer } from "../src/server";
@@ -24,6 +24,20 @@ describe("MessagePortTransport", () => {
   test("discovers the ReVo tools across a MessageChannel", async () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toContain("search");
+  });
+
+  test("glosses a word with its mark and translations, validated against the output schema", async () => {
+    const result = await client.callTool({
+      name: "gloss",
+      arguments: { text: "malsanulejo", lang: "eo", languages: ["de"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as any;
+    expect(structured.mode).toBe("eo");
+    expect(structured.counts.headword).toBe(1);
+    expect(structured.terms[0]).toMatchObject({ word: "malsanulejo", verdict: "headword", mrk: "san.mal0ulejo", seg: "mal|san|ul|ej|o" });
+    expect(structured.terms[0].translations).toContainEqual({ lng: "de", trd: "Krankenhaus" });
+    expect(structured.terms[0].parts[0]).toMatchObject({ m: "mal", k: "P", mrk: "mal.0" });
   });
 
   test("returns structured multilingual search results", async () => {

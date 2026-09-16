@@ -4,8 +4,8 @@
  * are summed from the splits, the header becomes meta, and a missing file
  * leaves the tables empty instead of failing the build.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "../src/runtime/node-database";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";

@@ -11,6 +11,14 @@ import { glossText } from "../db";
 import type { Candidate, EoGloss, EoTerm, Part, SourceGloss, SourceTerm } from "../gloss";
 
 export const glossInputSchema = z.object({
+  languages: z
+    .array(z.string().min(2).max(12))
+    .max(174)
+    .optional()
+    .describe(
+      "With lang='eo': list each dictionary word's translations in these languages, " +
+        "as `entry` would, so a reader shows what a word means without a second call."
+    ),
   text: z
     .string()
     .min(1)
@@ -47,10 +55,76 @@ export const glossInputSchema = z.object({
 
 export type GlossInput = z.infer<typeof glossInputSchema>;
 
-export function handleGloss(args: GlossInput): string {
-  const { text, lang, per_word, max_words } = args;
-  const result = glossText(text, { lang, perTerm: per_word, maxWords: max_words });
+const partSchema = z.object({
+  m: z.string(),
+  k: z.string().describe("P prefix · R root · S suffix · L linking vowel · E ending · W endingless word"),
+  gloss: z.string().optional().describe("An affix's definition, or the root's own headword."),
+  art: z.string().optional(),
+  mrk: z.string().optional().describe("The entry that names the part."),
+});
+
+const readingSchema = z.object({
+  seg: z.string(),
+  kinds: z.string(),
+  parts: z.array(partSchema),
+});
+
+const eoTermSchema = z.object({
+  word: z.string(),
+  n: z.number().int(),
+  verdict: z.enum(["headword", "inflection", "attested", "derived", "unknown"]),
+  headword: z.string().optional().describe("The dictionary form."),
+  art: z.string().optional(),
+  mrk: z.string().optional().describe("The dictionary form's entry, what `entry` loads."),
+  translations: z.array(z.object({ lng: z.string(), trd: z.string() })).optional(),
+  how: z.string().optional(),
+  attested: z.number().int().optional(),
+  seg: z.string().optional().describe("The reading, morphemes separated by |."),
+  kinds: z.string().optional(),
+  parts: z.array(partSchema).optional(),
+  readings: z.array(readingSchema.extend({ art: z.string() })).optional(),
+  altReading: z.boolean().optional(),
+  also: readingSchema.optional(),
+  near: z.array(z.string()).optional(),
+});
+
+const sourceTermSchema = z.object({
+  term: z.string(),
+  n: z.number().int(),
+  via: z.string().optional(),
+  candidates: z.array(z.object({ eo: z.string(), art: z.string(), src: z.string().optional() })),
+  more: z.number().int(),
+});
+
+/**
+ * The structured result: an Esperanto audit (`terms` of the Esperanto kind,
+ * `counts`) or a source-language glossary (`lang`, `phrases`, `terms` of the
+ * source kind, `missing`), told apart by `mode`. One object schema, since the
+ * MCP SDK takes an object, not a union, as a tool's output schema.
+ */
+export const glossOutputSchema = z.object({
+  mode: z.enum(["eo", "source"]),
+  words: z.number().int(),
+  terms: z.array(z.union([eoTermSchema, sourceTermSchema])),
+  truncated: z.number().int(),
+  counts: z.record(z.string(), z.number().int()).optional().describe("mode 'eo': words per verdict."),
+  lang: z.string().optional().describe("mode 'source': the text's language."),
+  phrases: z.array(sourceTermSchema).optional(),
+  missing: z.array(z.object({ term: z.string(), n: z.number().int() })).optional(),
+});
+
+export function executeGloss(args: GlossInput): EoGloss | SourceGloss {
+  const { text, lang, per_word, max_words, languages } = args;
+  return glossText(text, { lang, perTerm: per_word, maxWords: max_words, languages });
+}
+
+/** The gloss rendered for reading. */
+export function renderGloss(result: EoGloss | SourceGloss): string {
   return result.mode === "eo" ? renderEo(result) : renderSource(result);
+}
+
+export function handleGloss(args: GlossInput): string {
+  return renderGloss(executeGloss(args));
 }
 
 // ---------------------------------------------------------------------------

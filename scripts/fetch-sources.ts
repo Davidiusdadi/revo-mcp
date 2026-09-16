@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 /**
  * Fetches the VOKO sources as pinned tarballs, for builds that have no git.
  *
@@ -15,11 +14,15 @@
  * not duplicated here; test/deploy-pins.test.ts keeps those in step with the
  * submodule pins.
  *
- *   REVO_FONTO_SHA=… VOKO_GRUNDO_SHA=… bun run scripts/fetch-sources.ts
- *   VENDOR_DIR=/sources/vendor … bun run scripts/fetch-sources.ts
+ *   REVO_FONTO_SHA=… VOKO_GRUNDO_SHA=… pnpm exec tsx scripts/fetch-sources.ts
+ *   VENDOR_DIR=/sources/vendor … pnpm exec tsx scripts/fetch-sources.ts
  */
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { spawnSync } from "child_process";
+import { createWriteStream, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
+import type { ReadableStream } from "stream/web";
 import { fileURLToPath } from "url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,8 +41,8 @@ function required(name: string): string {
   if (!v) {
     throw new Error(
       `${name} is not set. Pass the pinned commits, e.g.\n` +
-        `  REVO_FONTO_SHA=<sha> VOKO_GRUNDO_SHA=<sha> bun run scripts/fetch-sources.ts\n` +
-        "or use `bun run fonto` instead, which checks out the submodules with git."
+        `  REVO_FONTO_SHA=<sha> VOKO_GRUNDO_SHA=<sha> pnpm exec tsx scripts/fetch-sources.ts\n` +
+        "or use `pnpm fonto` instead, which checks out the submodules with git."
     );
   }
   return v;
@@ -52,20 +55,19 @@ async function fetchSource(s: Source): Promise<void> {
 
   console.log(`${s.name}: ${s.repo} at ${s.sha.slice(0, 7)}`);
   const res = await fetch(url, { headers: { "user-agent": "revo-mcp build" } });
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
-  await Bun.write(tmp, res);
+  if (!res.ok || !res.body) throw new Error(`${url} → HTTP ${res.status}`);
+  await pipeline(Readable.fromWeb(res.body as ReadableStream<Uint8Array>), createWriteStream(tmp));
 
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dest, { recursive: true });
 
   // GitHub's archive wraps everything in <repo>-<sha>/, hence the strip.
   const members = s.dirs.map((d) => `${s.name}-${s.sha}/${d}`);
-  const tar = Bun.spawnSync(
-    ["tar", "-xzf", tmp, "--strip-components=1", "-C", dest, ...members],
-    { stdout: "inherit", stderr: "inherit" }
-  );
+  const tar = spawnSync("tar", ["-xzf", tmp, "--strip-components=1", "-C", dest, ...members], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
   rmSync(tmp, { force: true });
-  if (tar.exitCode !== 0) throw new Error(`tar failed to unpack ${s.name}`);
+  if (tar.status !== 0) throw new Error(`tar failed to unpack ${s.name}`);
 
   for (const d of s.dirs) {
     if (!existsSync(join(dest, d))) {
@@ -94,7 +96,7 @@ mkdirSync(DEST, { recursive: true });
 for (const s of SOURCES) await fetchSource(s);
 
 // Provenance for anything looking at a built image, where git cannot answer.
-await Bun.write(
+writeFileSync(
   join(DEST, "SOURCES.json"),
   JSON.stringify(
     SOURCES.map((s) => ({ name: s.name, repo: s.repo, commit: s.sha })),

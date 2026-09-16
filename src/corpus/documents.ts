@@ -5,7 +5,7 @@
  * its declared attributes, so an element or attribute the DTD does not know
  * stops the import instead of being dropped.
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../runtime/node-database";
 import {
   ELEMENTS, ATTRIBUTES, articleOf, rootsOf, readArticle, inventory, emptyInventory, domEqual, nodes,
   type ArticleSource, type Document, type Element, type Inventory, type Node, type NodeInfo, type Roots, type TextNode,
@@ -109,28 +109,21 @@ function storedWhitespace(value: string | null, standard: string): string | null
   return value === standard ? null : value ?? "";
 }
 
-// bun:sqlite drops a leading U+FEFF from a bound string (hipnot and hister
-// write `&#65279;C. Baudoin`); bound as UTF-8 bytes and cast, it stays.
-const utf8 = new TextEncoder();
-function bound(value: string | null | undefined): string | Uint8Array | null {
-  return value == null ? null : value.charCodeAt(0) === 0xfeff ? utf8.encode(value) : value;
-}
-
 function inserter(db: Database, name: string, attributes: string[]): (row: DocumentRow) => void {
   const table = tableName(name);
   if (name === TEXT) {
-    const st = db.prepare(`INSERT INTO ${table} (id, up, txt) VALUES (?, ?, CAST(? AS TEXT))`);
-    return (r) => st.run(r.id, r.up, bound(r.txt));
+    const st = db.prepare(`INSERT INTO ${table} (id, up, txt) VALUES (?, ?, ?)`);
+    return (r) => st.run(r.id, r.up, r.txt);
   }
   if (name === COMMENT) {
-    const st = db.prepare(`INSERT INTO ${table} (id, up, txt, ws) VALUES (?, ?, CAST(? AS TEXT), CAST(? AS TEXT))`);
-    return (r) => st.run(r.id, r.up, bound(r.txt), bound(r.ws));
+    const st = db.prepare(`INSERT INTO ${table} (id, up, txt, ws) VALUES (?, ?, ?, ?)`);
+    return (r) => st.run(r.id, r.up, r.txt, r.ws);
   }
-  const text = (n: number) => Array(n).fill(", CAST(? AS TEXT)").join("");
+  const text = (n: number) => ", ?".repeat(n);
   const st = db.prepare(
     `INSERT INTO ${table} (${["id", "up", "txt", ...attributes, "ws", "ws_end", "open"].join(", ")})
      VALUES (?, ?${text(1 + attributes.length + 2)}, ?)`);
-  return (r) => st.run(r.id, r.up, bound(r.txt), ...attributes.map((a) => bound(r.attrs?.[a])), bound(r.ws), bound(r.wsEnd), r.open);
+  return (r) => st.run(r.id, r.up, r.txt, ...attributes.map((a) => r.attrs?.[a] ?? null), r.ws, r.wsEnd, r.open);
 }
 
 function sameDocument(a: Document, b: Document): boolean {

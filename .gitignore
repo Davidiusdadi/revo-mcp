@@ -2,11 +2,11 @@ node_modules/
 data/revo.db
 scripts/render-all-failures.json
 
-# generated from the vendor/voko-grundo submodule (bun run fonto)
+# generated from the vendor/voko-grundo submodule (pnpm fonto)
 packages/voko-xml/data/entities.json
 packages/voko-xml/data/cfg/
 
-# built corpus (regenerate with bun run corpus:build)
+# built corpus (regenerate with pnpm corpus:build)
 data/voko.db
 data/voko.db.gz
 data/voko-vec.db
@@ -17,5 +17,5 @@ data/*.db-shm
 # frequency sources and intermediate counts (scripts/freq/, regenerable)
 data/freq/
 
-# browser Worker bundle (bun run browser:build)
+# browser Worker bundle (pnpm browser:build)
 dist/

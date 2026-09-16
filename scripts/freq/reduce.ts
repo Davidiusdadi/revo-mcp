@@ -11,9 +11,9 @@
  * (URL, hash, date, licence, tokens counted) so the numbers can be traced and
  * reproduced; src/corpus/passes/freq.ts parses it.
  *
- *   bun run scripts/freq/reduce.ts [--out FILE]
+ *   tsx scripts/freq/reduce.ts [--out FILE]
  */
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { dirname, join } from "path";
 import { COUNTS_FILE, FREQ, SOURCE_NAMES, SOURCES_FILE, TOTALS_FILE, WORDS_FILE, type SourceName, type SourceRecord } from "./paths";
 import { tsvRows } from "./lemmatise";
@@ -65,4 +65,4 @@ for await (const r of tsvRows(WORDS_FILE)) {
 rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, header.join("\n") + "\n" + rows.map((r) => r.join("\t")).join("\n") + "\n");
-console.log(`${out}: ${rows.length} lemmas (${revo} ReVo lists, ${zero} never seen), ${(Bun.file(out).size / 1e6).toFixed(1)} MB`);
+console.log(`${out}: ${rows.length} lemmas (${revo} ReVo lists, ${zero} never seen), ${(statSync(out).size / 1e6).toFixed(1)} MB`);

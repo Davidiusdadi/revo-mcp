@@ -1,4 +1,3 @@
-import { configureBunDatabase } from "../src/runtime/bun-database";
+import { configureNodeDatabase } from "../src/runtime/node-database";
 
-configureBunDatabase();
-
+configureNodeDatabase();

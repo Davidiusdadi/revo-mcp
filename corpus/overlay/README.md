@@ -39,5 +39,5 @@ overlay is not needed to make such a word analysable. It is needed to put
 To try one without touching this directory:
 
 ```bash
-bun run corpus:build --overlay path/to/dir --limit 200 --out /tmp/slice.db
+pnpm corpus:build --overlay path/to/dir --limit 200 --out /tmp/slice.db
 ```

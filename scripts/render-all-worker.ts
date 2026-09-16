@@ -2,11 +2,12 @@
  * Worker for render-all-articles.ts. Receives row batches, runs each through
  * the lookup + format pipeline, and returns aggregated counts plus failures.
  */
+import { parentPort } from "node:worker_threads";
 import { lookupEsperanto, closeDb } from "../src/db";
 import { formatResults } from "../src/formatter";
-import { configureBunDatabase } from "../src/runtime/bun-database";
+import { configureNodeDatabase } from "../src/runtime/node-database";
 
-configureBunDatabase(); // REVO_DB, else data/voko.db
+configureNodeDatabase(); // REVO_DB, else data/voko.db
 
 interface Row { kap: string; art: string; mrk: string }
 interface Failure {
@@ -15,15 +16,13 @@ interface Failure {
   message?: string; stack?: string;
 }
 
-declare const self: Worker;
+const port = parentPort!;
 
-self.onmessage = (e: MessageEvent) => {
-  const msg = e.data as { type: "work"; batch: Row[] } | { type: "done" };
-
+port.on("message", (msg: { type: "work"; batch: Row[] } | { type: "done" }) => {
   if (msg.type === "done") {
     closeDb();
-    self.postMessage({ type: "exiting" });
-    self.close();
+    port.postMessage({ type: "exiting" });
+    port.close();
     return;
   }
 
@@ -58,11 +57,11 @@ self.onmessage = (e: MessageEvent) => {
     }
   }
 
-  self.postMessage({
+  port.postMessage({
     type: "result",
     processed: msg.batch.length,
     ok, empty, noSenses, crashed, failures,
   });
-};
+});
 
-self.postMessage({ type: "ready" });
+port.postMessage({ type: "ready" });

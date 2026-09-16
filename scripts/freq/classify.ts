@@ -14,14 +14,18 @@
  * data/freq/roots.tsv — every morpheme of the splits (root, endingless word,
  * prefix, suffix), its kind, per-source counts, lemmas contributing.
  *
- *   bun run scripts/freq/classify.ts [--fresh] [--workers N]
+ *   tsx scripts/freq/classify.ts [--fresh] [--workers N]
  */
-import { Database } from "bun:sqlite";
-import { existsSync, unlinkSync } from "fs";
+import { spawn } from "child_process";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { availableParallelism } from "os";
+import { fileURLToPath } from "url";
+import { Database } from "../../src/runtime/node-database";
+import { wyhash } from "../wyhash";
 import { join } from "path";
 import { classify, inventoryOf } from "../../src/gloss";
 import { tsvRows } from "./lemmatise";
-import { DB, FREQ, lemmasFile, ROOTS_FILE, SOURCE_NAMES, WORDS_FILE, type SourceName } from "./paths";
+import { DB, FREQ, isMain, lemmasFile, ROOTS_FILE, SOURCE_NAMES, WORDS_FILE, type SourceName } from "./paths";
 
 const MIN = 2;
 export const CLASSIFIED_FILE = join(FREQ, "classified.tsv");
@@ -71,14 +75,14 @@ function classifyWords(db: Database, words: string[], log: (s: string) => void):
 }
 
 async function worker(i: number, n: number) {
-  const todo = (await Bun.file(TODO_FILE).text()).split("\n").filter((w) => w && Number(Bun.hash(w) % BigInt(n)) === i);
+  const todo = readFileSync(TODO_FILE, "utf8").split("\n").filter((w) => w && Number(wyhash(new TextEncoder().encode(w)) % BigInt(n)) === i);
   const db = new Database(DB, { readonly: true });
   const rows = classifyWords(db, todo, (s) => console.log(`  worker ${i}: ${s}`));
-  await Bun.write(partFile(i), rows.join(""));
+  writeFileSync(partFile(i), rows.join(""));
 }
 
 async function main() {
-  const workers = Number(opt("--workers") ?? Math.min(8, navigator.hardwareConcurrency));
+  const workers = Number(opt("--workers") ?? Math.min(8, availableParallelism()));
   if (process.argv.includes("--fresh") && existsSync(CLASSIFIED_FILE)) unlinkSync(CLASSIFIED_FILE);
   const counts = await loadCounts();
   const db = new Database(DB, { readonly: true });
@@ -91,15 +95,18 @@ async function main() {
   console.log(`${counts.size} lemmas, ${selected.size} selected (${headwords.length} ReVo headwords), ${classified.size} cached, ${todo.length} to classify`);
 
   if (todo.length > 0) {
-    await Bun.write(TODO_FILE, todo.join("\n") + "\n");
+    writeFileSync(TODO_FILE, todo.join("\n") + "\n");
     const started = Date.now();
-    const procs = Array.from({ length: workers }, (_, i) =>
-      Bun.spawn(["bun", "run", import.meta.path, "--worker", String(i), "--of", String(workers)], { stdout: "inherit", stderr: "inherit" }));
-    const codes = await Promise.all(procs.map((p) => p.exited));
+    // each worker is this script again, under the same loader (tsx's flags are in execArgv)
+    const codes = await Promise.all(Array.from({ length: workers }, (_, i) => new Promise<number | null>((ok, fail) => {
+      const p = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "--worker", String(i), "--of", String(workers)], { stdio: "inherit" });
+      p.on("error", fail);
+      p.on("close", ok);
+    })));
     if (codes.some((c) => c !== 0)) throw new Error(`a worker failed: ${codes}`);
-    const parts = await Promise.all(Array.from({ length: workers }, (_, i) => Bun.file(partFile(i)).text()));
-    const old = existsSync(CLASSIFIED_FILE) ? await Bun.file(CLASSIFIED_FILE).text() : "";
-    await Bun.write(CLASSIFIED_FILE, old + parts.join(""));
+    const parts = await Promise.all(Array.from({ length: workers }, (_, i) => readFileSync(partFile(i), "utf8")));
+    const old = existsSync(CLASSIFIED_FILE) ? readFileSync(CLASSIFIED_FILE, "utf8") : "";
+    writeFileSync(CLASSIFIED_FILE, old + parts.join(""));
     for (let i = 0; i < workers; i++) unlinkSync(partFile(i));
     unlinkSync(TODO_FILE);
     console.log(`classified ${todo.length} in ${((Date.now() - started) / 1000).toFixed(0)}s with ${workers} workers`);
@@ -145,14 +152,14 @@ async function main() {
       e.lemmas++;
     }
   }
-  await Bun.write(WORDS_FILE, lines.join(""));
+  writeFileSync(WORDS_FILE, lines.join(""));
   const rootRows = [...roots].sort((a, b) => b[1].n.hplt - a[1].n.hplt || b[1].n.tekstaro - a[1].n.tekstaro || (a[0] < b[0] ? -1 : 1));
-  await Bun.write(ROOTS_FILE, "morph\tkind\thplt\ttekstaro\tlemmas\n" + rootRows.map(([key, e]) => `${key.split(" ")[1]}\t${e.k}\t${e.n.hplt}\t${e.n.tekstaro}\t${e.lemmas}\n`).join(""));
+  writeFileSync(ROOTS_FILE, "morph\tkind\thplt\ttekstaro\tlemmas\n" + rootRows.map(([key, e]) => `${key.split(" ")[1]}\t${e.k}\t${e.n.hplt}\t${e.n.tekstaro}\t${e.lemmas}\n`).join(""));
   console.log(`${WORDS_FILE}: ${lines.length - 1} lemmas; ${ROOTS_FILE}: ${roots.size} morphemes`);
   for (const [v, e] of Object.entries(verdicts)) console.log(`  ${v.padEnd(10)} ${String(e.lemmas).padStart(8)} lemmas  hplt ${e.n.hplt}  tekstaro ${e.n.tekstaro}`);
 }
 
-if (import.meta.main) {
+if (isMain(import.meta.url)) {
   const w = opt("--worker");
   if (w !== undefined) await worker(Number(w), Number(opt("--of")));
   else await main();

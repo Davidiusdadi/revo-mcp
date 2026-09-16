@@ -2,16 +2,16 @@
  * Fold the surface forms of each source into lemmas with `lemmaOf`:
  * data/freq/lemmas.<source>.tsv (lemma, count, distinct forms), by count.
  *
- *   bun run scripts/freq/lemmatise.ts [--only hplt|tekstaro]
+ *   tsx scripts/freq/lemmatise.ts [--only hplt|tekstaro]
  */
-import { existsSync } from "fs";
+import { createReadStream, existsSync, writeFileSync } from "fs";
 import { lemmaOf } from "../../src/morph";
-import { formsFile, lemmasFile, SOURCE_NAMES, type SourceName } from "./paths";
+import { formsFile, isMain, lemmasFile, SOURCE_NAMES, type SourceName } from "./paths";
 
 export async function* tsvRows(file: string): AsyncGenerator<string[]> {
   const decoder = new TextDecoder();
   let rest = "";
-  for await (const chunk of Bun.file(file).stream()) {
+  for await (const chunk of createReadStream(file)) {
     rest += decoder.decode(chunk, { stream: true });
     let at: number;
     while ((at = rest.indexOf("\n")) >= 0) {
@@ -38,9 +38,9 @@ async function main() {
       tokens += n;
     }
     const rows = [...lemmas].sort((a, b) => b[1].n - a[1].n || (a[0] < b[0] ? -1 : 1));
-    await Bun.write(lemmasFile(source), rows.map(([l, e]) => `${l}\t${e.n}\t${e.forms}\n`).join(""));
+    writeFileSync(lemmasFile(source), rows.map(([l, e]) => `${l}\t${e.n}\t${e.forms}\n`).join(""));
     console.log(`${source}: ${forms} forms → ${lemmas.size} lemmas (${tokens} tokens) → ${lemmasFile(source)}`);
   }
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta.url)) await main();

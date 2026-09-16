@@ -17,15 +17,15 @@
  * by the article a derived word would go into; unknown words (new roots or not
  * words at all) follow, then the ones that look like names or one site's.
  *
- *   bun run scripts/freq/evidence.ts [--only tekstaro]
+ *   tsx scripts/freq/evidence.ts [--only tekstaro]
  */
 import { readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { lemmaOf } from "../../src/morph";
-import { HPLT_FILE, TEKSTARO_DIR, lines, tekstaroText, words } from "./count-forms";
+import { HPLT_FILE, TEKSTARO_DIR, tekstaroText, words, zstdLines } from "./count-forms";
 import { readCandidates, type Candidate } from "./candidates";
 import { tsvRows } from "./lemmatise";
-import { FREQ, formsFile, SOURCE_NAMES } from "./paths";
+import { FREQ, formsFile, isMain, SOURCE_NAMES } from "./paths";
 
 const EVIDENCE_FILE = join(FREQ, "candidates.evidence.json");
 const REPORT_FILE = join(FREQ, "candidates.md");
@@ -78,7 +78,7 @@ async function main() {
 
   // ---- Tekstaro
   for (const f of readdirSync(TEKSTARO_DIR).filter((f) => f.endsWith(".xml")).sort()) {
-    const xml = await Bun.file(join(TEKSTARO_DIR, f)).text();
+    const xml = readFileSync(join(TEKSTARO_DIR, f), "utf8");
     const head = xml.slice(0, Math.max(0, xml.search(/<text[\s>]/)));
     const nomo = /<TEI[^>]*xml:id="([^"]*)"/.exec(xml)?.[1] ?? f.replace(/\.xml$/, "");
     const title = /<title type="main">([^<]*)<\/title>/.exec(head)?.[1] ?? /<title>([^<]*)<\/title>/.exec(head)?.[1] ?? nomo;
@@ -110,9 +110,8 @@ async function main() {
 
   // ---- web
   if (only !== "tekstaro") {
-    const proc = Bun.spawn(["zstd", "-dc", HPLT_FILE], { stdout: "pipe", stderr: "inherit" });
     let docs = 0;
-    for await (const line of lines(proc.stdout)) {
+    for await (const line of zstdLines(HPLT_FILE)) {
       if (!line) continue;
       const doc = JSON.parse(line) as { text: string; seg_langs?: string[]; u?: string };
       const site = (/^[a-z]+:\/\/([^/:]+)/i.exec(doc.u ?? "")?.[1] ?? "?").toLowerCase().replace(/^www\./, "");
@@ -136,7 +135,6 @@ async function main() {
       }
       if (++docs % 100000 === 0) console.log(`  ${docs} documents`);
     }
-    if ((await proc.exited) !== 0) throw new Error(`zstd exited with ${proc.exitCode}`);
   }
 
   writeFileSync(EVIDENCE_FILE, JSON.stringify(Object.fromEntries(candidates.map((c) => [c.lemma, { ...c, ...ev.get(c.lemma)! }]))));
@@ -204,4 +202,4 @@ function report(candidates: Candidate[], ev: Map<string, Evidence>): string {
   return out.join("\n") + "\n";
 }
 
-if (import.meta.main) await main();
+if (isMain(import.meta.url)) await main();

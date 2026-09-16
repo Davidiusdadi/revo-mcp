@@ -4,40 +4,45 @@
   "description": "MCP server for Reta Vortaro (Esperanto dictionary) lookup",
   "type": "module",
   "license": "GPL-2.0-or-later",
-  "workspaces": [
-    "packages/*"
-  ],
+  "packageManager": "pnpm@11.1.1",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "setup": "bun run src/setup.ts",
-    "start": "bun run src/index.ts",
-    "start:http": "bun run src/http.ts",
-    "test": "bun test",
+    "db:setup": "tsx src/setup.ts",
+    "start": "tsx src/index.ts",
+    "start:http": "tsx src/http.ts",
+    "test": "vitest run",
     "fonto": "sh scripts/fonto.sh",
-    "corpus:entities": "bun run scripts/gen-entities.ts",
-    "corpus:build": "bun run src/corpus/build.ts",
-    "corpus:validate": "bun run scripts/compare-db.ts",
-    "corpus:eval": "bun run scripts/eval-stemming.ts",
-    "corpus:eval-segment": "bun run scripts/eval-segment.ts",
-    "corpus:train-segment": "bun run scripts/train-segment.ts",
-    "freq:fetch": "bun run scripts/freq/fetch.ts",
-    "freq:count": "bun run scripts/freq/count-forms.ts && bun run scripts/freq/lemmatise.ts",
-    "freq:classify": "bun run scripts/freq/classify.ts --workers 8 && bun run scripts/freq/report.ts",
-    "freq:reduce": "bun run scripts/freq/reduce.ts",
-    "freq:candidates": "bun run scripts/freq/candidates.ts && bun run scripts/freq/evidence.ts",
-    "browser:build": "bun run scripts/build-browser-worker.ts",
-    "browser:smoke:build": "bun run scripts/build-browser-smoke.ts",
+    "corpus:entities": "tsx scripts/gen-entities.ts",
+    "corpus:build": "tsx src/corpus/build.ts",
+    "corpus:validate": "tsx scripts/compare-db.ts",
+    "corpus:eval": "tsx scripts/eval-stemming.ts",
+    "corpus:eval-segment": "tsx scripts/eval-segment.ts",
+    "corpus:train-segment": "tsx scripts/train-segment.ts",
+    "freq:fetch": "tsx scripts/freq/fetch.ts",
+    "freq:count": "tsx scripts/freq/count-forms.ts && tsx scripts/freq/lemmatise.ts",
+    "freq:classify": "tsx scripts/freq/classify.ts --workers 8 && tsx scripts/freq/report.ts",
+    "freq:reduce": "tsx scripts/freq/reduce.ts",
+    "freq:candidates": "tsx scripts/freq/candidates.ts && tsx scripts/freq/evidence.ts",
+    "browser:build": "tsx scripts/build-browser-worker.ts",
+    "browser:smoke:build": "tsx scripts/build-browser-smoke.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "~1.27.1",
     "@sqlite.org/sqlite-wasm": "^3.53.4-build1",
     "lru-cache": "^11.5.2",
     "sqlite-wasm-http": "1.2.0",
+    "tsx": "^4.23.13",
     "voko-xml": "workspace:*",
-    "zod": "^3.25.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/bun": "^1.2.0",
-    "typescript": "^7.0.2"
+    "@types/node": "^24.13.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.0.0",
+    "vitest": "^5.0.1"
   }
 }

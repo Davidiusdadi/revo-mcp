@@ -1,9 +1,9 @@
-#!/usr/bin/env bun
 /**
  * A page that starts the dictionary Worker on a database and searches once:
- * `bun run browser:smoke:build [out] [database]`, then serve `out` with range
+ * `pnpm browser:smoke:build [out] [database]`, then serve `out` with range
  * support. `?access=remote` keeps the Worker from storing a local copy.
  */
+import { build } from "esbuild";
 import { copyFile, mkdir, rm, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -17,8 +17,15 @@ for (const [entrypoint, naming] of [
   ["src/browser/worker-entry.ts", "worker-entry.js"],
   ["test/browser/main.ts", "main.js"],
 ] as const) {
-  const result = await Bun.build({ entrypoints: [entrypoint], outdir: output, target: "browser", naming });
-  if (!result.success) throw new AggregateError(result.logs, `Could not build ${entrypoint}`);
+  await build({
+    entryPoints: [entrypoint],
+    outfile: resolve(output, naming),
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    logLevel: "warning",
+  });
 }
 
 await Promise.all([

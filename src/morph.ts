@@ -168,7 +168,7 @@ export function pinFits(word: string, fixed: { at: number; root: string }): bool
   return w.slice(fixed.at, fixed.at + r.length) === r;
 }
 
-// Costs. Measured with `bun run corpus:eval-segment` on the words whose root
+// Costs. Measured with `pnpm corpus:eval-segment` on the words whose root
 // the corpus marks; each term earned its place there, and a term that lowered
 // the score (a bigger length bonus, a penalty on proper-name roots, linking
 // a/e/i) was left out.
@@ -353,8 +353,8 @@ export function readings(word: string, inv: Inventory, fixed?: { at: number; roo
 // the readings that put the marked root in the right place get the most
 // probability (a log-linear model: P(reading) ∝ exp(−score)).
 //
-// To try a feature: add it here, run `bun run corpus:train-segment` (rewrites
-// the weights and prints the tune misses), then `bun run corpus:eval-segment`
+// To try a feature: add it here, run `pnpm corpus:train-segment` (rewrites
+// the weights and prints the tune misses), then `pnpm corpus:eval-segment`
 // (the report third, which training never sees) and compare the stored splits
 // of a rebuilt corpus. A feature the weights file does not name scores 0.
 

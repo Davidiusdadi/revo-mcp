@@ -1,5 +1,5 @@
-#!/usr/bin/env bun
-/** Bundles the dictionary Worker and copies the SQLite wasm it loads from beside it. */
+/** Builds the dictionary Worker into one file and copies the SQLite wasm it loads from beside it. */
+import { build } from "esbuild";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -8,14 +8,19 @@ const outputArg = args[0] === "--out" ? args[1] : args[0];
 if (args[0] === "--out" && !outputArg) throw new Error("--out requires a file path");
 const output = resolve(outputArg ?? "dist/browser/revo-worker.js");
 await mkdir(dirname(output), { recursive: true });
-const result = await Bun.build({
-  entrypoints: ["src/browser/worker-entry.ts"],
-  outdir: dirname(output),
-  naming: output.slice(dirname(output).length + 1),
-  target: "browser",
+// Throws, with the messages already logged, when the build fails. The
+// `new URL("sqlite3.wasm", import.meta.url)` and `new Worker(new URL(…))` in
+// the SQLite packages stay as they are and resolve beside the output at run time.
+await build({
+  entryPoints: ["src/browser/worker-entry.ts"],
+  outfile: output,
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
   minify: true,
-  sourcemap: args.includes("--sourcemap") ? "external" : "none",
+  sourcemap: args.includes("--sourcemap") ? "external" : false,
+  logLevel: "warning",
 });
-if (!result.success) throw new AggregateError(result.logs, "Could not build the ReVo browser Worker");
 await copyFile("node_modules/sqlite-wasm-http/deps/dist/sqlite3.wasm", resolve(dirname(output), "sqlite3.wasm"));
 console.log(output);

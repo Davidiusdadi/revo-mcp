@@ -1,4 +1,5 @@
 /** Where the frequency pipeline keeps its files: data/freq/, git-ignored. */
+import { realpathSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { FREQ_SOURCES, type FreqSource } from "../../src/freq";
@@ -7,6 +8,9 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const FREQ = join(ROOT, "data", "freq");
 export const SOURCES_FILE = join(FREQ, "sources", "SOURCES.json");
 export const DB = join(ROOT, "data", "voko.db");
+
+/** Whether the module at `url` is the script being run, not an import (tsx leaves import.meta.main unset). */
+export const isMain = (url: string): boolean => !!process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(url);
 
 /** The sources the counts come from, in the column order of the counts file. */
 export const SOURCE_NAMES = FREQ_SOURCES;

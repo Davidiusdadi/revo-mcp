@@ -7,10 +7,10 @@
  * something is a confident wrong answer: a misspelling dressed up as a valid
  * derivation, or a "did you mean" nobody has ever written.
  */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "vitest";
 import { closeDb, getDb, glossText } from "../src/db";
 import { classify, inventoryOf, type EoGloss, type SourceGloss } from "../src/gloss";
-import { handleGloss } from "../src/tools/gloss";
+import { executeGloss, glossOutputSchema, handleGloss } from "../src/tools/gloss";
 
 afterAll(() => closeDb());
 
@@ -263,7 +263,7 @@ describe("gloss: Esperanto audit", () => {
 describe("gloss: rendering", () => {
   test("the source glossary names its sections and its caveat", () => {
     const md = handleGloss({ text: "The naked eye.", lang: "en", per_word: 3, max_words: 80 });
-    expect(md).toStartWith("## Glossary: en → eo");
+    expect(md).toMatch(/^## Glossary: en → eo/);
     expect(md).toContain("**Words**");
     expect(md).toContain("okulo");
   });
@@ -275,9 +275,54 @@ describe("gloss: rendering", () => {
       per_word: 4,
       max_words: 120,
     });
-    expect(md).toStartWith("## Esperanto check");
+    expect(md).toMatch(/^## Esperanto check/);
     expect(md.indexOf("**Unknown**")).toBeLessThan(md.indexOf("**In the dictionary**"));
     expect(md).toContain("did you mean **ŝanĝiĝis**");
     expect(md).toContain("kiun oni devas fari");
+  });
+});
+
+describe("gloss: what a reader needs to show a word", () => {
+  const at = (word: string, languages?: string[]) => classify(getDb(), word, inventoryOf(getDb()), languages);
+
+  test("a dictionary word names its entry by mark", () => {
+    expect(at("hundo").mrk).toBe("hund.0o");
+    expect(at("hundojn").mrk).toBe("hund.0o");
+    // an article's own headword is repeated by its first derivation, the marked one
+    expect(at("sana").mrk).toBe("san.0a");
+    expect(at("malsanulejo").mrk).toBe("san.mal0ulejo");
+  });
+
+  test("lists the entry's translations only in the languages asked for", () => {
+    expect(at("hundo").translations).toBeUndefined();
+    const t = at("hundoj", ["de", "en"]);
+    expect(t.verdict).toBe("inflection");
+    expect(t.translations).toContainEqual({ lng: "de", trd: "Hund" });
+    expect(t.translations!.every((x) => x.lng === "de" || x.lng === "en")).toBe(true);
+    expect(at("hundo", []).translations).toEqual([]);
+  });
+
+  test("each part names the entry that explains it", () => {
+    const parts = at("malsanulejo").parts!;
+    expect(parts.find((p) => p.m === "mal")).toMatchObject({ k: "P", mrk: "mal.0" });
+    expect(parts.find((p) => p.m === "san")).toMatchObject({ k: "R", gloss: "sana", mrk: "san.0a" });
+    expect(parts.find((p) => p.m === "ul")?.mrk).toBe("ul.0");
+    // the ending has no article
+    expect(parts.find((p) => p.m === "o")?.mrk).toBeUndefined();
+  });
+
+  test("a word the dictionary lacks has no mark, and its neighbours are still named", () => {
+    const t = at("kunirado");
+    expect(t.verdict).toBe("derived");
+    expect(t.mrk).toBeUndefined();
+    expect(t.parts!.find((p) => p.m === "ir")?.mrk).toBeDefined();
+  });
+
+  test("the structured result is what the tool's schema says", () => {
+    const eoResult = executeGloss({ text: "Hundoj kuras kunirade.", lang: "eo", per_word: 4, max_words: 80, languages: ["de"] });
+    expect(glossOutputSchema.parse(eoResult)).toEqual(eoResult);
+    expect(eoResult.mode === "eo" && eoResult.terms[0].translations?.length).toBeGreaterThan(0);
+    const source = executeGloss({ text: "The dog runs.", lang: "en", per_word: 4, max_words: 80 });
+    expect(glossOutputSchema.parse(source)).toEqual(source);
   });
 });
