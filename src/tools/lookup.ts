@@ -9,7 +9,7 @@ import {
   lookupAllLanguages,
   lookupWildcardCompact,
   searchExamples,
-  hasPass,
+  hasExamples,
 } from "../db";
 import { formatResults, formatWildcardCompact, formatExampleHits } from "../formatter";
 import { hasXSystem, fromXSystem } from "../stemmer";
@@ -93,7 +93,7 @@ export function handleLookup(args: LookupInput): string {
   // Fallback: if the headword chain came up empty for an Esperanto lookup,
   // check whether the word appears inside any example sentence. Catches
   // un-stored compounds (librotenejo), proper nouns, and rare inflections.
-  if (results.length === 0 && lang === "eo" && hasPass("fts")) {
+  if (results.length === 0 && lang === "eo" && hasExamples()) {
     const hits = searchExamples(query, Math.min(limit * 4, 20));
     if (hits.length > 0) {
       return formatExampleHits(hits, query, true);

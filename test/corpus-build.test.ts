@@ -17,7 +17,7 @@ import { buildArticles, CORE_PASSES, PASSES } from "../src/corpus/build";
 import { articleTrees, type ArticleTree } from "../src/corpus/documents";
 import { runPass } from "../src/corpus/pass";
 import { tldOccurrences, tokenGroups } from "../src/corpus/passes/tld-links";
-import { IS_ENTRY, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
+import { IS_ENTRY, trigramMatch, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
 import { classify, inventoryOf } from "../src/gloss";
 
@@ -167,7 +167,7 @@ describe("corpus build", () => {
 
   test("fts tables answer", () => {
     expect(all("SELECT rowid FROM fts_kap WHERE fts_kap MATCH 'abelujo'").length).toBeGreaterThan(0);
-    expect(all("SELECT rowid FROM fts_ekz WHERE fts_ekz MATCH '\"abel\"' LIMIT 3").length).toBeGreaterThan(0);
+    expect(all("SELECT rowid FROM fts_ekz WHERE fts_ekz MATCH ? LIMIT 3", trigramMatch("abel")).length).toBeGreaterThan(0);
     const word = one<{ dif: string }>("SELECT dif FROM fts_dif WHERE length(dif) > 40 LIMIT 1").dif.match(/\p{L}{5,}/u)![0];
     expect(all("SELECT rowid FROM fts_dif WHERE fts_dif MATCH ? LIMIT 3", word).length).toBeGreaterThan(0);
   });
@@ -531,6 +531,11 @@ describe("core stage", () => {
     const hund = classify(core as never, "hundoj", inventoryOf(core as never), ["de"]);
     expect(hund.mrk).toBe("hund.0o");
     expect(hund.translations).toContainEqual({ lng: "de", trd: "Hund" });
+  });
+
+  test("carries the example index, not the full stage's indexes", () => {
+    expect(tables()).toEqual(expect.arrayContaining(["ekzemplo", "fts_ekz"]));
+    for (const t of ["fts_kap", "fts_trd", "fts_ekz_fold", "idx_ekzemplo_drv", "idx_ekzemplo_art"]) expect(tables()).not.toContain(t);
   });
 
   test("the affix table says what each affix means, from the article's first telling definition", () => {

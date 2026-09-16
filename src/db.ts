@@ -20,7 +20,9 @@ import {
   isVokoDb,
   schemaVersionOf,
   hasPass as hasPassIn,
+  hasTable,
   requirePasses,
+  trigramMatch,
   exactRows,
   prefixRows,
   spelled,
@@ -504,17 +506,24 @@ export interface ExampleHit {
   matchedVia: string;
 }
 
+/** Whether the configured database holds the example sentences (the core stage's `examples` pass). */
+export function hasExamples(): boolean {
+  return hasPassIn(getDb(), "examples");
+}
+
 /**
- * Search the pre-built example corpus (fts_ekz) for a word or phrase.
+ * Search the pre-built example corpus for a word or phrase.
  *
  * Uses the trigram tokenizer, so matches are substring-based: 'ema' finds
- * 'manĝema', 'nulejo' finds 'malsanulejo'. Diacritics are folded, so
- * 'songo' finds 'sonĝo' and 'cirkau' finds 'Ĉirkaŭ'. Minimum query length
- * is 3 characters (FTS5 trigram requirement).
+ * 'manĝema', 'nulejo' finds 'malsanulejo'. A full build folds diacritics as
+ * well (fts_ekz_fold), so 'songo' finds 'sonĝo' and 'cirkau' finds 'Ĉirkaŭ';
+ * a core build folds case alone (fts_ekz). Minimum query length is 3
+ * characters (FTS5 trigram requirement).
  */
 export function searchExamples(query: string, limit: number = 20): ExampleHit[] {
   const db = getDb();
-  requirePasses(db, "Example search", ["fts"]);
+  requirePasses(db, "Example search", ["examples"]);
+  const index = hasTable(db, "fts_ekz_fold") ? "fts_ekz_fold" : "fts_ekz";
   // Same normalization as normalizeQuery EXCEPT we preserve leading/trailing
   // whitespace so callers can use " word " as a word-boundary query under the
   // trigram tokenizer (spaces are tokenizable characters).
@@ -524,7 +533,9 @@ export function searchExamples(query: string, limit: number = 20): ExampleHit[] 
   if (normalized.trim().length === 0) return [];
   if (normalized.length < 3) return [];
 
-  const escapedPhrase = normalized.replace(/"/g, '""');
+  // fts_ekz_fold, in a full build, matches the phrase and folds diacritics;
+  // a core build's fts_ekz finds the trigrams, and the text is checked here
+  const folded = index === "fts_ekz_fold";
   const rows = db
     .query<
       {
@@ -537,15 +548,16 @@ export function searchExamples(query: string, limit: number = 20): ExampleHit[] 
       [string, number]
     >(
       `SELECT e.art, e.drv_mrk, e.sense_mrk, e.ekz_md,
-              (SELECT h.txt FROM node n JOIN headword h ON h.id = n.kap_id
-                WHERE n.mrk = e.drv_mrk LIMIT 1) AS headword
-       FROM fts_ekz
-       JOIN ekzemplo e ON e.rowid = fts_ekz.rowid
-       WHERE fts_ekz MATCH ?
+              e.kap AS headword
+       FROM ${index} f
+       JOIN ekzemplo e ON e.rowid = f.rowid
+       WHERE ${index} MATCH ?
        ORDER BY rank
        LIMIT ?`
     )
-    .all(`"${escapedPhrase}"`, limit);
+    .all(folded ? `"${normalized.replace(/"/g, '""')}"` : trigramMatch(normalized), folded ? limit : limit * 2 + 20)
+    .filter((row) => folded || row.ekz_md.toLowerCase().includes(normalized))
+    .slice(0, limit);
 
   return rows.map((r) => ({
     art: r.art,

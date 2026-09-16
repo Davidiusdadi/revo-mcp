@@ -15,11 +15,14 @@ const INDEXES = [
   "CREATE INDEX IF NOT EXISTS idx_node_parent ON node(parent_id)",
   // gloss matches COALESCE(ind, txt) case-insensitively within one language
   "CREATE INDEX IF NOT EXISTS idx_translation_lng_key ON translation(lng, COALESCE(ind, txt) COLLATE NOCASE)",
+  // the examples of an entry or an article by mark, for the server's example search
+  "CREATE INDEX IF NOT EXISTS idx_ekzemplo_drv ON ekzemplo(drv_mrk)",
+  "CREATE INDEX IF NOT EXISTS idx_ekzemplo_art ON ekzemplo(art)",
 ];
 
 export const indexPass: Pass = {
   name: "index",
-  version: 3,
+  version: 4,
   tables: [],
   run(db, log) {
     for (const sql of INDEXES) db.run(sql);

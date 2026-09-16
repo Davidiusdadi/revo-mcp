@@ -3,7 +3,7 @@
  * src/corpus/documents.ts), then the passes of the requested stage.
  *
  *   pnpm corpus:build                    full rebuild: core + enrichment passes
- *   pnpm corpus:build --stage core       articles + structure + search + morph, what a browser downloads
+ *   pnpm corpus:build --stage core       articles + structure + search + morph + examples, what a browser downloads
  *   pnpm corpus:build --pass fts         run one pass on the existing DB
  *   pnpm corpus:build --limit 200        dev: first N articles only
  *   pnpm corpus:build --overlay DIR      merge that directory instead of corpus/overlay
@@ -43,14 +43,20 @@ import { refsPass } from "./passes/refs";
 import { morphPass, splitsPass } from "./passes/morph";
 import { freqPass, freqPassFor } from "./passes/freq";
 import { usagePass, usagePassFor } from "./passes/usage";
+import { examplesPass } from "./passes/examples";
 import { ROOT, VENDOR, FONTO, GRUNDO, corpusArticles } from "./sources";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
 export type Stage = "core" | "full";
-/** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology and usage counts a gloss reads. */
-export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass, usagePass];
+/**
+ * What every runtime needs: nodes, headwords and translations, the search
+ * tables over them, the morphology and usage counts a gloss reads, the
+ * morphology a word family reads, and the example sentences with the indexes
+ * that find a word in them.
+ */
+export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass, usagePass, examplesPass];
 /** Enrichment for the server's other tools, the indexes they read through, the stored splits, and usage counts. */
 export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, splitsPass, freqPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
@@ -209,6 +215,10 @@ function main() {
     const pass = PASSES.find((p) => p.name === only);
     if (!pass) throw new Error(`no such pass: ${only} (have ${PASSES.map((p) => p.name).join(", ")})`);
     runPass(db, withFreq(pass));
+    // the tables it replaced took the indexes and the folded index over them along
+    if (pass === examplesPass && db.query("SELECT 1 FROM meta_pass WHERE pass = 'fts'").get()) {
+      console.warn("examples rebuilt: run --pass index and --pass fts again, which index its table");
+    }
     // a core file that has been given every enrichment pass is a full one
     const ran = new Set(db.query<{ pass: string }, []>("SELECT pass FROM meta_pass").all().map((r) => r.pass));
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('stage', ?)", [PASSES.every((p) => ran.has(p.name)) ? "full" : "core"]);

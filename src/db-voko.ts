@@ -70,6 +70,32 @@ export function hasPass(db: SqlReader, name: string): boolean {
   return passes.has(name);
 }
 
+const tablesByDb = new WeakMap<SqlReader, Set<string>>();
+
+/** Whether the database has a table (or virtual table) of this name. */
+export function hasTable(db: SqlReader, name: string): boolean {
+  let tables = tablesByDb.get(db);
+  if (!tables) {
+    tables = new Set(db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name));
+    tablesByDb.set(db, tables);
+  }
+  return tables.has(name);
+}
+
+/**
+ * An FTS5 query for a text anywhere in `fts_ekz`: its trigrams, all of them.
+ * The index keeps no positions (detail=none, half its size), so it cannot
+ * match a phrase; what it finds holds every trigram and holds the text itself
+ * nearly always, which a reader checks.
+ */
+export function trigramMatch(text: string): string {
+  const chars = [...text];
+  const quote = (t: string) => `"${t.replace(/"/g, '""')}"`;
+  if (chars.length <= 3) return quote(text);
+  const trigrams = new Set(chars.slice(0, -2).map((_, i) => chars.slice(i, i + 3).join("")));
+  return `(${[...trigrams].map(quote).join(" AND ")})`;
+}
+
 /** Refuses a read the database cannot answer, naming what it lacks. */
 export function requirePasses(db: SqlReader, what: string, passes: string[]): void {
   const missing = passes.filter((pass) => !hasPass(db, pass));

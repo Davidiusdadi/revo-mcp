@@ -19,6 +19,12 @@ describe("searchExamples", () => {
     expect(hits[0].ekzMd).toContain("Mohéli");
   });
 
+  test("folds diacritics on a full build: 'songo' finds sonĝo", () => {
+    const hits = searchExamples("songo", 5);
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].ekzMd.toLowerCase()).toContain("sonĝo");
+  });
+
   test("empty query returns no results", () => {
     expect(searchExamples("", 10)).toEqual([]);
   });
