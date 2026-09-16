@@ -9,6 +9,7 @@ import { searchPass } from "../src/corpus/passes/search";
 import { structurePass } from "../src/corpus/passes/structure";
 import { getDb } from "../src/db";
 import { searchDefinitions, thesaurusOf } from "../src/db-voko";
+import { familyOf } from "../src/family";
 import { searchDictionary } from "../src/search";
 import type { SqlReader } from "../src/sql";
 import { executeEntry, type SearchInput } from "../src/tools/search";
@@ -284,5 +285,9 @@ ${drvs.join("\n")}
     expect(() => thesaurusOf(db, "mano")).toThrow(
       "The thesaurus needs the refs, index passes, which this database was built without (a core build).");
     expect(() => searchDefinitions(db, "mano")).toThrow("Reverse lookup needs the fts pass");
+  });
+
+  test("a database built without word families says they are not available", () => {
+    expect(familyOf(db, "man.0o")).toMatchObject({ available: false, entry: { headword: "mano", mrk: "man.0o" }, families: [] });
   });
 });

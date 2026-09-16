@@ -19,6 +19,7 @@ import { runPass } from "../src/corpus/pass";
 import { tldOccurrences, tokenGroups } from "../src/corpus/passes/tld-links";
 import { IS_ENTRY, trigramMatch, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
 import { lemmaCandidates, parseSpans } from "../src/morph";
+import { familyOf } from "../src/family";
 import { classify, inventoryOf } from "../src/gloss";
 
 let dir: string;
@@ -579,6 +580,41 @@ describe("core stage", () => {
   test("carries the word families and the example index, not the full stage's indexes", () => {
     expect(tables()).toEqual(expect.arrayContaining(["x_family", "idx_x_family_node", "ekzemplo", "fts_ekz"]));
     for (const t of ["fts_kap", "fts_trd", "fts_ekz_fold", "idx_ekzemplo_drv", "idx_ekzemplo_art"]) expect(tables()).not.toContain(t);
+  });
+
+  test("an entry's families: a root of its headword each, its own article's first", () => {
+    const out = familyOf(core as never, "hund.cxas0o", { languages: ["de"] });
+    expect(out.available).toBe(true);
+    expect(out.entry).toMatchObject({ headword: "ĉashundo", tilde: "ĉas~o", article: "hund", articleRoot: "hund" });
+    expect(out.families.map((f) => [f.root, f.own])).toEqual([["hund", true], ["ĉas", false]]);
+    const [hund, cxas] = out.families;
+    expect(hund.articles).toEqual([{ article: "hund", rad: "hund" }]);
+    // the root's own noun and adjective first, then alphabetically
+    expect(hund.members.slice(0, 2).map((m) => m.headword)).toEqual(["hundo", "hunda"]);
+    expect(hund.members.find((m) => m.headword === "hundherbo")).toMatchObject({ article: "herb", articleRoot: "herb", tilde: "hund~o" });
+    expect(cxas.members.map((m) => m.headword)).toContain("ĉashundo");
+    // counts are the listed members translated, in the asked languages only
+    for (const family of out.families) {
+      const withDe = family.members.filter((m) => out.translations[m.mrk].some((t) => t.lng === "de")).length;
+      expect(family.translated).toEqual(withDe ? [{ language: "de", count: withDe }] : []);
+      expect(family.entries).toBe(family.members.length);
+    }
+    expect(Object.values(out.translations).flat().every((t) => t.lng === "de")).toBe(true);
+    expect(() => familyOf(core as never, "hund.nenio0o")).toThrow("No dictionary entry has the mark hund.nenio0o.");
+  });
+
+  test("a large family comes in pages that continue its order", () => {
+    const whole = familyOf(core as never, "ul.0o", { only: "ul" }).families[0];
+    expect(whole).toMatchObject({ root: "ul", affix: "S", own: true, offset: 0 });
+    expect(whole.entries).toBeGreaterThan(4);
+    const first = familyOf(core as never, "ul.0o", { limit: 2 }).families[0];
+    expect(first.members.length).toBe(2);
+    expect(first.entries).toBe(whole.entries);
+    const rest = familyOf(core as never, "ul.0o", { only: "ul", offset: 2, limit: whole.entries }).families;
+    expect(rest).toHaveLength(1);
+    expect(rest[0].offset).toBe(2);
+    expect([...first.members, ...rest[0].members].map((m) => m.mrk)).toEqual(whole.members.map((m) => m.mrk));
+    expect(new Set(whole.members.map((m) => m.mrk)).size).toBe(whole.entries);
   });
 
   test("the affix table says what each affix means, from the article's first telling definition", () => {
