@@ -5,6 +5,8 @@
  * - `lemmaCandidates` lists the dictionary forms a word can be an inflection
  *   of. The ending decides, so "belan" looks for "bela" before "belo" — unlike
  *   stemmer.ts's `generateStems`, which tries every shorter string.
+ * - `lemmaOf` picks the one dictionary form a frequency count files a word
+ *   under: the inflection removed, nothing else.
  * - `segment` splits a word into prefixes, roots, suffixes and ending, using a
  *   morpheme inventory (the `morph` pass builds it from the corpus: article
  *   roots, affix articles, endingless words). A known root position (from a
@@ -22,6 +24,21 @@ export interface Candidate {
 /** Other word classes of the same stem, most likely first (rapide → rapida before rapido). */
 const CLASS_ORDER: Record<string, string> = { o: "aie", a: "oie", e: "aoi", i: "oae" };
 
+// the inflections, on a stem of at least two letters
+const NOMINAL_INFL = /^(.{2,})([oa])(jn|j|n)$/;
+const ADVERB_INFL = /^(.{2,})en$/;
+const VERB_INFL = /^(.{2,})(as|is|os|us|u)$/;
+/** Pronouns: they take -n (and ili -j-less), and are their own lemma. */
+const PRONOUN = /^(mi|vi|li|ŝi|ĝi|ni|ili|oni|si|ci)(n)?$/;
+/**
+ * Endingless words of closed classes that look inflected (tamen → tame,
+ * plu → pli, unu → uni): numerals and particles; they are their own lemma.
+ */
+const INVARIABLE: ReadonlySet<string> = new Set([
+  "unu", "du", "tri", "kvar", "kvin", "ses", "sep", "ok", "naŭ", "dek", "cent", "mil",
+  "plu", "plus", "minus", "ĵus", "tamen", "amen", "ambaŭ",
+]);
+
 export function lemmaCandidates(word: string): Candidate[] {
   const w = word.toLowerCase();
   const infl: string[] = [];
@@ -31,9 +48,9 @@ export function lemmaCandidates(word: string): Candidate[] {
   let vowel = "o";
   let m: RegExpExecArray | null;
 
-  if ((m = /^(.{2,})([oa])(jn|j|n)$/.exec(w))) { infl.push(m[1] + m[2]); [stem, vowel] = [m[1], m[2]]; }
-  else if ((m = /^(.{2,})en$/.exec(w))) { infl.push(m[1] + "e"); [stem, vowel] = [m[1], "e"]; }
-  else if ((m = /^(.{2,})(as|is|os|us|u)$/.exec(w))) { infl.push(m[1] + "i"); [stem, vowel] = [m[1], "i"]; }
+  if ((m = NOMINAL_INFL.exec(w))) { infl.push(m[1] + m[2]); [stem, vowel] = [m[1], m[2]]; }
+  else if ((m = ADVERB_INFL.exec(w))) { infl.push(m[1] + "e"); [stem, vowel] = [m[1], "e"]; }
+  else if ((m = VERB_INFL.exec(w))) { infl.push(m[1] + "i"); [stem, vowel] = [m[1], "i"]; }
   else if ((m = /^(.{2,})([oaie])$/.exec(w))) [stem, vowel] = [m[1], m[2]];
   // pronouns and correlatives: min, kiun, tiujn
   if ((m = /^(.+?)(jn|j|n)$/.exec(w))) infl.push(m[1]);
@@ -58,6 +75,25 @@ export function lemmaCandidates(word: string): Candidate[] {
   cls.forEach(add("class"));
   ptcp.forEach(add("ptcp"));
   return out;
+}
+
+/**
+ * The one dictionary form a word is filed under: malsanulejojn → malsanulejo,
+ * parolis → paroli, hejmen → hejme, kiujn → kiu, min → mi. A participle keeps
+ * its own form (manĝantaj → manĝanta), an endingless word is left alone
+ * (la, tamen, unu, plu), and so is anything without a recognisable ending.
+ * Lowercases. Deterministic and lexicon-free, so a count and a lookup agree.
+ */
+export function lemmaOf(word: string): string {
+  const w = word.toLowerCase();
+  let m: RegExpExecArray | null;
+  if (INVARIABLE.has(w)) return w;
+  if ((m = PRONOUN.exec(w))) return m[1];
+  if ((m = CORRELATIVE.exec(w))) return m[1] + m[2];
+  if ((m = NOMINAL_INFL.exec(w))) return m[1] + m[2];
+  if ((m = ADVERB_INFL.exec(w))) return m[1] + "e";
+  if ((m = VERB_INFL.exec(w))) return m[1] + "i";
+  return w;
 }
 
 // ---- segmentation ----------------------------------------------------------

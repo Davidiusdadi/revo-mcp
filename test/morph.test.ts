@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { lemmaCandidates, segment, readings, formatSegments, type Inventory, type Morph } from "../src/morph";
+import { lemmaCandidates, lemmaOf, segment, readings, formatSegments, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
@@ -19,6 +19,21 @@ describe("lemmaCandidates", () => {
     expect(lemmas("kiun")).toContain("kiu");
     expect(lemmas("tiujn")).toContain("tiu");
     expect(lemmas("min")).toContain("mi");
+  });
+
+  test("lemmaOf picks one form: the inflection removed, nothing else", () => {
+    expect(lemmaOf("malsanulejojn")).toBe("malsanulejo");
+    expect(lemmaOf("Malsanulejoj")).toBe("malsanulejo");
+    expect(lemmaOf("grandan")).toBe("granda");
+    for (const f of ["parolas", "parolis", "parolos", "parolus", "parolu"]) expect(lemmaOf(f)).toBe("paroli");
+    expect(lemmaOf("hejmen")).toBe("hejme");
+    expect(lemmaOf("kiujn")).toBe("kiu");
+    expect(lemmaOf("ĉion")).toBe("ĉio");
+    expect(lemmaOf("min")).toBe("mi");
+    expect(lemmaOf("ilin")).toBe("ili");
+    expect(lemmaOf("manĝantaj")).toBe("manĝanta"); // the participle, not the verb
+    expect(lemmaOf("rapide")).toBe("rapide"); // no class change
+    for (const w of ["la", "tamen", "unu", "plu", "ĵus", "ĉu", "du", "sen", "hodiaŭ", "ĝis"]) expect(lemmaOf(w)).toBe(w);
   });
 
   test("plural headwords are reachable from the accusative", () => {
