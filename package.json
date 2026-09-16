@@ -19,6 +19,10 @@
     "corpus:eval": "bun run scripts/eval-stemming.ts",
     "corpus:eval-segment": "bun run scripts/eval-segment.ts",
     "corpus:train-segment": "bun run scripts/train-segment.ts",
+    "freq:fetch": "bun run scripts/freq/fetch.ts",
+    "freq:count": "bun run scripts/freq/count-forms.ts && bun run scripts/freq/lemmatise.ts",
+    "freq:classify": "bun run scripts/freq/classify.ts --workers 8 && bun run scripts/freq/report.ts",
+    "freq:reduce": "bun run scripts/freq/reduce.ts",
     "browser:build": "bun run scripts/build-browser-worker.ts",
     "browser:smoke:build": "bun run scripts/build-browser-smoke.ts",
     "check": "tsc --noEmit"
