@@ -15,8 +15,8 @@
  * seen a relative of.
  */
 import type { Database } from "bun:sqlite";
-import { segment, ENDINGS, type Inventory } from "../src/morph";
-import { Pairs, wordClasses } from "../src/corpus/passes/morph";
+import { segment, ENDINGS, type Inventory, type WordClass } from "../src/morph";
+import { Pairs } from "../src/corpus/passes/morph";
 
 export type Part = "evidence" | "tune" | "report";
 export interface Case {
@@ -35,12 +35,15 @@ export const foldOf = (word: string): number => Number(Bun.hash("f" + stemOf(wor
 
 export function segmentCases(db: Database): { inv: Inventory; all: Case[]; pairs: Pairs } {
   const rootWeight = new Map<string, number>();
-  const inv: Inventory = { roots: new Set(), prefixes: new Set(), suffixes: new Set(), words: new Set(), rootWeight, classes: wordClasses(db) };
-  for (const r of db.query<{ morph: string; kind: string; drv: number }, []>(
-    "SELECT morph, kind, SUM(drv) drv FROM x_morpheme GROUP BY morph, kind").iterate()) {
+  const classes = new Map<string, WordClass>();
+  const inv: Inventory = { roots: new Set(), prefixes: new Set(), suffixes: new Set(), words: new Set(), rootWeight, classes };
+  for (const r of db.query<{ morph: string; kind: string; drv: number; o: number; a: number; e: number; i: number }, []>(
+    `SELECT morph, kind, SUM(drv) drv, SUM(o) o, SUM(a) a, SUM(e) e, SUM(i) i FROM x_morpheme GROUP BY morph, kind`).iterate()) {
     const set = { R: inv.roots, P: inv.prefixes, S: inv.suffixes, W: inv.words }[r.kind] as Set<string> | undefined;
     set?.add(r.morph);
-    if (r.kind === "R") rootWeight.set(r.morph, r.drv);
+    if (r.kind !== "R") continue;
+    rootWeight.set(r.morph, r.drv);
+    classes.set(r.morph, { o: r.o, a: r.a, e: r.e, i: r.i });
   }
   const affixy = (rad: string) => inv.prefixes.has(rad) || inv.suffixes.has(rad) || ENDINGS.has(rad) || rad === "j" || rad === "n";
 

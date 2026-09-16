@@ -4,34 +4,31 @@
  * "malsanulejo" = "mal" + "san" + "ulejo". These are author-marked form→root
  * links, the attested half of the morphology `morph` builds on.
  *
- * Owner = the innermost element with its own L2 row (kap, dif, ekz, rim, trd,
- * ref, bld), else the structural node. Rows are matched to elements by
- * replaying build.ts's traversal (nodes in document order, each node's own
- * content preorder); every owner is checked against its row's stored `xml`.
+ * Owner = the innermost kap, dif, ekz, rim, trd, ref or bld around the tilde,
+ * else the structural node; `owner_id` is that element's id.
  */
-import type { Database } from "bun:sqlite";
 import {
-  parse, articleOf, rootsOf, nodes, expandTld, outerXml, NODE_KIND_SET,
+  expandTld, NODE_KIND_SET,
   type Element, type Node, type Roots,
 } from "voko-xml";
 import type { Pass } from "../pass";
+import { idOf } from "../../articles";
+import { articleTrees } from "../documents";
 
-const OWNERS = ["kap", "dif", "ekz", "rim", "trd", "ref", "bld"] as const;
-type Owner = (typeof OWNERS)[number];
-const OWNER_SET: ReadonlySet<string> = new Set(OWNERS);
+const OWNER_SET: ReadonlySet<string> = new Set(["kap", "dif", "ekz", "rim", "trd", "ref", "bld"]);
 
 export const tldLinksPass: Pass = {
   name: "tld-links",
-  version: 1,
+  version: 2,
   tables: ["x_tld_occ"],
   run(db, log) {
     db.run(`
       CREATE TABLE x_tld_occ (
         id         INTEGER PRIMARY KEY,
-        art_id     INTEGER NOT NULL,
+        article_id INTEGER NOT NULL,
         node_id    INTEGER NOT NULL,   -- nearest structural node
         owner_kind TEXT NOT NULL,      -- kap | dif | ekz | rim | trd | ref | bld | node
-        owner_id   INTEGER NOT NULL,
+        owner_id   INTEGER NOT NULL,   -- the owner element's id
         ord        INTEGER NOT NULL,   -- nth <tld/> within the owner
         rad        TEXT NOT NULL,      -- what the tilde stands for, lit applied
         var        TEXT,
@@ -41,75 +38,41 @@ export const tldLinksPass: Pass = {
         token      TEXT NOT NULL,      -- pre + rad + post
         norm       TEXT NOT NULL       -- token, lowercased
       )`);
-
-    const nodeByKey = new Map<string, number>();
-    for (const r of db.query<{ id: number; key: string }, []>("SELECT id, key FROM node").iterate()) {
-      nodeByKey.set(r.key, r.id);
-    }
-    const rowsOf = rowRanges(db);
-    const xmlOf = new Map(OWNERS.map((t) => [t, db.query<{ xml: string }, [number]>(`SELECT xml FROM ${t} WHERE id = ?`)]));
     const ins = db.prepare(
-      `INSERT INTO x_tld_occ (art_id, node_id, owner_kind, owner_id, ord, rad, var, lit, pre, post, token, norm)
+      `INSERT INTO x_tld_occ (article_id, node_id, owner_kind, owner_id, ord, rad, var, lit, pre, post, token, norm)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
     );
 
     let rows = 0;
     const byOwner: Record<string, number> = {};
-    for (const a of db.query<{ id: number; file: string; xml: string }, []>("SELECT id, file, xml FROM art ORDER BY id").iterate()) {
-      const art = articleOf(parse(a.xml, a.file));
-      const roots = rootsOf(art);
-      const used: Partial<Record<Owner, number>> = {};
-      const tldOrd = new Map<string, number>();
-      const checked = new Set<string>();
-
-      const rowOf = (t: Owner): number => {
-        const i = (used[t] = (used[t] ?? 0) + 1) - 1;
-        const range = rowsOf.get(t)!.get(a.id);
-        if (!range || i >= range.n) throw new Error(`${a.file}: more <${t}> elements than ${t} rows`);
-        return range.first + i;
-      };
-
-      const walk = (el: Element, nodeId: number, kind: string, ownerId: number, ownerEl: Element | null): void => {
+    for (const { article, roots, nodes } of articleTrees(db)) {
+      const tldOrd = new Map<number, number>();
+      // each node's own content in document order; the nodes nested in it are walked as nodes
+      const walk = (el: Element, nodeId: number, kind: string, ownerId: number): void => {
         for (const c of el.children) {
           if (c.type !== "element" || NODE_KIND_SET.has(c.name)) continue;
           if (OWNER_SET.has(c.name)) {
-            walk(c, nodeId, c.name, rowOf(c.name as Owner), c);
+            walk(c, nodeId, c.name, idOf(c)!);
             continue;
           }
           if (c.name !== "tld") {
-            walk(c, nodeId, kind, ownerId, ownerEl);
+            walk(c, nodeId, kind, ownerId);
             continue;
           }
-          const k = `${kind}:${ownerId}`;
-          if (ownerEl && !checked.has(k)) {
-            checked.add(k);
-            if (xmlOf.get(kind as Owner)!.get(ownerId)?.xml !== outerXml(ownerEl)) {
-              throw new Error(`${a.file}: <${kind}> matched to row ${ownerId}, but the row's xml differs`);
-            }
-          }
-          const ord = tldOrd.get(k) ?? 0;
-          tldOrd.set(k, ord + 1);
+          const ord = tldOrd.get(ownerId) ?? 0;
+          tldOrd.set(ownerId, ord + 1);
           const sib = c.parent!.children;
           const i = sib.indexOf(c);
           const pre = glued(sib, i, -1, roots);
           const post = glued(sib, i, 1, roots);
           const rad = expandTld(c, roots);
           const token = pre + rad + post;
-          ins.run(a.id, nodeId, kind, ownerId, ord, rad, c.attrs.var ?? null, c.attrs.lit ?? null, pre, post, token, token.toLowerCase());
+          ins.run(article.id, nodeId, kind, ownerId, ord, rad, c.attrs.var ?? null, c.attrs.lit ?? null, pre, post, token, token.toLowerCase());
           byOwner[kind] = (byOwner[kind] ?? 0) + 1;
           rows++;
         }
       };
-
-      for (const n of nodes(art, a.file)) {
-        const nodeId = nodeByKey.get(n.key);
-        if (nodeId === undefined) throw new Error(`${a.file}: no node row for ${n.key}`);
-        walk(n.el, nodeId, "node", nodeId, null);
-      }
-      for (const t of OWNERS) {
-        const want = rowsOf.get(t)!.get(a.id)?.n ?? 0;
-        if ((used[t] ?? 0) !== want) throw new Error(`${a.file}: ${used[t] ?? 0} <${t}> elements vs ${want} rows`);
-      }
+      for (const n of nodes) walk(n.el, idOf(n.el)!, "node", idOf(n.el)!);
     }
 
     db.run(`CREATE INDEX idx_x_tld_occ_norm ON x_tld_occ(norm)`);
@@ -122,22 +85,6 @@ export const tldLinksPass: Pass = {
     return rows;
   },
 };
-
-/** First row id and row count per article for each owner table (build writes an article's rows contiguously). */
-function rowRanges(db: Database): Map<Owner, Map<number, { first: number; n: number }>> {
-  const out = new Map<Owner, Map<number, { first: number; n: number }>>();
-  for (const t of OWNERS) {
-    const m = new Map<number, { first: number; n: number }>();
-    for (const r of db.query<{ art_id: number; first: number; last: number; n: number }, []>(
-      `SELECT n.art_id, MIN(t.id) first, MAX(t.id) last, COUNT(*) n FROM ${t} t JOIN node n ON n.id = t.node_id GROUP BY n.art_id`
-    ).iterate()) {
-      if (r.last - r.first + 1 !== r.n) throw new Error(`${t} rows of article ${r.art_id} are not contiguous`);
-      m.set(r.art_id, { first: r.first, n: r.n });
-    }
-    out.set(t, m);
-  }
-  return out;
-}
 
 const LEADING = /^[\p{L}\p{M}]*/u;
 const TRAILING = /[\p{L}\p{M}]*$/u;

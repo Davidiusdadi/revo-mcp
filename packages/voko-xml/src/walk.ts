@@ -6,7 +6,7 @@
 import {
   type Document, type Element, type Node,
   childElements, firstChild, descendants, ancestor,
-} from "./dom";
+} from "./tree";
 import { ELEMENT_SET, ATTRIBUTES, NODE_KIND_SET, type NodeKind } from "./model";
 
 // ---- article + roots ------------------------------------------------------

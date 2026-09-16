@@ -1,26 +1,46 @@
 /**
  * Reads that go at the XML-built schema directly (data/voko.db).
  *
- * Most of db.ts's lookup cascade runs on the compat views in
- * src/corpus/schema.sql, which answer its nodo/var/traduko/referenco queries.
- * What a view can't express lives here: senses assembled from the node/dif/ekz
- * tree, and the L3 enrichment reads at the bottom of the file.
+ * Words are found through the search pass's `serĉo` rows, clustered by
+ * language and folded form. An entry is a derivation with a mark; ids are
+ * document order, so everything under it is the one range id..last_id in
+ * every table. Its translations are one range of `translation`; its senses,
+ * references and domains are read off the derivation itself, rebuilt from the
+ * stored articles (articles.ts readRange) and read the way the build reads it
+ * (content.ts). The enrichment reads at the bottom of the file need passes a
+ * core database is built without; hasPass tells them apart.
  */
 
-import type { Database } from "bun:sqlite";
+import type { SqlReader } from "./sql";
+import type { Element, Roots } from "voko-xml/view";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
+import { inMask, maskOf, readRange, storedTablesOf } from "./articles";
+import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry } from "./content";
 
-/** One sense of a derivation, as `lookup` renders it under a headword. */
-export interface SenseEntry {
-  mrk?: string;
-  num?: string;
-  definition: string;
-  examples: string[];
-  domain?: string;
+export type { SenseEntry } from "./content";
+
+/** Version 3: the articles stored whole, one table per element; node, headword and translation derived. */
+export const SCHEMA_VERSION = 3;
+
+export interface LookupResult {
+  headword: string;
+  article: string;
+  mrk: string;
+  senses: {
+    num?: string;
+    definition: string;
+    examples: string[];
+    domain?: string;
+  }[];
+  translations: { lng: string; trd: string }[];
+  crossRefs: { target: string; type: string; targetKap?: string }[];
+  usageDomains: string[];
+  matchedVia?: string; // How the result was found (e.g., "stem:amik", "translation:en:friend")
+  matchKind?: "exact" | "fts" | "partial";
 }
 
-export function isVokoDb(db: Database): boolean {
+export function isVokoDb(db: SqlReader): boolean {
   try {
     const row = db
       .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema'")
@@ -31,11 +51,228 @@ export function isVokoDb(db: Database): boolean {
   }
 }
 
-interface SenseNode {
+export function schemaVersionOf(db: SqlReader): number {
+  const row = db
+    .query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'schema_version'")
+    .get();
+  return Number(row?.value ?? 1);
+}
+
+const passesByDb = new WeakMap<SqlReader, Set<string>>();
+
+/** Whether the database was built with a pass (meta_pass); a core database has only `structure` and `search`. */
+export function hasPass(db: SqlReader, name: string): boolean {
+  let passes = passesByDb.get(db);
+  if (!passes) {
+    passes = new Set(db.query<{ pass: string }, []>("SELECT pass FROM meta_pass").all().map((r) => r.pass));
+    passesByDb.set(db, passes);
+  }
+  return passes.has(name);
+}
+
+/** Refuses a read the database cannot answer, naming what it lacks. */
+export function requirePasses(db: SqlReader, what: string, passes: string[]): void {
+  const missing = passes.filter((pass) => !hasPass(db, pass));
+  if (missing.length === 0) return;
+  throw new Error(
+    `${what} needs the ${missing.join(", ")} pass${missing.length > 1 ? "es" : ""}, which this database ` +
+      "was built without (a core build). Build the full stage with `bun run corpus:build`.",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Search rows
+// ---------------------------------------------------------------------------
+
+export interface SearchRow {
+  /** the folded form (normalizeQuery) the row is filed under */
+  norm: string;
+  /** place among the language's rows: form, direct before filed, headword */
+  ord: number;
+  /** the entry's derivation node */
+  nid: number;
+  /** as written, when that is not norm; a filed translation's whole expression */
+  txt: string | null;
+  /** 1 when the row is only filed under norm: a translation's <ind>, a headword's variant */
+  ind: number | null;
+  /** the entry's usage domains, space-separated */
+  fak: string | null;
+}
+
+const SEARCH_ROW = "SELECT norm, ord, nid, txt, ind, fak FROM serĉo";
+
+/** A language's rows filed under exactly this form, in their order. */
+export function exactRows(db: SqlReader, lng: string, norm: string): SearchRow[] {
+  return db.query<SearchRow, [string, string]>(`${SEARCH_ROW} WHERE lng = ? AND norm = ? ORDER BY ord`).all(lng, norm);
+}
+
+/**
+ * A language's rows whose form starts with the prefix: one contiguous range of
+ * the table. U+10FFFF sorts after every character a form continues with.
+ */
+export function prefixRows(db: SqlReader, lng: string, prefix: string): SearchRow[] {
+  return db
+    .query<SearchRow, [string, string, string]>(`${SEARCH_ROW} WHERE lng = ? AND norm >= ? AND norm < ?`)
+    .all(lng, prefix, `${prefix}\u{10FFFF}`)
+    .sort((a, b) => a.ord - b.ord);
+}
+
+/** The spelling a row stands for: as written, else its folded form. */
+export function spelled(row: { norm: string; txt: string | null }): string {
+  return row.txt ?? row.norm;
+}
+
+/** The index form as ReVo wrote it inside a filed translation, when it is there. */
+export function indexForm(key: string, expression: string | null): string {
+  const lower = expression?.toLowerCase();
+  const start = lower?.indexOf(key) ?? -1;
+  return start >= 0 && lower!.length === expression!.length ? expression!.slice(start, start + key.length) : key;
+}
+
+// ---------------------------------------------------------------------------
+// Entries
+// ---------------------------------------------------------------------------
+
+/** The derivation node an entry is, with what names it and what reading it back needs. */
+export interface EntryNode {
   id: number;
-  parent_id: number;
-  kind: string;
-  mrk: string | null;
+  last_id: number;
+  mrk: string;
+  headword: string;
+  article: string;
+  /** the tables with rows in id..last_id */
+  mask: Uint8Array;
+  article_id: number;
+  /** the article's main root */
+  rad: string;
+}
+
+const ENTRY_NODE = `SELECT n.id, n.last_id, n.mrk, h.txt AS headword, a.file AS article, n.mask, a.id AS article_id, a.rad
+  FROM node n JOIN headword h ON h.id = n.kap_id JOIN article a ON a.id = n.article_id`;
+/** An entry's node: a derivation whose mark has exactly one dot ("hund.0o"). */
+export const IS_ENTRY = "n.kind = 'drv' AND instr(n.mrk, '.') > 0 AND n.mrk NOT GLOB '*.*.*'";
+
+export function entryNodesById(db: SqlReader, ids: number[]): Map<number, EntryNode> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return new Map();
+  const rows = db
+    .query<EntryNode, number[]>(`${ENTRY_NODE} WHERE n.id IN (${unique.map(() => "?").join(",")})`)
+    .all(...unique);
+  return new Map(rows.map((row) => [row.id, row]));
+}
+
+/** The entry a mark names; a sense's mark ("amik.0o.KOMUNE") names its derivation's. */
+export function entryNodeByMark(db: SqlReader, mark: string): EntryNode | null {
+  const drv = mark.split(".").slice(0, 2).join(".");
+  return db.query<EntryNode, [string]>(`${ENTRY_NODE} WHERE n.mrk = ? AND ${IS_ENTRY} LIMIT 1`).get(drv);
+}
+
+export interface EntryOptions {
+  /** "summary": what a result card shows, without senses and references */
+  detail?: "full" | "summary";
+  /** the translation languages to include; all of them when omitted */
+  languages?: string[];
+  /** usage domains already known, as the search rows carry them */
+  domains?: string[];
+}
+
+/**
+ * An entry's translations outside examples, by language: the derivation's own
+ * first, then its senses' in reading order. `trd` is the index form when the
+ * translation is filed under one, as upstream lists it.
+ */
+export function translationsOf(
+  db: SqlReader,
+  node: { id: number; last_id: number },
+  languages?: string[],
+): { lng: string; trd: string }[] {
+  if (languages?.length === 0) return [];
+  // `+lng`: the entry's range is the narrow index; a full build's
+  // idx_translation_lng_key would otherwise scan a whole language.
+  const only = languages ? ` AND +lng IN (${languages.map(() => "?").join(",")})` : "";
+  return db
+    .query<{ lng: string; trd: string }, unknown[]>(
+      `SELECT lng, COALESCE(ind, txt) AS trd FROM translation
+        WHERE id BETWEEN ? AND ? AND in_ekz = 0${only}
+        ORDER BY lng, node_id <> ?, node_id, id`,
+    )
+    .all(node.id, node.last_id, ...(languages ?? []), node.id);
+}
+
+/** The roots an entry's tildes stand for: the article's root, and its variant roots where a tilde names one. */
+function rootsAt(db: SqlReader, node: EntryNode, drv: Element): Roots {
+  if (!usesVariantRoots(drv)) return rootsFrom(node.rad, []);
+  const variants = db
+    .query<{ var: string; txt: string | null }, [number, number]>(
+      `SELECT var, txt FROM rad
+        WHERE id BETWEEN ? AND (SELECT last_id FROM article WHERE id = ?) AND var IS NOT NULL ORDER BY id`,
+    )
+    .all(node.article_id, node.article_id);
+  return rootsFrom(node.rad, variants);
+}
+
+/**
+ * The parts of a citation. The DTD puts them only in <fnt>, <rim> and <adm>,
+ * and <url> also beside a node's content: nowhere an entry reads text, so an
+ * entry leaves their tables out, a fifth of its table reads (3.4 of 18 on
+ * average), each a few pages of a file read over HTTP. <fnt> itself stays: its
+ * row holds the whitespace before it, which the text around it keeps. Should
+ * entries read <rim> or <adm> text, <aut> goes from here.
+ */
+const UNREAD_IN_ENTRIES: ReadonlySet<string> = new Set(["bib", "vrk", "lok", "aut", "url"]);
+
+/** A node's table mask without the tables an entry does not read. */
+function entryMask(db: SqlReader, mask: Uint8Array): Uint8Array {
+  return maskOf(storedTablesOf(db).flatMap((table, i) => inMask(mask, i) && !UNREAD_IN_ENTRIES.has(table.name) ? [i] : []));
+}
+
+/** What an entry's derivation says: its senses, references and usage domains. */
+function contentOf(db: SqlReader, node: EntryNode): EntryContent {
+  const [drv] = readRange(db, node.id, node.last_id, { mask: entryMask(db, node.mask) });
+  if (drv?.type !== "element") throw new Error(`${node.mrk}: no element at ${node.id}`);
+  return entryContent(drv, rootsAt(db, node, drv));
+}
+
+/** An entry's usage domains (fak and stl tags outside examples), in document order. */
+export function usageDomainsOf(db: SqlReader, node: EntryNode): string[] {
+  return contentOf(db, node).usageDomains;
+}
+
+/** The headword of each mark that names a node, as far as the marks do. */
+function headwordsByMark(db: SqlReader, marks: string[]): Map<string, string> {
+  const unique = [...new Set(marks)];
+  const headwords = new Map<string, string>();
+  if (unique.length === 0) return headwords;
+  const rows = db
+    .query<{ mrk: string; txt: string }, string[]>(
+      `SELECT t.mrk, h.txt FROM node t JOIN headword h ON h.id = t.kap_id
+        WHERE t.mrk IN (${unique.map(() => "?").join(",")}) AND t.kind <> 'art' ORDER BY t.id`,
+    )
+    .all(...unique);
+  for (const row of rows) if (!headwords.has(row.mrk)) headwords.set(row.mrk, row.txt);
+  return headwords;
+}
+
+export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOptions = {}): LookupResult {
+  const full = (options.detail ?? "full") === "full";
+  const content = full || !options.domains ? contentOf(db, node) : null;
+  let crossRefs: LookupResult["crossRefs"] = [];
+  if (full) {
+    const targets = headwordsByMark(db, content!.crossRefs.map((ref) => ref.target));
+    crossRefs = content!.crossRefs.map(({ target, type }) => {
+      const targetKap = targets.get(target);
+      return targetKap === undefined ? { target, type } : { target, type, targetKap };
+    });
+  }
+  return {
+    headword: node.headword,
+    article: node.article,
+    mrk: node.mrk,
+    senses: full ? content!.senses : [],
+    translations: translationsOf(db, node, options.languages),
+    crossRefs,
+    usageDomains: options.domains ?? content!.usageDomains,
+  };
 }
 
 /**
@@ -44,83 +281,12 @@ interface SenseNode {
  * subdrv "A." "B.". Each sense carries only its own examples — a subsnc's
  * examples are listed under the subsnc, not repeated under its parent snc.
  */
-export function sensesOf(db: Database, drvMrk: string): SenseEntry[] {
-  const root = db
-    .query<{ id: number }, [string]>("SELECT id FROM node WHERE mrk = ? LIMIT 1")
-    .get(drvMrk);
-  if (!root) return [];
-
-  // node ids are assigned in document (pre-)order, so ORDER BY id is reading order
-  const nodes = db
-    .query<SenseNode, [number]>(
-      `WITH RECURSIVE sub(id, parent_id, kind, mrk) AS (
-         SELECT id, parent_id, kind, mrk FROM node WHERE parent_id = ?
-         UNION ALL
-         SELECT n.id, n.parent_id, n.kind, n.mrk FROM node n JOIN sub s ON n.parent_id = s.id
-       )
-       SELECT id, parent_id, kind, mrk FROM sub ORDER BY id`
-    )
-    .all(root.id);
-
-  const siblings = new Map<string, number>(); // `${parent}/${kind}` → count
-  for (const n of nodes) {
-    const k = `${n.parent_id}/${n.kind}`;
-    siblings.set(k, (siblings.get(k) ?? 0) + 1);
-  }
-  const seen = new Map<string, number>();
-
-  const senses: SenseEntry[] = [];
-  const own = senseAt(db, root.id, drvMrk);
-  if (own.definition || own.examples.length > 0 || nodes.length === 0) senses.push(own);
-
-  for (const n of nodes) {
-    const k = `${n.parent_id}/${n.kind}`;
-    const i = seen.get(k) ?? 0;
-    seen.set(k, i + 1);
-    const num =
-      n.kind === "subsnc" ? `${String.fromCharCode(97 + i)})`
-      : n.kind === "subdrv" ? `${String.fromCharCode(65 + i)}.`
-      : siblings.get(k)! > 1 ? `${i + 1}.` : "";
-    const s = senseAt(db, n.id, n.mrk ?? undefined);
-    s.num = num;
-    senses.push(s);
-  }
-  return senses;
-}
-
-function senseAt(db: Database, nodeId: number, mrk: string | undefined): SenseEntry {
-  let definition = db
-    .query<{ txt: string }, [number]>("SELECT txt FROM dif WHERE node_id = ? ORDER BY ord")
-    .all(nodeId)
-    .map((d) => d.txt)
-    .join(" ");
-  if (!definition) {
-    // No <dif>: the sense is defined by reference (<ref tip="dif">X</ref> = "see X").
-    const refs = db
-      .query<{ txt: string }, [number]>(
-        "SELECT txt FROM ref WHERE node_id = ? AND owner_kind = 'node' AND tip = 'dif' ORDER BY id"
-      )
-      .all(nodeId);
-    if (refs.length > 0) definition = `= ${refs.map((r) => r.txt).join(", ")}`;
-  }
-  const examples = db
-    .query<{ txt: string }, [number]>("SELECT txt FROM ekz WHERE node_id = ? ORDER BY ord")
-    .all(nodeId)
-    .map((e) => e.txt)
-    .filter((t) => t.length > 0);
-  const fak = db
-    .query<{ txt: string }, [number]>(
-      "SELECT txt FROM uzo WHERE node_id = ? AND owner_kind = 'node' AND tip = 'fak' ORDER BY ord"
-    )
-    .all(nodeId)
-    .map((u) => u.txt);
-  const sense: SenseEntry = { mrk, definition, examples };
-  if (fak.length > 0) sense.domain = fak.join(", ");
-  return sense;
+export function sensesOf(db: SqlReader, node: EntryNode): SenseEntry[] {
+  return contentOf(db, node).senses;
 }
 
 // ---------------------------------------------------------------------------
-// Enrichment reads (L3): the x_* tables and fts_dif, written by the passes in
+// Enrichment reads: the x_* tables and fts_dif, written by the passes in
 // src/corpus/passes and recorded in meta_pass.
 // ---------------------------------------------------------------------------
 
@@ -146,14 +312,14 @@ export interface ThesaurusResult {
 
 /** Nodes whose headword (or variant) is exactly `norm`, with the first one's identity. */
 function nodesByKap(
-  db: Database,
+  db: SqlReader,
   norm: string
 ): { ids: number[]; headword: string; article: string; norm: string } | null {
   const rows = db
     .query<{ id: number; txt: string; file: string }, [string]>(
-      `SELECT n.id, k.txt, a.file
-         FROM kap k JOIN node n ON n.id = k.node_id JOIN art a ON a.id = n.art_id
-        WHERE k.norm = ? ORDER BY n.id`
+      `SELECT n.id, h.txt, a.file
+         FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
+        WHERE h.norm = ? ORDER BY n.id, h.id`
     )
     .all(norm);
   if (rows.length === 0) return null;
@@ -173,7 +339,8 @@ function nodesByKap(
  * the article node too — without the stop, malbeligi's synonym misfigurigi
  * would be reported as a synonym of bela.
  */
-export function thesaurusOf(db: Database, query: string): ThesaurusResult | null {
+export function thesaurusOf(db: SqlReader, query: string): ThesaurusResult | null {
+  requirePasses(db, "The thesaurus", ["refs", "index"]);
   const normalized = normalizeQuery(query);
   let hit = nodesByKap(db, normalized);
   let matchedVia: string | undefined;
@@ -212,7 +379,7 @@ export function thesaurusOf(db: Database, query: string): ThesaurusResult | null
          SELECT id FROM node WHERE id IN (${placeholders})
          UNION
          SELECT n.id FROM node n JOIN src s ON n.parent_id = s.id
-          WHERE NOT EXISTS (SELECT 1 FROM kap k WHERE k.node_id = n.id)
+          WHERE NOT EXISTS (SELECT 1 FROM headword h WHERE h.node_id = n.id)
        )
        SELECT e.tip AS tip, e.inferred AS inferred,
               COALESCE(t.label, 'ligilo') AS label,
@@ -221,8 +388,8 @@ export function thesaurusOf(db: Database, query: string): ThesaurusResult | null
          JOIN src ON src.id = e.src_node
          LEFT JOIN x_ref_tip t ON t.tip = e.tip
          JOIN node dn ON dn.id = e.dst_node
-         JOIN art a ON a.id = dn.art_id
-         LEFT JOIN kap k ON k.id = dn.kap_id
+         JOIN article a ON a.id = dn.article_id
+         LEFT JOIN headword k ON k.id = dn.kap_id
         ORDER BY e.inferred, e.tip, k.txt`
     )
     .all(...(hit.ids as []));
@@ -272,7 +439,8 @@ export interface DefinitionHit {
  * Diacritics are folded by the tokenizer, so "granda birdo" and "granda
  * birdó" behave alike; x-system input is converted first.
  */
-export function searchDefinitions(db: Database, query: string, limit = 20): DefinitionHit[] {
+export function searchDefinitions(db: SqlReader, query: string, limit = 20): DefinitionHit[] {
+  requirePasses(db, "Reverse lookup", ["fts"]);
   const terms = normalizeQuery(query)
     .split(/\s+/)
     .filter((t) => t.length > 0)
@@ -284,10 +452,9 @@ export function searchDefinitions(db: Database, query: string, limit = 20): Defi
       `SELECT a.file AS article, k.txt AS headword,
               snippet(fts_dif, 0, '**', '**', '…', 14) AS snippet
          FROM fts_dif f
-         JOIN dif ON dif.id = f.rowid
-         JOIN node n ON n.id = dif.node_id
-         JOIN art a ON a.id = n.art_id
-         LEFT JOIN kap k ON k.id = n.kap_id
+         JOIN node n ON n.id = f.node_id
+         JOIN article a ON a.id = n.article_id
+         LEFT JOIN headword k ON k.id = n.kap_id
         WHERE fts_dif MATCH ?
         ORDER BY rank
         LIMIT ?`

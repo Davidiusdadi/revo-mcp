@@ -8,6 +8,7 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./view": "./src/view.ts",
     "./data/*": "./data/*"
   },
   "scripts": {

@@ -2,12 +2,14 @@
 
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server for looking up words in [Reta Vortaro](https://www.reta-vortaro.de/revo/) — the comprehensive, open-source Esperanto dictionary.
 
-Provides Esperanto definitions, examples, and translations across 174 languages to any MCP-compatible AI assistant (Claude Desktop, `claude` CLI, etc.).
+Provides Esperanto definitions, examples, and translations across 191 languages
+to MCP-compatible clients. It can run as a Bun server or directly in a browser
+Worker over a `MessagePort` transport.
 
 ## Features
 
 - **Esperanto headword lookup** — definitions in Esperanto with example sentences
-- **Translation lookup** — search in English, German, French, or any of 174 languages
+- **Translation lookup** — search in English, German, French, or any of 191 languages
 - **Cross-language search** — find words across all available languages at once
 - **X-system support** — type `cxirkaux` instead of `ĉirkaŭ`
 - **Grammatical form stemming** — `amikojn` (plural accusative) automatically finds `amiko`
@@ -79,19 +81,129 @@ cd revo-mcp
 # Install dependencies
 bun install
 
-# Check out the XML sources and build the dictionary database (~2 min, ~460 MB)
+# Check out the XML sources and build the dictionary database (~4 min, ~280 MB)
 bun run setup
 ```
 
 `bun run setup` checks out the two source submodules, generates the parser's
 entity and name tables from them, then parses all 13,079 VOKO articles into
-`data/voko.db` and runs the enrichment passes. The database is not committed —
+`data/voko.db`, stores them there whole, and runs the passes that derive the
+search and enrichment tables from them. The database is not committed —
 it is built from the XML, and rebuilding is one command.
 
 See [docs/corpus.md](docs/corpus.md) for the layers, the schema and the passes.
 `REVO_DB=path/to.db` points the server at a different database.
 
 ## Usage
+
+### In a browser Worker
+
+The browser build runs the same MCP server in a Web Worker, over the same
+database file. It needs no server of its own: a static host serving `voko.db`
+with range requests is enough, and a PWA works offline once the file is stored.
+
+```bash
+# The database a browser reads: search, lookup, entries and languages (~140 MB, ~60 MB gzipped)
+bun run corpus:build --stage core --out ./dist/revo/voko.db
+
+# Bundle the Worker; sqlite3.wasm is copied beside it
+bun run browser:build --out ./dist/revo/revo-worker.js
+```
+
+The build writes `voko.db.gz` next to `voko.db`; publish both, together.
+
+The Worker answers at once and gets faster later:
+
+1. **Remote.** Without a local copy it opens `voko.db` over HTTP range
+   requests (`sqlite-wasm-http`), reading only the pages a query touches,
+   4 KB each, and keeping them in a 16 MB cache.
+2. **Download.** Meanwhile it downloads the file once, `voko.db.gz` through
+   `DecompressionStream` (the uncompressed file if there is no `.gz`), into an
+   SQLite pool in the origin private file system, reporting progress.
+3. **Local.** When the copy is complete, queries switch to it, and later starts
+   open it without waiting for the network. The Worker compares the published
+   file's revision (`PRAGMA user_version`, set to the build time; one 100-byte
+   request) and downloads a newer one the same way.
+
+One tab at a time can hold the local copy; in a second tab the Worker stays
+remote and says so. After a reload the previous page's Worker still holds it
+for a moment, so the new one starts remotely and takes the copy over once it
+is free. A copy that is interrupted or does not match the published revision is
+not used.
+
+```ts
+import { RevoBrowserClient } from "./src/browser/client";
+
+const revo = await RevoBrowserClient.connect(
+  new Worker("/revo/revo-worker.js", { type: "module" }),
+  "/revo/voko.db",
+  { onEvent: (event) => console.log(event) }, // access: "remote" keeps no copy until asked
+);
+const { results, total, languageMatches, domainMatches } =
+  await revo.search({ query: "Hund", languages: ["de", "en"], limit: 30 });
+revo.local("delete"); // or "download"
+```
+
+The Worker reports `revo:loading`, `revo:ready { engine }`,
+`revo:download { loaded, total }` (bytes of the database file),
+`revo:engine { engine }` when it switches, `revo:notice` for what does not stop
+it (too little storage, a second tab, a failed download) and `revo:error` for
+what does, such as an unreachable file without a copy
+(`src/browser/protocol.ts`).
+
+Measured in Chromium against the core build (13,079 articles, 141.0 MB,
+62.5 MB gzipped), requests and bytes per interaction in remote mode:
+
+| interaction | range requests | bytes |
+|---|---:|---:|
+| open + first search (`Hund`, de/en) | 39 | 169 KB |
+| `amikojn` | 11 | 49 KB |
+| `Haus` | 15 | 70 KB |
+| `dogs` (de/en/fr) | 6 | 25 KB |
+| `mal`, first 30 of 923 results | 50 | 406 KB |
+| `mal`, next 30 | 45 | 246 KB |
+| entry `hund.0o` | 57 | 365 KB |
+| languages | 1 | 8 KB |
+
+A search reads `serĉo` and `translation`; an entry rebuilds its derivation
+from the tables of the elements in it, a few pages each, and so reads more.
+The count of requests, not their size, is what a slow connection feels: they
+are made one after another, so at a 100 ms round trip a `mal` page takes about
+5 s and `Haus` about 1.5 s. Once the copy is stored a search makes no request
+(`mal` ~120 ms, `Haus` ~25 ms) and a start makes one, the revision check.
+
+The core file (141 MB, 62.5 MB gzipped) holds every article whole, one table
+per XML element (92 MB, citations, remarks and markup included), plus the
+search table (24 MB), the translations (22 MB), and the nodes and headwords
+(5.5 MB). The full build (`bun run setup`, 281 MB, 132 MB gzipped) adds the
+enrichment passes and their indexes.
+
+Search always includes Esperanto and ranks exact matches, then reduced or
+inflected forms, then literal prefixes; the request's language order breaks
+ties. A result's first match reason names it: the strongest match, which is
+also the one the result is ranked by.
+
+Search never stops at a count: `total` gives every result it found, `limit` is
+the page size, and `offset` pages through them. `languageMatches` counts the
+entries each searched language matched, in request order. Passing
+`matchLanguage` keeps only the results that matched in that language, ranked by
+that match, which then also names each result. An entry that matched in several
+languages appears under each of them.
+
+`domainMatches` counts the usage domains, such as `ZOO` or `KUI`, among those
+results, most common first. Passing `domain` keeps only the results whose entry
+carries it; the counts still describe the results before that narrowing, so
+another domain can be chosen from them.
+
+A result carries what a result card shows: the headword, mark, usage domains
+and the translations in the searched languages. `entry` loads the rest by mark.
+The `search` and `entry` tools are the same on the Bun server;
+`MessagePortTransport` and `connectWorkerServer` connect the server to a Worker
+without Node or Bun globals.
+
+A core database answers `search`, `entry`, `lookup`, `lookup_root` and
+`languages`; `examples`, `thesaurus`, `reverse_lookup` and `gloss` need the
+enrichment of a full build and say so on a core one.
 
 ### With Claude Desktop
 
@@ -155,7 +267,7 @@ Search the Esperanto dictionary.
 
 ### `languages`
 
-Lists all 174 available languages with translation counts. Takes no parameters.
+Lists all 191 available languages with translation counts. Takes no parameters.
 
 ### `lookup_root`
 
@@ -284,6 +396,7 @@ revo-mcp/
 │   ├── stemmer.ts         # Esperanto stemmer, x-system, normalization
 │   ├── morph.ts           # Morphology: dictionary forms, segmentation
 │   ├── formatter.ts       # Format results as Markdown
+│   ├── browser/           # The server in a Worker: range reads, local OPFS copy
 │   ├── corpus/            # XML → voko.db: schema, build, enrichment passes
 │   └── tools/             # One handler per MCP tool
 ├── packages/voko-xml/     # The VOKO XML parser (lossless DOM + walkers)
@@ -297,7 +410,7 @@ revo-mcp/
 the structure the rendered HTML flattens:
 - 64,000+ headword entries, senses kept as senses
 - 550,000+ translations across 174 languages, with `ind`/`baz`/`pr` intact
-- 13,079 articles, stored as XML
+- 13,079 articles stored whole, one table per XML element, each reading back as its file
 - A typed reference graph, morphological segmentation, and full-text indexes
   over headwords, translations, examples and definitions
 

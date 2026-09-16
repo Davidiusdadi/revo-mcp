@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { buildL2, PASSES } from "../src/corpus/build";
+import { buildArticles, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
 import { classify, inventoryOf } from "../src/gloss";
 
@@ -28,7 +28,7 @@ let db: Database;
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-overlay-"));
-  db = buildL2(join(dir, "slice.db"), 120, EXTRA, FIXTURE);
+  db = buildArticles(join(dir, "slice.db"), 120, EXTRA, FIXTURE);
   for (const p of PASSES) runPass(db, p, () => {});
 });
 afterAll(() => {
@@ -40,25 +40,25 @@ const one = <T>(sql: string, ...params: unknown[]) => db.query(sql).get(...(para
 
 describe("overlay merge", () => {
   test("an overlay file replaces the upstream article of the same name", () => {
-    const art = one<{ source: string; rev: string }>("SELECT source, rev FROM art WHERE file = 'ardez'");
+    const art = one<{ source: string }>("SELECT source FROM article WHERE file = 'ardez'");
     expect(art.source).toBe("overlay");
     // upstream ardez.xml has two derivations, ardezo and ardeza; the fixture has only the first
-    expect(one<{ c: number }>("SELECT COUNT(*) c FROM kap WHERE norm = 'ardeza'").c).toBe(0);
+    expect(one<{ c: number }>("SELECT COUNT(*) c FROM headword WHERE norm = 'ardeza'").c).toBe(0);
     expect(
       one<{ c: number }>(
-        "SELECT COUNT(*) c FROM node WHERE kind = 'drv' AND art_id = (SELECT id FROM art WHERE file = 'ardez')"
+        "SELECT COUNT(*) c FROM node WHERE kind = 'drv' AND article_id = (SELECT id FROM article WHERE file = 'ardez')"
       ).c
     ).toBe(1);
   });
 
   test("an overlay file with a new name adds an article", () => {
-    const art = one<{ source: string }>("SELECT source FROM art WHERE file = 'superardez'");
+    const art = one<{ source: string }>("SELECT source FROM article WHERE file = 'superardez'");
     expect(art.source).toBe("overlay");
-    expect(one<{ txt: string }>("SELECT txt FROM kap WHERE norm = 'superardezo'").txt).toBe("superardezo");
+    expect(one<{ txt: string }>("SELECT txt FROM headword WHERE norm = 'superardezo'").txt).toBe("superardezo");
   });
 
   test("articles left alone stay marked as coming from the submodule", () => {
-    expect(one<{ source: string }>("SELECT source FROM art WHERE file = 'tabul'").source).toBe("fonto");
+    expect(one<{ source: string }>("SELECT source FROM article WHERE file = 'tabul'").source).toBe("fonto");
   });
 
   test("an overlay usage sample reaches the enrichment tables", () => {

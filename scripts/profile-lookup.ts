@@ -6,6 +6,7 @@
 import { Database } from "bun:sqlite";
 import { lookupEsperanto, closeDb, getDb } from "../src/db";
 import { formatResults } from "../src/formatter";
+import { configureBunDatabase } from "../src/runtime/bun-database";
 
 const DB_PATH = process.env.REVO_DB ?? process.env.REVO_DB_PATH ?? "data/voko.db";
 const SAMPLE = 200;
@@ -13,13 +14,14 @@ const SAMPLE = 200;
 const db = new Database(DB_PATH, { readonly: true });
 const sample = db
   .query<{ kap: string; art: string; mrk: string }, [number]>(
-    `SELECT kap, art, mrk FROM nodo ORDER BY random() LIMIT ?`
+    `SELECT h.txt AS kap, a.file AS art, n.mrk FROM node n JOIN headword h ON h.id = n.kap_id
+       JOIN article a ON a.id = n.article_id WHERE n.mrk IS NOT NULL AND n.kind <> 'art' ORDER BY random() LIMIT ?`
   )
   .all(SAMPLE);
 db.close();
 
 // Warm up the shared db connection used by lookupEsperanto
-getDb();
+configureBunDatabase(DB_PATH);
 lookupEsperanto(sample[0].kap, 1);
 
 let tLookup = 0n;
@@ -45,8 +47,8 @@ for (const row of sample) {
   // Phase C: SQL-only cost (the exact-match query that lookupEsperanto starts with)
   const s0 = process.hrtime.bigint();
   liveDb
-    .query<{ mrk: string; art: string; kap: string; num: number }, [string]>(
-      "SELECT DISTINCT mrk, art, kap, num FROM nodo WHERE kap = ? COLLATE NOCASE ORDER BY length(mrk)"
+    .query<{ nid: number }, [string]>(
+      "SELECT nid FROM serĉo WHERE lng = 'eo' AND norm = ? ORDER BY ord"
     )
     .all(row.kap);
   const s1 = process.hrtime.bigint();

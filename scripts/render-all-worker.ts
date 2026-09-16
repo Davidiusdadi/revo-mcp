@@ -4,6 +4,9 @@
  */
 import { lookupEsperanto, closeDb } from "../src/db";
 import { formatResults } from "../src/formatter";
+import { configureBunDatabase } from "../src/runtime/bun-database";
+
+configureBunDatabase(); // REVO_DB, else data/voko.db
 
 interface Row { kap: string; art: string; mrk: string }
 interface Failure {

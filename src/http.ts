@@ -7,8 +7,9 @@
  */
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { createMcpServer, registerShutdownHandlers } from "./server";
-import { getDb } from "./db";
+import { createMcpServer } from "./server";
+import { ensureBunDatabase } from "./runtime/bun-database";
+import { registerShutdownHandlers } from "./runtime/bun-shutdown";
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -21,12 +22,7 @@ const CORS_HEADERS: Record<string, string> = {
 const MCP_PATH = "/mcp";
 
 registerShutdownHandlers();
-
-// Open the corpus before listening. The queries open it lazily, so a server
-// with a missing or wrong database would answer the deploy healthcheck on "/"
-// and only fail once a tool is called — a bad image would go live. Failing
-// here exits non-zero, and the platform keeps the deployment that works.
-getDb();
+ensureBunDatabase();
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 

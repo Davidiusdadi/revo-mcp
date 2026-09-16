@@ -1,8 +1,9 @@
 /**
- * Enrichment passes (layer L3). A pass owns a set of tables, is versioned, and
- * can be re-run alone: `runPass` drops the pass's tables, runs it inside a
- * transaction and records the outcome in `meta_pass`. New enrichment = a new
- * pass, never a change to the canonical L2 tables.
+ * Passes: the tables derived from the stored articles (layer L2). A pass owns a
+ * set of tables, is versioned, and can be re-run alone: `runPass` drops the
+ * pass's tables, runs it inside a transaction and records the outcome in
+ * `meta_pass`. New enrichment = a new pass, never a change to the articles'
+ * tables (L1).
  */
 import type { Database } from "bun:sqlite";
 

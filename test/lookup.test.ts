@@ -126,10 +126,9 @@ describe("getLanguages", () => {
   });
 
   test("counts the translations a lookup can reach", () => {
-    // not the ones under an example sentence, which the traduko view drops
+    // not the ones under an example sentence
     const total = getLanguages().reduce((sum, l) => sum + l.count, 0);
-    const view = (getDb().query("SELECT COUNT(*) c FROM traduko").get() as { c: number }).c;
-    expect(total).toBeGreaterThanOrEqual(view);
-    expect(total - view).toBeLessThan(100);
+    const reachable = (getDb().query("SELECT COUNT(*) c FROM translation WHERE in_ekz = 0").get() as { c: number }).c;
+    expect(total).toBe(reachable);
   });
 });
