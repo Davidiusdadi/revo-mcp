@@ -9,7 +9,7 @@ parses it; `src/corpus/` builds and enriches the database.
 bun run setup                       # both of the next two steps, for a fresh clone
 bun run fonto                       # check out both submodules, generate the parser's tables
 bun run corpus:build                # XML → data/voko.db, then all passes (~4 min, ~280 MB, + voko.db.gz)
-bun run corpus:build --stage core   # what a browser downloads: articles + structure + search (~140 MB, ~60 MB gzipped)
+bun run corpus:build --stage core   # what a browser downloads: articles + structure + search + morph (~150 MB, ~66 MB gzipped)
 bun run start                       # serve from data/voko.db; REVO_DB=… overrides the path
 bun run corpus:validate             # parity report against data/revo.db → data/parity.md
 bun run corpus:eval                 # stemming recall on attested word forms
@@ -192,18 +192,20 @@ A build is one of two stages of the same file, recorded in `meta.stage`:
 
 | stage | passes | size | gzipped | answers |
 |---|---|---:|---:|---|
-| `core` | `structure`, `search` | 141.0 MB | 62.5 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages` |
-| `full` (default) | `structure`, `search`, `index`, `fts`, `tld-links`, `refs`, `morph` | 280.9 MB | 131.6 MB | every tool |
+| `core` | `structure`, `search`, `morph` | 150.1 MB | 66.2 MB | `search`, `entry`, `lookup`, `lookup_root`, `languages`, `gloss` for Esperanto text |
+| `full` (default) | `structure`, `search`, `morph`, `index`, `fts`, `tld-links`, `refs` | 281.2 MB | 131.7 MB | every tool |
 
-Measured at `d18ad4f` (13,079 articles). Both files hold every article whole;
-the core one has only the index on `node(mrk)`. Of the core file, the articles
-take 92 MB (text runs 28.5 MB, `trd` 19.5 MB, comments 6.6 MB), `serĉo`
-24.2 MB, `translation` 21.6 MB, `node` 4.0 MB and `headword` 1.5 MB. A core
-file becomes a full one by running the enrichment passes on it with `--pass`;
-no sources needed. `hasPass`/`requirePasses` in `db-voko.ts` read `meta_pass`, so on
-a core file `examples`, `thesaurus`, `reverse_lookup` and `gloss` say which
-passes they need instead of failing on a missing table; `lookup` skips its FTS
-fallback.
+Measured with the morph pass in the core stage (13,079 articles). Both files
+hold every article whole; the core one has only the indexes on `node(mrk)` and
+`headword(norm)`. Of the core file, the articles take 92 MB (text runs
+28.5 MB, `trd` 19.5 MB, comments 6.6 MB), `serĉo` 24.2 MB, `translation`
+21.6 MB, `node` 4.0 MB, `headword` 1.5 MB, and the morph tables with their
+indexes 8.2 MB (`x_token` 3.0 MB, `x_morph` 2.6 MB). A core file becomes a
+full one by running the enrichment passes on it with `--pass`; no sources
+needed. `hasPass`/`requirePasses` in `db-voko.ts` read `meta_pass`, so on a
+core file `examples`, `thesaurus`, `reverse_lookup` and a source-language
+`gloss` say which passes they need instead of failing on a missing table;
+`lookup` skips its FTS fallback.
 
 Every build ends in `finish()`: `PRAGMA user_version` = the build time in Unix
 seconds, `ANALYZE`, `VACUUM` (so each table and index lies in contiguous
@@ -216,7 +218,9 @@ the browser checks that the download is the revision it saw.
 
 `bun run corpus:build --pass NAME` reruns one pass on an existing `voko.db`
 (and finishes the file again). Order matters: every pass reads `structure`'s
-tables, and `morph` reads `x_tld_occ`. Rows at `d18ad4f`:
+tables. `morph` and `tld-links` share one walk over the articles' `<tld/>`s
+(`tldOccurrences()` in `tld-links.ts`): `tld-links` stores it, `morph` reads
+it as it goes, so the core file carries no `x_tld_occ`. Rows:
 
 | pass | tables | rows |
 |---|---|---:|
@@ -226,7 +230,7 @@ tables, and `morph` reads `x_tld_occ`. Rows at `d18ad4f`:
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz`, `ekzemplo` | 955,026 |
 | `tld-links` | `x_tld_occ` | 176,088 |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 113,867 |
-| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair` | 152,018 |
+| `morph` | `x_morpheme`, `x_morph`, `x_token`, `x_pair`, `x_affix` | 152,191 |
 
 **`search`** — one row in `serĉo` for every way into an entry (a marked drv):
 its headword and variants under `lng` 'eo', and each translation outside the
@@ -241,11 +245,14 @@ domains, so ranking, counting languages and domains, and narrowing read no other
 table; only the page of results shown loads entries. `serĉo_lng` counts each
 language's entries and translations for the `languages` tool.
 
-**`structure`** — `node`, `headword` and `translation`, above.
+**`structure`** — `node`, `headword` and `translation`, above, and the index
+on `headword(norm)`, which the core file keeps so that `gloss` finds a word's
+entry without scanning the headwords.
 
-**`index`** — `headword(node_id)`, `headword(norm)`, `node(parent_id)` and
+**`index`** — `headword(node_id)`, `node(parent_id)` and
 `translation(lng, COALESCE(ind, txt) COLLATE NOCASE)`, which the thesaurus and
-gloss read through and the core file does without. With the last one present, SQLite would scan a whole language for an
+the source-language gloss read through and the core file does without. With
+the last one present, SQLite would scan a whole language for an
 entry's translations; `db-voko.ts` writes `+lng` to keep it on the entry's
 node range.
 
@@ -349,12 +356,16 @@ name scores 0, so old weights keep working until retrained.
   `i` (the word class the scorer reads).
 - `x_morph`: every headword (49,489): `mal|san|ul|ej|o` / `PRSSE`, roots,
   `source` = `tilde` (root pinned, 48,957) or `free`; 99.2 % fully segmented.
-- `x_token`: every distinct attested word form per article (67,197 from
-  `x_tld_occ` outside headwords), segmented with the root pinned (99.3 %), and
+- `x_token`: every distinct attested word form per article (67,197 `<tld/>`
+  occurrences outside headwords), segmented with the root pinned (99.3 %), and
   tied to a headword of the same article when one of its dictionary forms is one
   (84 %, `how` = `kap` / `infl` / `class` / `ptcp`).
 - `x_pair`: 21,266 morpheme pairs next to a marked root, each with the number
   of derivations that write it.
+- `x_affix`: the 174 prefixes and suffixes with their own article: the
+  headword as written (`-ul`), the entry's mark (`ul.0`), and the clause of
+  the definition that `gloss` quotes for the part, cut at build time so a
+  reader loads no definition text.
 
 Without a pin, the segmenter puts the marked root in the right place for
 99.6 % of the 68,582 root-marked words (headwords 99.7 %, example forms

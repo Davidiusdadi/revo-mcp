@@ -6,7 +6,12 @@
  *
  * Owner = the innermost kap, dif, ekz, rim, trd, ref or bld around the tilde,
  * else the structural node; `owner_id` is that element's id.
+ *
+ * The walk is `tldOccurrences`, which the `morph` pass reads as well: it
+ * belongs to the core stage and this table does not, so the two share the
+ * walk rather than the table.
  */
+import type { Database } from "bun:sqlite";
 import {
   expandTld, NODE_KIND_SET,
   type Element, type Node, type Roots,
@@ -17,9 +22,100 @@ import { articleTrees } from "../documents";
 
 const OWNER_SET: ReadonlySet<string> = new Set(["kap", "dif", "ekz", "rim", "trd", "ref", "bld"]);
 
+/** One `<tld/>` and the word around it, as a row of `x_tld_occ`. */
+export interface TldOccurrence {
+  article_id: number;
+  /** nearest structural node */
+  node_id: number;
+  /** kap | dif | ekz | rim | trd | ref | bld | node */
+  owner_kind: string;
+  /** the owner element's id */
+  owner_id: number;
+  /** nth <tld/> within the owner */
+  ord: number;
+  /** what the tilde stands for, lit applied */
+  rad: string;
+  var: string | null;
+  lit: string | null;
+  /** letters glued on before the tilde */
+  pre: string;
+  /** … and after */
+  post: string;
+  /** pre + rad + post */
+  token: string;
+  /** token, lowercased */
+  norm: string;
+}
+
+/** Every `<tld/>` of the stored articles, in document order. */
+export function* tldOccurrences(db: Database): Generator<TldOccurrence> {
+  for (const { article, roots, nodes } of articleTrees(db)) {
+    const tldOrd = new Map<number, number>();
+    const found: TldOccurrence[] = [];
+    // each node's own content in document order; the nodes nested in it are walked as nodes
+    const walk = (el: Element, nodeId: number, kind: string, ownerId: number): void => {
+      for (const c of el.children) {
+        if (c.type !== "element" || NODE_KIND_SET.has(c.name)) continue;
+        if (OWNER_SET.has(c.name)) {
+          walk(c, nodeId, c.name, idOf(c)!);
+          continue;
+        }
+        if (c.name !== "tld") {
+          walk(c, nodeId, kind, ownerId);
+          continue;
+        }
+        const ord = tldOrd.get(ownerId) ?? 0;
+        tldOrd.set(ownerId, ord + 1);
+        const sib = c.parent!.children;
+        const i = sib.indexOf(c);
+        const pre = glued(sib, i, -1, roots);
+        const post = glued(sib, i, 1, roots);
+        const rad = expandTld(c, roots);
+        const token = pre + rad + post;
+        found.push({
+          article_id: article.id, node_id: nodeId, owner_kind: kind, owner_id: ownerId, ord, rad,
+          var: c.attrs.var ?? null, lit: c.attrs.lit ?? null, pre, post, token, norm: token.toLowerCase(),
+        });
+      }
+    };
+    for (const n of nodes) walk(n.el, idOf(n.el)!, "node", idOf(n.el)!);
+    yield* found;
+  }
+}
+
+/** A form written with a tilde outside headwords, per article: how often, and where its first occurrence puts the root. */
+export interface TokenGroup {
+  norm: string;
+  article_id: number;
+  n: number;
+  pre: string;
+  rad: string;
+}
+
+/**
+ * One group per distinct form per article, with the pin of its first
+ * occurrence.
+ *
+ * pre and rad have to come from the same occurrence: a prefix taken from one
+ * occurrence and a root from another pin a span that no occurrence has — that
+ * is how "ĉevalo" came out as "ĉeva|lo", the pin being the empty prefix of one
+ * occurrence with the root of a `lit`-capitalised one ("eval").
+ */
+export function tokenGroups(occurrences: Iterable<TldOccurrence>): TokenGroup[] {
+  const groups = new Map<string, TokenGroup>();
+  for (const o of occurrences) {
+    if (o.owner_kind === "kap" || o.norm === "") continue;
+    const key = `${o.article_id}\n${o.norm}`;
+    const g = groups.get(key);
+    if (g) g.n++;
+    else groups.set(key, { norm: o.norm, article_id: o.article_id, n: 1, pre: o.pre, rad: o.rad });
+  }
+  return [...groups.values()];
+}
+
 export const tldLinksPass: Pass = {
   name: "tld-links",
-  version: 2,
+  version: 3,
   tables: ["x_tld_occ"],
   run(db, log) {
     db.run(`
@@ -45,34 +141,10 @@ export const tldLinksPass: Pass = {
 
     let rows = 0;
     const byOwner: Record<string, number> = {};
-    for (const { article, roots, nodes } of articleTrees(db)) {
-      const tldOrd = new Map<number, number>();
-      // each node's own content in document order; the nodes nested in it are walked as nodes
-      const walk = (el: Element, nodeId: number, kind: string, ownerId: number): void => {
-        for (const c of el.children) {
-          if (c.type !== "element" || NODE_KIND_SET.has(c.name)) continue;
-          if (OWNER_SET.has(c.name)) {
-            walk(c, nodeId, c.name, idOf(c)!);
-            continue;
-          }
-          if (c.name !== "tld") {
-            walk(c, nodeId, kind, ownerId);
-            continue;
-          }
-          const ord = tldOrd.get(ownerId) ?? 0;
-          tldOrd.set(ownerId, ord + 1);
-          const sib = c.parent!.children;
-          const i = sib.indexOf(c);
-          const pre = glued(sib, i, -1, roots);
-          const post = glued(sib, i, 1, roots);
-          const rad = expandTld(c, roots);
-          const token = pre + rad + post;
-          ins.run(article.id, nodeId, kind, ownerId, ord, rad, c.attrs.var ?? null, c.attrs.lit ?? null, pre, post, token, token.toLowerCase());
-          byOwner[kind] = (byOwner[kind] ?? 0) + 1;
-          rows++;
-        }
-      };
-      for (const n of nodes) walk(n.el, idOf(n.el)!, "node", idOf(n.el)!);
+    for (const o of tldOccurrences(db)) {
+      ins.run(o.article_id, o.node_id, o.owner_kind, o.owner_id, o.ord, o.rad, o.var, o.lit, o.pre, o.post, o.token, o.norm);
+      byOwner[o.owner_kind] = (byOwner[o.owner_kind] ?? 0) + 1;
+      rows++;
     }
 
     db.run(`CREATE INDEX idx_x_tld_occ_norm ON x_tld_occ(norm)`);

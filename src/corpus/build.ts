@@ -4,15 +4,15 @@
  * src/corpus/documents.ts), then the passes of the requested stage.
  *
  *   bun run corpus:build                 full rebuild: core + enrichment passes
- *   bun run corpus:build --stage core    articles + structure + search, what a browser downloads
+ *   bun run corpus:build --stage core    articles + structure + search + morph, what a browser downloads
  *   bun run corpus:build --pass fts      run one pass on the existing DB
  *   bun run corpus:build --limit 200     dev: first N articles only
  *   bun run corpus:build --overlay DIR   merge that directory instead of corpus/overlay
  *   bun run corpus:build --out x.db
  *
- * The core stage answers search, lookup, entries and languages; the full stage
- * adds the enrichment the server's other tools read (FTS, morphology, the
- * reference graph) and the indexes they need. Both hold every article whole,
+ * The core stage answers search, lookup, entries, languages and the Esperanto
+ * gloss; the full stage adds the enrichment the server's other tools read
+ * (FTS, the tilde occurrences, the reference graph) and the indexes they need. Both hold every article whole,
  * so a core file is raised to full later with `--pass` on each enrichment pass,
  * without the sources. Every build ends with VACUUM, so tables lie in
  * contiguous pages, and writes `<out>.gz` next to the file.
@@ -45,10 +45,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
 export type Stage = "core" | "full";
-/** What every runtime needs: nodes, headwords and translations, and the search tables over them. */
-export const CORE_PASSES: Pass[] = [structurePass, searchPass];
+/** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology a gloss reads. */
+export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass];
 /** Enrichment for the server's other tools, and the indexes they read through. */
-export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, morphPass];
+export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
 
 export function passesOf(stage: Stage): Pass[] {

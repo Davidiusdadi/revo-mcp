@@ -12,16 +12,24 @@
  *   and the headword of that article it inflects, when there is one.
  * - x_pair: which morphemes the corpus writes next to a marked root, and how
  *   often — evidence for the words that have no mark.
+ * - x_affix: every affix article (kap "mal-", "-ul") with its definition cut
+ *   to the phrase that says what it means, so a gloss names each part of a
+ *   word from one row instead of the article's text.
  *
  * The words with a mark are split first, without evidence, to read the pairs
  * off them; then every word is split and stored with the pairs in hand.
+ *
+ * The pass belongs to the core stage: a browser glosses from these tables.
+ * The tildes it pins by come from the `tld-links` walk, not its table, which
+ * the core stage leaves out.
  */
 import type { Database } from "bun:sqlite";
 import { kapForms, outerXml } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
-import { contentOf } from "../../content";
+import { contentOf, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
+import { tldOccurrences, tokenGroups, type TokenGroup } from "./tld-links";
 import { lemmaCandidates, segment, formatSegments, pinFits, ENDINGS, type Inventory, type Morph, type WordClass } from "../../morph";
 
 const WORD = /\p{L}+/gu;
@@ -30,22 +38,53 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 9,
-  tables: ["x_morpheme", "x_morph", "x_token", "x_pair"],
+  version: 10,
+  tables: ["x_morpheme", "x_morph", "x_token", "x_pair", "x_affix"],
   run(db, log) {
     const inv = buildInventory(db);
     const nInv = writeInventory(db, inv);
     log(`x_morpheme: ${inv.roots.size} roots, ${inv.prefixes.size} prefixes, ${inv.suffixes.size} suffixes, ${inv.words.size} endingless words`);
+    const nAffix = writeAffixes(db, inv);
+    log(`x_affix: ${nAffix} affix articles with their definitions`);
+    // the kap's own <tld/> tells where the root sits; the other tildes are the attested forms
+    const marked = new Map<number, Pin>();
+    const occurrences: TokenGroup[] = [];
+    {
+      const outside = [];
+      for (const o of tldOccurrences(db)) {
+        if (o.owner_kind === "kap") {
+          if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
+        } else outside.push(o);
+      }
+      occurrences.push(...tokenGroups(outside));
+    }
     const pairs = new Pairs();
-    const heads = segmentHeadwords(db, inv, inv.tildes, pairs, log);
-    const toks = attestedTokens(db, inv, pairs, log);
+    const heads = segmentHeadwords(db, inv, inv.tildes, marked, pairs, log);
+    const toks = attestedTokens(db, inv, occurrences, pairs, log);
     const nPair = writePairs(db, pairs, log);
     inv.pairs = pairs.counts;
     const nMorph = heads.write(inv);
     const nTok = toks.write(inv);
-    return nInv + nMorph + nTok + nPair;
+    return nInv + nAffix + nMorph + nTok + nPair;
   },
 };
+
+/** Where a headword or attested form puts its root. */
+type Pin = { word: string; at: number; root: string };
+
+/** An affix article as `x_affix` stores it. */
+interface Affix {
+  /** the headword as written: "mal-", "-ul" */
+  txt: string;
+  /** P: written "mal-" · S: written "-ul" */
+  kind: "P" | "S";
+  /** the article's file name */
+  art: string;
+  /** the entry's mark, when a marked node carries the headword */
+  mrk: string | null;
+  /** the article's definitions in document order, the gloss is cut from the first that says something */
+  difs: string[];
+}
 
 interface Built extends Inventory {
   rootArts: Map<string, number[]>;
@@ -55,6 +94,15 @@ interface Built extends Inventory {
   drv: Map<number, number>;
   /** every headword's display form, root marked ("mal~ulejo", "san/a"), by its id */
   tildes: Map<number, string>;
+  /** the affix articles by bare morpheme, the first article to write each */
+  affixes: Map<string, Affix>;
+}
+
+/** "-ul" → "ul"; null for a headword that is not written as an affix. */
+function affixMorph(txt: string): string | null {
+  if (!(txt.startsWith("-") || txt.endsWith("-")) || txt.includes(" ")) return null;
+  const m = txt.toLowerCase().replace(/^-|-$/g, "");
+  return m || null;
 }
 
 export function buildInventory(db: Database): Built {
@@ -65,6 +113,7 @@ export function buildInventory(db: Database): Built {
   const tildes = new Map<number, string>();
   const classes = new Map<string, WordClass>();
   const classRows = new Map<string, WordClass>();
+  const affixes = new Map<string, Affix>();
   /**
    * Word class of a root: the headwords that are the root plus one vowel — an
    * article's own kap ("hund/o") and the derivations written "~o", "~a", "~e",
@@ -108,14 +157,29 @@ export function buildInventory(db: Database): Built {
   // multehara. Exclamations ReVo builds on (pafi, halti, jesi) stay roots.
   const EXCLAMATION = /<vspec>(ekkrio|sonimito)<\/vspec>/;
   for (const { article, art, roots: articleRoots, nodes } of articleTrees(db)) {
-    // endingless words: a derivation whose headword is the bare root
+    // the article's definitions, in document order, for the affix articles among them
+    const difs: string[] = [];
     for (const n of nodes) {
       for (const c of contentOf(n.el)) {
+        if (c.el.name === "dif") {
+          difs.push(textIn(c.el, articleRoots, OMIT.dif));
+          continue;
+        }
         if (c.el.name !== "kap") continue;
         const forms = kapForms(c.el, articleRoots);
         tildes.set(idOf(c.el)!, forms.tilde);
         addClass(article.rad, article.id, forms.tilde);
+        // endingless words: a derivation whose headword is the bare root
         if ((n.kind === "drv" || n.kind === "subdrv") && forms.tilde === "~" && /^\p{L}+$/u.test(forms.norm)) words.add(forms.norm);
+        // affix articles: kap "mal-" / "-ul"; the first node to write the affix names it, a marked one gives the mark
+        const m = affixMorph(forms.txt);
+        if (m === null) continue;
+        let a = affixes.get(m);
+        if (!a) {
+          a = { txt: forms.txt, kind: forms.txt.startsWith("-") ? "S" : "P", art: article.file, mrk: null, difs };
+          affixes.set(m, a);
+        }
+        if (a.art === article.file && a.mrk === null && n.mrk !== null) a.mrk = n.mrk;
       }
     }
     const rad = article.rad;
@@ -125,16 +189,69 @@ export function buildInventory(db: Database): Built {
     addRoot(rad, article.id);
     for (const m of xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), article.id);
   }
-  // affix articles: kap "mal-" / "-ul"; the ending articles ("-o", "-as", "-j") are not
+  // the word-building affixes: the ending articles ("-o", "-as", "-j") are not
   // affixes, but "-an" and "-on" are (member, fraction) even though they spell endings too
-  for (const k of db.query<{ txt: string }, []>(
-    "SELECT DISTINCT txt FROM headword WHERE (txt LIKE '-%' OR txt LIKE '%-') AND txt NOT LIKE '% %'").iterate()) {
-    const m = k.txt.toLowerCase().replace(/^-|-$/g, "");
-    if (!m || GRAMMATICAL.has(m)) continue;
-    if (k.txt.endsWith("-") && !k.txt.startsWith("-")) prefixes.add(m);
-    else if (k.txt.startsWith("-") && !k.txt.endsWith("-")) suffixes.add(m);
+  for (const [m, a] of affixes) {
+    if (GRAMMATICAL.has(m)) continue;
+    if (a.txt.endsWith("-") && !a.txt.startsWith("-")) prefixes.add(m);
+    else if (a.txt.startsWith("-") && !a.txt.endsWith("-")) suffixes.add(m);
   }
-  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, tildes, classes, classRows };
+  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, tildes, classes, classRows, affixes };
+}
+
+/**
+ * An affix definition cut down to the phrase that says what it means.
+ *
+ * ReVo opens nearly every one the same way ("Sufikso esprimanta …",
+ * "Prefikso montranta …"); dropping that leaves the content, and one clause of
+ * it is all a per-word line can carry.
+ */
+export function affixGloss(txt: string): string {
+  let s = txt.replace(/\s+/g, " ").trim();
+  s = s.replace(
+    /^(sufikso|prefikso|vortero|finaĵo)\s*(esprimanta|montranta|almetebla|signifanta|markanta|uzata|de|kiu)?\s*[,:;]?\s*/i,
+    ""
+  );
+  const cut = s.search(/[:;]| — /);
+  if (cut > 12) s = s.slice(0, cut);
+  if (s.length > 72) s = s.slice(0, 70).replace(/[\s,]+\S*$/, "") + "…";
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/**
+ * The definition an affix article gives, as one row per affix.
+ *
+ * The `-ul` headword itself usually only says "same meaning as the standalone
+ * word", so the gloss is taken from the first substantial definition anywhere
+ * in the article: the first is sometimes only a colon and a connective
+ * ("Sufikso, kiu:"), with the content in the next one.
+ */
+function writeAffixes(db: Database, inv: Built): number {
+  db.run(`
+    CREATE TABLE x_affix (
+      morph  TEXT PRIMARY KEY,   -- the bare morpheme: mal, ul
+      kind   TEXT NOT NULL,      -- P: the headword is written "mal-" · S: "-ul"
+      txt    TEXT NOT NULL,      -- the headword as written
+      art    TEXT NOT NULL,      -- the article's file name
+      mrk    TEXT,               -- the entry's mark, when a marked node carries the headword
+      gloss  TEXT                -- its definition cut to the phrase that says what it means
+    )`);
+  const ins = db.prepare("INSERT INTO x_affix VALUES (?,?,?,?,?,?)");
+  const empty = /^(samsignifa|uzata memstare|vortero)/i;
+  let n = 0;
+  for (const [m, a] of inv.affixes) {
+    let gloss: string | null = null;
+    for (const d of a.difs.filter((d) => d.length > 8 && !empty.test(d)).slice(0, 5)) {
+      const g = affixGloss(d);
+      if (g.length >= 12) {
+        gloss = g;
+        break;
+      }
+    }
+    ins.run(m, a.kind, a.txt, a.art, a.mrk, gloss);
+    n++;
+  }
+  return n;
 }
 
 function writeInventory(db: Database, inv: Built): number {
@@ -159,6 +276,8 @@ function writeInventory(db: Database, inv: Built): number {
     for (const m of set) { ins.run(m, kind, null, null, null, null, null, null); n++; }
   }
   db.run("CREATE INDEX idx_x_morpheme ON x_morpheme(morph, kind)");
+  // a gloss reads the affixes and endingless words on their own, before any root
+  db.run("CREATE INDEX idx_x_morpheme_kind ON x_morpheme(kind, morph)");
   return n;
 }
 
@@ -248,7 +367,7 @@ interface Deferred {
 }
 
 function segmentHeadwords(
-  db: Database, inv: Inventory, tildes: Map<number, string>, pairs: Pairs, log: (m: string) => void,
+  db: Database, inv: Inventory, tildes: Map<number, string>, marked: Map<number, Pin>, pairs: Pairs, log: (m: string) => void,
 ): Deferred {
   db.run(`
     CREATE TABLE x_morph (
@@ -262,15 +381,8 @@ function segmentHeadwords(
       source  TEXT NOT NULL,         -- tilde: root pinned by the kap (or found once in it) · free: inventory only
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
-  // the kap's own <tld/> tells where the root sits
-  const marked = new Map<number, { word: string; at: number; root: string }>();
-  for (const o of db.query<{ owner_id: number; pre: string; rad: string; norm: string }, []>(
-    "SELECT owner_id, pre, rad, norm FROM x_tld_occ WHERE owner_kind = 'kap' ORDER BY owner_id, ord").iterate()) {
-    if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
-  }
   const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
   type Kap = { id: number; node_id: number; article_id: number; norm: string; rad: string };
-  type Pin = { word: string; at: number; root: string };
   const rows: { k: Kap; pin?: Pin }[] = [];
   let n = 0, ok = 0, pinned = 0;
   const write = (k: Kap, inv: Inventory, pin?: Pin) => {
@@ -323,22 +435,8 @@ function segmentHeadwords(
   };
 }
 
-/**
- * One row per distinct form per article: the form, how often it occurs, and
- * where the tilde puts the root.
- *
- * pre and rad have to come from the same occurrence: a prefix taken from one
- * row and a root from another pin a span that no row has — that is how
- * "ĉevalo" came out as "ĉeva|lo", the pin being the empty prefix of one
- * occurrence with the root of a `lit`-capitalised one ("eval"). With exactly
- * one min/max aggregate in the query SQLite takes the bare columns from the
- * row it picked, so MIN(id) makes that the first occurrence. Exported so the
- * test can hold the pin against the occurrences it came from.
- */
-export const TOKEN_GROUPS = `SELECT norm, article_id, COUNT(*) n, pre, rad, MIN(id) AS first_id
-    FROM x_tld_occ WHERE owner_kind <> 'kap' AND norm <> '' GROUP BY norm, article_id`;
-
-function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: string) => void): Deferred {
+/** One row per distinct form per article (`tokenGroups`): the form, how often it occurs, and where the tilde puts the root. */
+function attestedTokens(db: Database, inv: Inventory, groups: TokenGroup[], pairs: Pairs, log: (m: string) => void): Deferred {
   db.run(`
     CREATE TABLE x_token (
       id      INTEGER PRIMARY KEY,
@@ -360,10 +458,10 @@ function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: str
     heads.set(k.article_id, m);
   }
   const ins = db.prepare("INSERT INTO x_token (norm, article_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
-  type Tok = { norm: string; article_id: number; n: number; pre: string; rad: string };
+  type Tok = TokenGroup;
   const rows: Tok[] = [];
   let n = 0, ok = 0, lemma = 0;
-  const write = (t: Tok, inv: Inventory, pin: { word: string; at: number; root: string }) => {
+  const write = (t: Tok, inv: Inventory, pin: Pin) => {
     const s = segmentForm(t.norm, inv, pin);
     const h = heads.get(t.article_id);
     let kap: number | undefined, how: string | null = null;
@@ -376,7 +474,7 @@ function attestedTokens(db: Database, inv: Inventory, pairs: Pairs, log: (m: str
     if (s.ok) ok++;
     if (kap !== undefined) lemma++;
   };
-  for (const t of db.query<Tok, []>(TOKEN_GROUPS).iterate()) {
+  for (const t of groups) {
     const pin = { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() };
     if (pins(t.norm, pin)) segmentForm(t.norm, inv, pin, pairs); // first round, see segmentHeadwords
     rows.push(t);
