@@ -38,7 +38,7 @@ import { indexPass } from "./passes/index";
 import { ftsPass } from "./passes/fts";
 import { tldLinksPass } from "./passes/tld-links";
 import { refsPass } from "./passes/refs";
-import { morphPass } from "./passes/morph";
+import { morphPass, splitsPass } from "./passes/morph";
 import { ROOT, VENDOR, FONTO, GRUNDO, corpusArticles } from "./sources";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -47,8 +47,8 @@ const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 export type Stage = "core" | "full";
 /** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology a gloss reads. */
 export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass];
-/** Enrichment for the server's other tools, and the indexes they read through. */
-export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass];
+/** Enrichment for the server's other tools, the indexes they read through, and the stored splits. */
+export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, splitsPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
 
 export function passesOf(stage: Stage): Pass[] {

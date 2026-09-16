@@ -103,7 +103,7 @@ database file. It needs no server of its own: a static host serving `voko.db`
 with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
-# The database a browser reads: search, lookup, entries, languages and Esperanto glossing (~150 MB, ~66 MB gzipped)
+# The database a browser reads: search, lookup, entries, languages and Esperanto glossing (~143 MB, ~63 MB gzipped)
 bun run corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
@@ -172,12 +172,13 @@ are made one after another, so at a 100 ms round trip a `mal` page takes about
 5 s and `Haus` about 1.5 s. Once the copy is stored a search makes no request
 (`mal` ~120 ms, `Haus` ~25 ms) and a start makes one, the revision check.
 
-The core file (150 MB, 66 MB gzipped) holds every article whole, one table
+The core file (143 MB, 63 MB gzipped) holds every article whole, one table
 per XML element (92 MB, citations, remarks and markup included), plus the
 search table (24 MB), the translations (22 MB), the nodes and headwords
-(5.5 MB), and the morphology that glosses an Esperanto word (8 MB). The full
-build (`bun run setup`, 281 MB, 132 MB gzipped) adds the enrichment passes and
-their indexes.
+(5.5 MB), and the morpheme inventory that glosses an Esperanto word (1 MB). The
+full build (`bun run setup`, 281 MB, 131 MB gzipped) adds the enrichment
+passes, their indexes, and the stored split of every headword and attested
+form.
 
 Search always includes Esperanto and ranks exact matches, then reduced or
 inflected forms, then literal prefixes; the request's language order breaks
@@ -371,10 +372,14 @@ returned as structured content too: each term carries its dictionary form, the
 entry's mark (`mrk`, what `entry` loads), and with `languages` the entry's
 translations, and each part of a split carries the mark of the article that
 names it, so `mal·san·ul·ej·o` links to `mal.0`, `san.0a`, `ul.0` and `ej.0`.
-On a core database the Esperanto side works from the morph tables alone. Read
-remotely, a headword with its translations is about 15 page reads (64 KB); a
-word the dictionary has to segment first makes the Worker load its morpheme
-inventory, about 80 reads (1.6 MB), once per session.
+On a core database the Esperanto side works from the morpheme inventory
+alone: a word is split when it is asked about, with the root of its own
+article pinned, instead of every split being stored in the file (see
+`docs/corpus.md`). Read remotely, the first word of a session makes the
+Worker read the inventory whole, about 25 range reads (1 MB); after that a
+headword with its translations is about 9 reads (41 KB). A form only the
+example sentences write is `attested` on the full build, which stores those
+forms, and `derived` on a core one.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

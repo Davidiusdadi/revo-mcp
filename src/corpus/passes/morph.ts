@@ -1,26 +1,36 @@
 /**
- * Pass `morph`: lexicon-driven morphology (src/morph.ts does the work).
+ * Passes `morph` and `splits`: lexicon-driven morphology (src/morph.ts does
+ * the work).
+ *
+ * `morph`, in the core stage, is what a gloss segments with:
  *
  * - x_morpheme: the inventory — article roots (and `<rad var>` roots; not the
  *   ending articles "-is", nor exclamations that derive nothing "eh"),
  *   prefixes and suffixes from the affix articles (kap "mal-", "-ul"), the
  *   endings, and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
- * - x_morph: a segmentation of every headword, the root pinned where the kap
- *   marks it (`<tld/>`, or the "/" after an article's root).
- * - x_token: every distinct word written with a `<tld/>` outside headwords,
- *   with the article whose root it carries (author-marked), its segmentation,
- *   and the headword of that article it inflects, when there is one.
  * - x_pair: which morphemes the corpus writes next to a marked root, and how
  *   often — evidence for the words that have no mark.
  * - x_affix: every affix article (kap "mal-", "-ul") with its definition cut
  *   to the phrase that says what it means, so a gloss names each part of a
  *   word from one row instead of the article's text.
  *
- * The words with a mark are split first, without evidence, to read the pairs
- * off them; then every word is split and stored with the pairs in hand.
+ * `splits`, an enrichment pass, stores what that inventory says about every
+ * word the corpus writes, for the server's tools and for the evaluation
+ * scripts; a browser computes a split when a word is pointed at instead of
+ * downloading them all:
  *
- * The pass belongs to the core stage: a browser glosses from these tables.
- * The tildes it pins by come from the `tld-links` walk, not its table, which
+ * - x_morph: a segmentation of every headword, the root pinned where the kap
+ *   marks it (`<tld/>`, or the "/" after an article's root).
+ * - x_token: every distinct word written with a `<tld/>` outside headwords,
+ *   with the article whose root it carries (author-marked), its segmentation,
+ *   and the headword of that article it inflects, when there is one.
+ *
+ * Both passes walk the same way: the words with a mark are split first,
+ * without evidence, to read the pairs off them; `morph` stores the pairs,
+ * `splits` goes on to split every word with the pairs in hand and stores
+ * that.
+ *
+ * The tildes they pin by come from the `tld-links` walk, not its table, which
  * the core stage leaves out.
  */
 import type { Database } from "bun:sqlite";
@@ -38,36 +48,54 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 10,
-  tables: ["x_morpheme", "x_morph", "x_token", "x_pair", "x_affix"],
+  version: 11,
+  tables: ["x_morpheme", "x_pair", "x_affix"],
   run(db, log) {
-    const inv = buildInventory(db);
+    const { inv, pairs } = prepare(db, log);
     const nInv = writeInventory(db, inv);
     log(`x_morpheme: ${inv.roots.size} roots, ${inv.prefixes.size} prefixes, ${inv.suffixes.size} suffixes, ${inv.words.size} endingless words`);
     const nAffix = writeAffixes(db, inv);
     log(`x_affix: ${nAffix} affix articles with their definitions`);
-    // the kap's own <tld/> tells where the root sits; the other tildes are the attested forms
-    const marked = new Map<number, Pin>();
-    const occurrences: TokenGroup[] = [];
-    {
-      const outside = [];
-      for (const o of tldOccurrences(db)) {
-        if (o.owner_kind === "kap") {
-          if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
-        } else outside.push(o);
-      }
-      occurrences.push(...tokenGroups(outside));
-    }
-    const pairs = new Pairs();
-    const heads = segmentHeadwords(db, inv, inv.tildes, marked, pairs, log);
-    const toks = attestedTokens(db, inv, occurrences, pairs, log);
     const nPair = writePairs(db, pairs, log);
-    inv.pairs = pairs.counts;
-    const nMorph = heads.write(inv);
-    const nTok = toks.write(inv);
-    return nInv + nAffix + nMorph + nTok + nPair;
+    return nInv + nAffix + nPair;
   },
 };
+
+export const splitsPass: Pass = {
+  name: "splits",
+  version: 1,
+  tables: ["x_morph", "x_token"],
+  run(db, log) {
+    const { inv, pairs, heads, toks } = prepare(db, log);
+    inv.pairs = pairs.counts;
+    return heads.write(inv) + toks.write(inv);
+  },
+};
+
+/**
+ * The inventory, and the first, evidence-free round over the marked words:
+ * the pairs read off them, and the headwords and attested forms with their
+ * pins, ready to be split with the pairs in hand.
+ */
+function prepare(db: Database, log: (m: string) => void) {
+  const inv = buildInventory(db);
+  // the kap's own <tld/> tells where the root sits; the other tildes are the attested forms
+  const marked = new Map<number, Pin>();
+  const occurrences: TokenGroup[] = [];
+  {
+    const outside = [];
+    for (const o of tldOccurrences(db)) {
+      if (o.owner_kind === "kap") {
+        if (!marked.has(o.owner_id)) marked.set(o.owner_id, { word: o.norm, at: o.pre.length, root: o.rad.toLowerCase() });
+      } else outside.push(o);
+    }
+    occurrences.push(...tokenGroups(outside));
+  }
+  const pairs = new Pairs();
+  const heads = segmentHeadwords(db, inv, inv.tildes, marked, pairs, log);
+  const toks = attestedTokens(db, inv, occurrences, pairs, log);
+  return { inv, pairs, heads, toks };
+}
 
 /** Where a headword or attested form puts its root. */
 type Pin = { word: string; at: number; root: string };
@@ -275,9 +303,8 @@ function writeInventory(db: Database, inv: Built): number {
   for (const [kind, set] of [["P", inv.prefixes], ["S", inv.suffixes], ["E", ENDINGS], ["W", inv.words]] as const) {
     for (const m of set) { ins.run(m, kind, null, null, null, null, null, null); n++; }
   }
+  // a gloss names a root's own headword by this; the inventory itself is read whole
   db.run("CREATE INDEX idx_x_morpheme ON x_morpheme(morph, kind)");
-  // a gloss reads the affixes and endingless words on their own, before any root
-  db.run("CREATE INDEX idx_x_morpheme_kind ON x_morpheme(kind, morph)");
   return n;
 }
 
@@ -325,7 +352,6 @@ function writePairs(db: Database, pairs: Pairs, log: (m: string) => void): numbe
     const [a, b] = k.split("+");
     ins.run(a, b, n);
   }
-  db.run("CREATE INDEX idx_x_pair ON x_pair(a, b)");
   log(`x_pair: ${pairs.counts.size} morpheme pairs next to a marked root`);
   return pairs.counts.size;
 }
@@ -369,7 +395,7 @@ interface Deferred {
 function segmentHeadwords(
   db: Database, inv: Inventory, tildes: Map<number, string>, marked: Map<number, Pin>, pairs: Pairs, log: (m: string) => void,
 ): Deferred {
-  db.run(`
+  const create = () => db.run(`
     CREATE TABLE x_morph (
       kap_id  INTEGER PRIMARY KEY,
       node_id INTEGER NOT NULL,
@@ -381,7 +407,7 @@ function segmentHeadwords(
       source  TEXT NOT NULL,         -- tilde: root pinned by the kap (or found once in it) · free: inventory only
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
-  const ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
+  let ins: ReturnType<Database["prepare"]>;
   type Kap = { id: number; node_id: number; article_id: number; norm: string; rad: string };
   const rows: { k: Kap; pin?: Pin }[] = [];
   let n = 0, ok = 0, pinned = 0;
@@ -428,6 +454,8 @@ function segmentHeadwords(
   }
   return {
     write(inv) {
+      create();
+      ins = db.prepare("INSERT INTO x_morph VALUES (?,?,?,?,?,?,?,?,?)");
       for (const { k, pin } of rows) write(k, inv, pin);
       log(`x_morph: ${n} headwords, ${ok} fully segmented (${pct(ok, n)}), root pinned in ${pinned}`);
       return n;
@@ -437,7 +465,7 @@ function segmentHeadwords(
 
 /** One row per distinct form per article (`tokenGroups`): the form, how often it occurs, and where the tilde puts the root. */
 function attestedTokens(db: Database, inv: Inventory, groups: TokenGroup[], pairs: Pairs, log: (m: string) => void): Deferred {
-  db.run(`
+  const create = () => db.run(`
     CREATE TABLE x_token (
       id      INTEGER PRIMARY KEY,
       norm    TEXT NOT NULL,          -- the word as written with <tld/>, lowercased
@@ -457,7 +485,7 @@ function attestedTokens(db: Database, inv: Inventory, groups: TokenGroup[], pair
     if (!m.has(k.norm)) m.set(k.norm, k.id);
     heads.set(k.article_id, m);
   }
-  const ins = db.prepare("INSERT INTO x_token (norm, article_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
+  let ins: ReturnType<Database["prepare"]>;
   type Tok = TokenGroup;
   const rows: Tok[] = [];
   let n = 0, ok = 0, lemma = 0;
@@ -481,6 +509,8 @@ function attestedTokens(db: Database, inv: Inventory, groups: TokenGroup[], pair
   }
   return {
     write(inv) {
+      create();
+      ins = db.prepare("INSERT INTO x_token (norm, article_id, n, seg, kinds, ok, lemma_kap_id, how) VALUES (?,?,?,?,?,?,?,?)");
       for (const t of rows) write(t, inv, { word: t.norm, at: t.pre.length, root: t.rad.toLowerCase() });
       db.run("CREATE INDEX idx_x_token_norm ON x_token(norm)");
       log(`x_token: ${n} attested forms, ${ok} fully segmented (${pct(ok, n)}), ${lemma} tied to a headword (${pct(lemma, n)})`);

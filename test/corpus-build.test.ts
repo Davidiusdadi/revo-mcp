@@ -488,8 +488,9 @@ describe("enrichment reads", () => {
   });
 });
 
-// A browser downloads the core stage and glosses from it: the morph tables
-// are there, the tilde occurrences they were built from are not.
+// A browser downloads the core stage and glosses from it: the morpheme
+// inventory is there, the stored splits and the tilde occurrences they were
+// built from are not — a word is split when it is asked about.
 describe("core stage", () => {
   let core: Database;
   beforeAll(() => {
@@ -499,10 +500,23 @@ describe("core stage", () => {
   afterAll(() => core.close());
   const tables = () => core.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type IN ('table','index')").all().map((r) => r.name);
 
-  test("carries the morphology and its affix table, not the tilde occurrences", () => {
-    expect(tables()).toEqual(expect.arrayContaining(["x_morpheme", "x_morph", "x_token", "x_pair", "x_affix", "idx_headword_norm"]));
-    expect(tables()).not.toContain("x_tld_occ");
-    expect(tables()).not.toContain("fts_dif");
+  test("carries the morpheme inventory and its affix table, not the stored splits or the tilde occurrences", () => {
+    expect(tables()).toEqual(expect.arrayContaining(["x_morpheme", "x_pair", "x_affix", "idx_headword_norm"]));
+    for (const t of ["x_morph", "x_token", "x_tld_occ", "fts_dif"]) expect(tables()).not.toContain(t);
+  });
+
+  test("splits a headword as the splits pass would have stored it", () => {
+    const inv = inventoryOf(core as never);
+    // the tilde pins mal~ulejo; hufofero is written out in full and pinned on fer
+    expect(classify(core as never, "malsanulejo", inv).seg).toBe("mal|san|ul|ej|o");
+    expect(classify(core as never, "hufofero", inv).seg).toBe("huf|o|fer|o");
+    // and the same across the slice, but for the few the kap's own mark decides
+    const stored = all<{ form: string; seg: string }>(
+      "SELECT form, seg FROM x_morph WHERE ok = 1 AND form NOT LIKE '% %' AND form NOT LIKE '%-%'");
+    expect(stored.length).toBeGreaterThan(300);
+    const differ = stored.filter((r) => classify(core as never, r.form, inv).seg !== r.seg).map((r) => r.form);
+    // 0.23 % over the whole corpus; the slice has a few of them at most
+    expect(differ.length, differ.join(", ")).toBeLessThanOrEqual(stored.length / 50);
   });
 
   test("glosses a word with its parts, its entry and its translations", () => {
