@@ -504,7 +504,8 @@ function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
   const scored = new Map<string, { tier: number; n: number }>();
   let checked = 0;
   const take = (guess: string) => {
-    if (guess === word || scored.has(guess) || ++checked > 40) return;
+    // a letter less than one letter is nothing, though an empty headword exists (korupteco's)
+    if (!guess || guess === word || scored.has(guess) || ++checked > 40) return;
     const ev = evidence(db, guess);
     if (ev) scored.set(guess, ev);
   };

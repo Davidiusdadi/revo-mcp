@@ -138,6 +138,15 @@ describe("gloss: Esperanto audit", () => {
     expect(t.near ?? []).toEqual([]);
   });
 
+  test("a letter alone is not one letter away from nothing", () => {
+    // korupt.xml's main headword is empty, so "" is a headword
+    for (const letter of ["n", "j"]) {
+      const t = classify(getDb(), letter, inventoryOf(getDb()));
+      expect(t.verdict).toBe("unknown");
+      expect(t.near ?? []).not.toContain("");
+    }
+  });
+
   test("a suggestion must be a real form, not just a related stem", () => {
     // brulaĵo is well formed and unlisted; brula shares its stem, but `brulao`
     // is nobody's spelling of anything and must not come back as a real word
