@@ -25,8 +25,8 @@ import { join } from "path";
 import { fromXSystem, hasXSystem } from "../../src/stemmer";
 import { FREQ, formsFile, TOTALS_FILE, SOURCE_NAMES, type SourceName } from "./paths";
 
-const HPLT_FILE = join(FREQ, "sources", "hplt", "1.jsonl.zst");
-const TEKSTARO_DIR = join(FREQ, "sources", "tekstaro", "xml", "tekstaro_de_esperanto_xml_kun_streketoj", "tekstoj");
+export const HPLT_FILE = join(FREQ, "sources", "hplt", "1.jsonl.zst");
+export const TEKSTARO_DIR = join(FREQ, "sources", "tekstaro", "xml", "tekstaro_de_esperanto_xml_kun_streketoj", "tekstoj");
 
 const ESPERANTO = /^[abcĉdefgĝhĥiĵjklmnoprsŝtuŭvz]+(?:-[abcĉdefgĝhĥiĵjklmnoprsŝtuŭvz]+)*$/u;
 const TOKEN = /[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*['’]?/gu;
@@ -45,30 +45,52 @@ export interface Totals {
   types: number;
 }
 
+/** One word of running text as the counts see it. */
+export interface Word {
+  /** the counted form: lowercased, elision restored, x-system converted */
+  w: string;
+  /** where the token starts in the text */
+  at: number;
+  /** the token began with a capital letter as written */
+  capital: boolean;
+}
+
+type Tally = Pick<Totals, "tokens" | "numeric" | "xsystem" | "foreign" | "esperanto">;
+
+/**
+ * The Esperanto words of a text, in order, by the rules above; `t` counts what
+ * was seen and dropped. Counter and the evidence script both read text through
+ * this, so a word found as evidence is the word that was counted.
+ */
+export function* words(text: string, t: Tally): Generator<Word> {
+  // Lowercase first, then split: a letter whose lowercase is longer (Turkish İ) splits the token, as the committed counts did.
+  const lower = text.toLowerCase();
+  const aligned = lower.length === text.length;
+  const capitalAt = (at: number) => aligned && /\p{Lu}/u.test(text[at]);
+  for (const m of lower.matchAll(TOKEN)) {
+    let w = m[0];
+    t.tokens++;
+    if (/\p{N}/u.test(w)) { t.numeric++; continue; }
+    if (/['’]$/.test(w)) w = w === "l'" || w === "l’" ? "la" : w.slice(0, -1) + "o";
+    if (hasXSystem(w)) { w = fromXSystem(w); t.xsystem++; }
+    if (/['’]/.test(w)) { t.foreign++; continue; } // an apostrophe inside a word is not Esperanto (don't)
+    const parts = w.split("-");
+    const pieces = parts.length > 1 && parts.every((p) => p.length >= 2) ? parts : [w];
+    let at = m.index!;
+    for (const p of pieces) {
+      if (!ESPERANTO.test(p)) t.foreign++;
+      else { t.esperanto++; yield { w: p, at, capital: capitalAt(at) }; }
+      at += p.length + 1;
+    }
+  }
+}
+
 export class Counter {
   readonly counts = new Map<string, number>();
   readonly totals: Totals = { documents: 0, lines: 0, kept: 0, tokens: 0, esperanto: 0, foreign: 0, numeric: 0, xsystem: 0, types: 0 };
 
   add(text: string) {
-    const t = this.totals;
-    for (const m of text.toLowerCase().matchAll(TOKEN)) {
-      let w = m[0];
-      t.tokens++;
-      if (/\p{N}/u.test(w)) { t.numeric++; continue; }
-      if (/['’]$/.test(w)) w = w === "l'" || w === "l’" ? "la" : w.slice(0, -1) + "o";
-      if (hasXSystem(w)) { w = fromXSystem(w); t.xsystem++; }
-      if (/['’]/.test(w)) { t.foreign++; continue; } // an apostrophe inside a word is not Esperanto (don't)
-      const parts = w.split("-");
-      if (parts.length > 1 && parts.every((p) => p.length >= 2)) { for (const p of parts) this.count(p); continue; }
-      this.count(w);
-    }
-  }
-
-  private count(w: string) {
-    const t = this.totals;
-    if (!ESPERANTO.test(w)) { t.foreign++; return; }
-    t.esperanto++;
-    this.counts.set(w, (this.counts.get(w) ?? 0) + 1);
+    for (const { w } of words(text, this.totals)) this.counts.set(w, (this.counts.get(w) ?? 0) + 1);
   }
 
   async write(source: SourceName) {
@@ -78,7 +100,7 @@ export class Counter {
   }
 }
 
-async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let rest = "";
   for await (const chunk of stream) {

@@ -55,3 +55,15 @@ bun run corpus:build --pass freq
 `REPORT.md` is the full picture the file is cut from: coverage curves, the
 words ReVo does not list, the headwords never seen, cross-checks against
 published lists.
+
+## Words ReVo lacks
+
+```bash
+bun run freq:candidates   # after freq:classify; ~15 min for the web pass
+```
+
+writes `data/freq/candidates.md`: the words used at least 1,000 times on the
+web and 10 times in Tekstaro that ReVo has no entry for, each with its split,
+where it is used (documents, sites, Tekstaro texts and years), example
+sentences, and warnings for what looks like a name, an abbreviation or one
+site's word. Derived words are grouped by the article that would hold them.
