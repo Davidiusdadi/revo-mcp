@@ -5,7 +5,7 @@
  * flagged `inferred` so authored and derived edges stay apart. `x_ref_tip`
  * carries the tip semantics so tools can generalise (sin, ant, hom ⊂ vid …).
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../../runtime/node-database";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
 import { contentOf } from "../../content";

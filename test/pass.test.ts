@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeEach } from "vitest";
+import { Database } from "../src/runtime/node-database";
 import { runPass, type Pass } from "../src/corpus/pass";
 
 // meta_pass as schema.sql declares it; a pass needs nothing else of the database.

@@ -33,7 +33,7 @@
  * The tildes they pin by come from the `tld-links` walk, not its table, which
  * the core stage leaves out.
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../../runtime/node-database";
 import { kapForms, outerXml } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";

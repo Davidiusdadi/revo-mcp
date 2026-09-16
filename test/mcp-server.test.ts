@@ -5,7 +5,7 @@
  * then exercises the actual MCP protocol: listTools, callTool, etc.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -378,12 +378,12 @@ describe("the application dictionary tools", () => {
     expect(entry.mrk).toBe(mark);
     expect(entry.senses.length).toBeGreaterThan(0);
     expect(entry.translations.map(({ lng }: { lng: string }) => lng)).toEqual(expect.arrayContaining(["en"]));
-    expect(entry.translations.every(({ lng }: { lng: string }) => lng === "en")).toBeTrue();
+    expect(entry.translations.every(({ lng }: { lng: string }) => lng === "en")).toBe(true);
   });
 
   test("entry reports a mark no entry has", async () => {
     const result = await appClient.callTool({ name: "entry", arguments: { mark: "hund.0nenio" } });
-    expect(result.isError).toBeTrue();
+    expect(result.isError).toBe(true);
     expect((result.content[0] as any).text).toContain("No dictionary entry has the mark hund.0nenio.");
   });
 });

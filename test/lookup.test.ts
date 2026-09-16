@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "vitest";
 import {
   getDb,
   lookupEsperanto,

@@ -2,7 +2,7 @@
  * Whole-corpus guarantees: every article parses, round-trips losslessly, and
  * uses only markup the DTD declares. Runs over all 13k files (+ overlay).
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

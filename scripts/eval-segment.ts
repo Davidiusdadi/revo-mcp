@@ -9,9 +9,9 @@
  * are neither in the pair evidence nor in the tune part the learned weights
  * were fitted on (scripts/train-segment.ts).
  *
- *   bun run scripts/eval-segment.ts [--db data/voko.db] [--show 20]
+ *   pnpm corpus:eval-segment [--db data/voko.db] [--show 20]
  */
-import { Database } from "bun:sqlite";
+import { Database } from "../src/runtime/node-database";
 import { segment, formatSegments, type Morph } from "../src/morph";
 import { segmentCases, type Case } from "./segment-cases";
 

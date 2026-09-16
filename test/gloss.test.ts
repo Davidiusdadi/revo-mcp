@@ -7,7 +7,7 @@
  * something is a confident wrong answer: a misspelling dressed up as a valid
  * derivation, or a "did you mean" nobody has ever written.
  */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "vitest";
 import { closeDb, getDb, glossText } from "../src/db";
 import { classify, inventoryOf, type EoGloss, type SourceGloss } from "../src/gloss";
 import { executeGloss, glossOutputSchema, handleGloss } from "../src/tools/gloss";
@@ -263,7 +263,7 @@ describe("gloss: Esperanto audit", () => {
 describe("gloss: rendering", () => {
   test("the source glossary names its sections and its caveat", () => {
     const md = handleGloss({ text: "The naked eye.", lang: "en", per_word: 3, max_words: 80 });
-    expect(md).toStartWith("## Glossary: en → eo");
+    expect(md).toMatch(/^## Glossary: en → eo/);
     expect(md).toContain("**Words**");
     expect(md).toContain("okulo");
   });
@@ -275,7 +275,7 @@ describe("gloss: rendering", () => {
       per_word: 4,
       max_words: 120,
     });
-    expect(md).toStartWith("## Esperanto check");
+    expect(md).toMatch(/^## Esperanto check/);
     expect(md.indexOf("**Unknown**")).toBeLessThan(md.indexOf("**In the dictionary**"));
     expect(md).toContain("did you mean **ŝanĝiĝis**");
     expect(md).toContain("kiun oni devas fari");
@@ -298,7 +298,7 @@ describe("gloss: what a reader needs to show a word", () => {
     const t = at("hundoj", ["de", "en"]);
     expect(t.verdict).toBe("inflection");
     expect(t.translations).toContainEqual({ lng: "de", trd: "Hund" });
-    expect(t.translations!.every((x) => x.lng === "de" || x.lng === "en")).toBeTrue();
+    expect(t.translations!.every((x) => x.lng === "de" || x.lng === "en")).toBe(true);
     expect(at("hundo", []).translations).toEqual([]);
   });
 

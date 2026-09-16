@@ -3,10 +3,10 @@
  * derive from the stored articles: nodes, headwords and translations, the
  * entry content read back at runtime, and the enrichment tables. That every
  * article comes back as it parsed is test/documents.test.ts's, and the full
- * corpus's is checked by `bun run corpus:build` itself.
+ * corpus's is checked by `pnpm corpus:build` itself.
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { Database } from "../src/runtime/node-database";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -95,7 +95,7 @@ describe("corpus build", () => {
     for (const n of nodes) {
       const [whole] = readRange(db as never, n.id, n.last_id);
       const [masked] = readRange(db as never, n.id, n.last_id, { mask: n.mask });
-      expect(domEqual(masked, whole)).toBeTrue();
+      expect(domEqual(masked, whole)).toBe(true);
     }
   });
 
@@ -270,7 +270,7 @@ describe("fixes from the parity report", () => {
       for (const ctl of [...descendants(art, "ekz")].flatMap((ekz) => [...descendants(ekz, "ctl")])) {
         if (ctl.children.some((c) => c.type !== "text")) continue;
         const text = ctl.children.map((c) => (c.type === "text" ? c.value : "")).join("").replace(/\s+/g, " ").trim();
-        expect(rows.some((txt) => txt.includes(`„${text}“`))).toBeTrue();
+        expect(rows.some((txt) => txt.includes(`„${text}“`))).toBe(true);
         quoted++;
       }
     }

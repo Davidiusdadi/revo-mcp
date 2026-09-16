@@ -1,4 +1,5 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
+import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -17,7 +18,7 @@ function dockerfileArgs(): Record<string, string> {
 
 /** `git submodule status` → path ⇒ commit. */
 function submodulePins(): Record<string, string> {
-  const out = Bun.spawnSync(["git", "-C", ROOT, "submodule", "status"]).stdout.toString();
+  const out = spawnSync("git", ["-C", ROOT, "submodule", "status"], { encoding: "utf8" }).stdout;
   const pins: Record<string, string> = {};
   for (const line of out.trim().split("\n")) {
     const m = line.match(/^[-+U ]?([0-9a-f]{40})\s+(\S+)/);
@@ -29,7 +30,7 @@ function submodulePins(): Record<string, string> {
 // Needs the superproject's git metadata, which a plain source export lacks.
 const inGitRepo = (() => {
   try {
-    return Bun.spawnSync(["git", "-C", ROOT, "rev-parse", "--git-dir"]).exitCode === 0;
+    return spawnSync("git", ["-C", ROOT, "rev-parse", "--git-dir"], { encoding: "utf8" }).status === 0;
   } catch {
     return false; // no git installed
   }
@@ -49,16 +50,16 @@ describe("deploy pins", () => {
     expect(args.VOKO_GRUNDO_SHA).toBe(pins["vendor/voko-grundo"]);
   });
 
-  // A floating `oven/bun:1` means the build runs whatever Bun is cached where
-  // it happens to run — which is how a two-year-old 1.1.4 image, with no
-  // Statement.iterate(), got used for a build the passes cannot survive.
-  test("the base image is pinned to an exact Bun version in every stage", () => {
+  // A floating tag such as `node:24-slim` means the build runs whatever image
+  // is cached where it happens to run, which can be far older than the one the
+  // passes were written against. An exact version makes the build reproducible.
+  test("the base image is pinned to an exact Node version in every stage", () => {
     const dockerfile = readFileSync(join(ROOT, "Dockerfile"), "utf8");
-    expect(dockerfileArgs().BUN_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(dockerfileArgs().NODE_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 
     const froms = dockerfile.split("\n").filter((l) => l.startsWith("FROM "));
     expect(froms.length).toBeGreaterThan(0);
-    for (const from of froms) expect(from).toContain("${BUN_VERSION}");
+    for (const from of froms) expect(from).toContain("${NODE_VERSION}");
   });
 
   test("the sources are named as owner/repo, fetched over https by the script", () => {

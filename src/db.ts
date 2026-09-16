@@ -1,7 +1,7 @@
 /**
  * Database connection and query functions for the Revo dictionary.
  *
- * Queries the corpus `bun run setup` builds from the VOKO XML (data/voko.db).
+ * Queries the corpus `pnpm db:setup` builds from the VOKO XML (data/voko.db).
  * Words are found through the search pass's `serĉo` rows and entries read as
  * node ranges (db-voko.ts); the FTS indexes the `fts` pass writes are a
  * fallback where the database has them. Supports:
@@ -53,7 +53,7 @@ export function configureDatabase(database: SqlReader): void {
   }
   if (problem) {
     database.close();
-    throw new Error(`The configured database ${problem}. Run \`bun run setup\` to build data/voko.db.`);
+    throw new Error(`The configured database ${problem}. Run \`pnpm db:setup\` to build data/voko.db.`);
   }
   if (_db && _db !== database) _db.close();
   _db = database;

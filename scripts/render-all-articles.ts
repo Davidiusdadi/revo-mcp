@@ -1,12 +1,13 @@
-#!/usr/bin/env bun
 /**
  * Hardening script: renders every Esperanto headword through the lookup +
- * format pipeline and reports any failures. Parallelized over Bun Workers.
- * Run with: bun run scripts/render-all-articles.ts
+ * format pipeline and reports any failures. Parallelized over worker threads.
+ * Run with: pnpm exec tsx scripts/render-all-articles.ts
  *   Env: REVO_DB=path/to.db, REVO_WORKERS=8, REVO_BATCH=200
  */
-import { Database } from "bun:sqlite";
+import { writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
+import { Worker } from "node:worker_threads";
+import { Database } from "../src/runtime/node-database";
 
 const DB_PATH = process.env.REVO_DB ?? process.env.REVO_DB_PATH ?? "data/voko.db";
 const NUM_WORKERS = Number(process.env.REVO_WORKERS) || Math.max(2, availableParallelism() - 1);
@@ -77,14 +78,14 @@ function maybePrintProgress() {
   );
 }
 
-const workerUrl = new URL("./render-all-worker.ts", import.meta.url).href;
+const workerUrl = new URL("./render-all-worker.ts", import.meta.url);
 let liveWorkers = NUM_WORKERS;
 
 await new Promise<void>((resolve) => {
   for (let i = 0; i < NUM_WORKERS; i++) {
-    const w = new Worker(workerUrl);
-    w.onmessage = (e: MessageEvent) => {
-      const msg = e.data;
+    // tsx is registered again in each worker, to load the TypeScript worker and what it imports
+    const w = new Worker(workerUrl, { execArgv: ["--import", import.meta.resolve("tsx")] });
+    w.on("message", (msg) => {
       if (msg.type === "ready" || msg.type === "result") {
         if (msg.type === "result") {
           processed += msg.processed;
@@ -102,17 +103,15 @@ await new Promise<void>((resolve) => {
           w.postMessage({ type: "work", batch });
         }
       } else if (msg.type === "exiting") {
-        w.terminate();
-        liveWorkers--;
-        if (liveWorkers === 0) resolve();
+        void w.terminate();
       }
-    };
-    w.onerror = (e: ErrorEvent) => {
-      console.error(`Worker error: ${e.message}`);
-      w.terminate();
+    });
+    w.on("error", (e) => console.error(`Worker error: ${e.message}`));
+    // after "exiting", and after an error, which ends the worker
+    w.on("exit", () => {
       liveWorkers--;
       if (liveWorkers === 0) resolve();
-    };
+    });
   }
 });
 
@@ -125,7 +124,7 @@ console.log(`  crashed:   ${crashed}`);
 
 if (failures.length > 0) {
   const outPath = "scripts/render-all-failures.json";
-  await Bun.write(outPath, JSON.stringify(failures, null, 2));
+  writeFileSync(outPath, JSON.stringify(failures, null, 2));
   console.log(`\nFailure details written to ${outPath}`);
 
   const crashes = failures.filter((f) => f.kind === "crash");

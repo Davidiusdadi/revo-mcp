@@ -12,7 +12,7 @@
     "./data/*": "./data/*"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "vitest run"
   },
   "dependencies": {
     "saxes": "^6.0.0"

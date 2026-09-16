@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
 import { lemmaCandidates, segment, readings, formatSegments, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 

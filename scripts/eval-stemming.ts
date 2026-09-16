@@ -9,9 +9,9 @@
  *   - family: the segmenter's roots (the lookupFamily use). Compounds are
  *     filed under either root in ReVo, so "any root" is reported too.
  *
- *   bun run scripts/eval-stemming.ts [--db data/voko.db]
+ *   pnpm corpus:eval [--db data/voko.db]
  */
-import { Database } from "bun:sqlite";
+import { Database } from "../src/runtime/node-database";
 import { generateStems } from "../src/stemmer";
 import { lemmaCandidates, segment, ENDINGS, type Inventory } from "../src/morph";
 

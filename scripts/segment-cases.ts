@@ -14,9 +14,10 @@
  * tune part only, so the report part scores words the segmenter has never
  * seen a relative of.
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../src/runtime/node-database";
 import { segment, ENDINGS, type Inventory, type WordClass } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
+import { hashString } from "./wyhash";
 
 export type Part = "evidence" | "tune" | "report";
 export interface Case {
@@ -29,9 +30,9 @@ export interface Case {
 
 const ENDING = /(ojn|oj|on|ajn|aj|an|en|as|is|os|us|[oaieu])$/;
 const stemOf = (word: string) => word.replace(ENDING, "");
-export const partOf = (word: string): Part => (["evidence", "tune", "report"] as const)[Number(Bun.hash(stemOf(word)) % 3n)];
+export const partOf = (word: string): Part => (["evidence", "tune", "report"] as const)[Number(hashString(stemOf(word)) % 3n)];
 /** A second stable split, into halves by stem, for cross-validation inside one part. */
-export const foldOf = (word: string): number => Number(Bun.hash("f" + stemOf(word)) % 2n);
+export const foldOf = (word: string): number => Number(hashString("f" + stemOf(word)) % 2n);
 
 export function segmentCases(db: Database): { inv: Inventory; all: Case[]; pairs: Pairs } {
   const rootWeight = new Map<string, number>();

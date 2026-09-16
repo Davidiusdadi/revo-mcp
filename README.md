@@ -3,7 +3,7 @@
 An [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server for looking up words in [Reta Vortaro](https://www.reta-vortaro.de/revo/) — the comprehensive, open-source Esperanto dictionary.
 
 Provides Esperanto definitions, examples, and translations across 191 languages
-to MCP-compatible clients. It can run as a Bun server or directly in a browser
+to MCP-compatible clients. It can run as a Node server or directly in a browser
 Worker over a `MessagePort` transport.
 
 ## Features
@@ -67,9 +67,11 @@ stages.
 
 ## Prerequisites
 
-- [Bun](https://bun.sh/) 1.3+ — the corpus build streams its queries with
-  `Statement.iterate()`, which older Bun does not have (tested on 1.3.13, which
-  is also what the `Dockerfile` pins)
+- [Node.js](https://nodejs.org/) 24+ — the corpus build and the server read
+  SQLite through the built-in `node:sqlite` (tested on 24.15.0, which is also
+  what the `Dockerfile` pins)
+- [pnpm](https://pnpm.io/) 11 — `corepack enable` provides the version
+  `package.json` names
 - git, and ~1 GB of free disk space for the sources and the built database
 
 ## Setup
@@ -79,13 +81,13 @@ git clone --recurse-submodules https://github.com/Davidiusdadi/revo-mcp.git
 cd revo-mcp
 
 # Install dependencies
-bun install
+pnpm install
 
 # Check out the XML sources and build the dictionary database (~4 min, ~280 MB)
-bun run setup
+pnpm db:setup
 ```
 
-`bun run setup` checks out the two source submodules, generates the parser's
+`pnpm db:setup` checks out the two source submodules, generates the parser's
 entity and name tables from them, then parses all 13,079 VOKO articles into
 `data/voko.db`, stores them there whole, and runs the passes that derive the
 search and enrichment tables from them. The database is not committed —
@@ -104,10 +106,10 @@ with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
 # The database a browser reads: search, lookup, entries, languages and Esperanto glossing (~143 MB, ~63 MB gzipped)
-bun run corpus:build --stage core --out ./dist/revo/voko.db
+pnpm corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
-bun run browser:build --out ./dist/revo/revo-worker.js
+pnpm browser:build --out ./dist/revo/revo-worker.js
 ```
 
 The build writes `voko.db.gz` next to `voko.db`; publish both, together.
@@ -176,7 +178,7 @@ The core file (143 MB, 63 MB gzipped) holds every article whole, one table
 per XML element (92 MB, citations, remarks and markup included), plus the
 search table (24 MB), the translations (22 MB), the nodes and headwords
 (5.5 MB), and the morpheme inventory that glosses an Esperanto word (1 MB). The
-full build (`bun run setup`, 281 MB, 131 MB gzipped) adds the enrichment
+full build (`pnpm db:setup`, 281 MB, 131 MB gzipped) adds the enrichment
 passes, their indexes, and the stored split of every headword and attested
 form.
 
@@ -199,9 +201,9 @@ another domain can be chosen from them.
 
 A result carries what a result card shows: the headword, mark, usage domains
 and the translations in the searched languages. `entry` loads the rest by mark.
-The `search` and `entry` tools are the same on the Bun server;
+The `search` and `entry` tools are the same on the Node server;
 `MessagePortTransport` and `connectWorkerServer` connect the server to a Worker
-without Node or Bun globals.
+without Node globals.
 
 A core database answers `search`, `entry`, `lookup`, `lookup_root`,
 `languages`, and `gloss` for Esperanto text; `examples`, `thesaurus`,
@@ -216,8 +218,8 @@ Add to your Claude Desktop MCP configuration (`~/Library/Application Support/Cla
 {
   "mcpServers": {
     "revo": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/revo-mcp/src/index.ts"]
+      "command": "pnpm",
+      "args": ["--silent", "--dir", "/absolute/path/to/revo-mcp", "start"]
     }
   }
 }
@@ -231,8 +233,8 @@ Add to your MCP settings (`.claude/settings.json`):
 {
   "mcpServers": {
     "revo": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/revo-mcp/src/index.ts"]
+      "command": "pnpm",
+      "args": ["--silent", "--dir", "/absolute/path/to/revo-mcp", "start"]
     }
   }
 }
@@ -241,7 +243,7 @@ Add to your MCP settings (`.claude/settings.json`):
 ### Direct start
 
 ```bash
-bun run start
+pnpm start
 ```
 
 The server communicates via stdio using the MCP protocol.
@@ -392,8 +394,8 @@ forms, and `derived` on a core one.
 ## Testing
 
 ```bash
-# Run all tests (requires data/voko.db — run `bun run setup` first)
-bun test
+# Run all tests (requires data/voko.db — run `pnpm db:setup` first)
+pnpm test
 ```
 
 The test suite includes:
@@ -421,7 +423,7 @@ revo-mcp/
 ├── vendor/                # Source submodules: revo-fonto, voko-grundo
 ├── test/
 └── data/
-    └── voko.db            # Built by `bun run setup` (gitignored)
+    └── voko.db            # Built by `pnpm db:setup` (gitignored)
 ```
 
 `data/voko.db` is parsed from the VOKO XML rather than downloaded, so it keeps

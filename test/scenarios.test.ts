@@ -10,7 +10,7 @@
  * Each scenario tests the handleLookup function end-to-end.
  */
 
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "vitest";
 import { handleLookup } from "../src/tools/lookup";
 import { closeDb } from "../src/db";
 

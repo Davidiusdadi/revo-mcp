@@ -1,13 +1,12 @@
-#!/usr/bin/env bun
 /**
  * Parity report: upstream's revo.db vs our XML-built voko.db, built from the
  * same source snapshot. Compares *key sets*, not row counts — upstream's
  * traduko has exact duplicates and re-attaches sense rows at drv level.
  * Old-only keys are what switching would lose; each must be zero or explained.
  *
- *   bun run corpus:validate [--old data/revo.db] [--new data/voko.db] [--report data/parity.md]
+ *   pnpm corpus:validate [--old data/revo.db] [--new data/voko.db] [--report data/parity.md]
  */
-import { Database } from "bun:sqlite";
+import { Database } from "../src/runtime/node-database";
 import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";

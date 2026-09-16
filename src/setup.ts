@@ -1,14 +1,14 @@
-#!/usr/bin/env bun
 /**
  * Setup: build data/voko.db from ReVo's VOKO XML.
  *
  * Checks out the source submodules and generates the parser's tables first if
  * that has not happened yet (scripts/fonto.sh), then stores the articles and
- * runs every pass — the same work as `bun run corpus:build`, so a fresh
+ * runs every pass — the same work as `pnpm corpus:build`, so a fresh
  * clone reaches a serving database in one command.
  */
 
-import { existsSync, mkdirSync } from "fs";
+import { spawnSync } from "child_process";
+import { existsSync, mkdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -24,8 +24,9 @@ const ARTICLES = join(ROOT, "vendor", "revo-fonto", "revo");
 const ENTITIES = join(ROOT, "packages", "voko-xml", "data", "entities.json");
 
 function run(cmd: string[], whatFailed: string): void {
-  const proc = Bun.spawnSync(cmd, { stdout: "inherit", stderr: "inherit" });
-  if (proc.exitCode !== 0) throw new Error(whatFailed);
+  // From the repository root, where `--import tsx` resolves.
+  const proc = spawnSync(cmd[0], cmd.slice(1), { cwd: ROOT, stdio: "inherit" });
+  if (proc.status !== 0) throw new Error(whatFailed);
 }
 
 /**
@@ -52,7 +53,7 @@ function sources(): void {
     // without git. gen-entities.ts only reads vendor/voko-grundo/{dtd,cfg}.
     console.log("Generating the parser's entity and cfg tables...");
     run(
-      ["bun", "run", join(ROOT, "scripts", "gen-entities.ts")],
+      [process.execPath, "--import", "tsx", join(ROOT, "scripts", "gen-entities.ts")],
       "scripts/gen-entities.ts failed — is vendor/voko-grundo present?"
     );
     return;
@@ -73,10 +74,10 @@ async function main(): Promise<void> {
   for (const pass of PASSES) runPass(db, pass);
   finish(db, DB_PATH);
 
-  const mb = (Bun.file(DB_PATH).size / 1024 / 1024).toFixed(0);
+  const mb = (statSync(DB_PATH).size / 1024 / 1024).toFixed(0);
   const s = ((Date.now() - t0) / 1000).toFixed(0);
   console.log(`\nSetup complete: ${DB_PATH} (${mb} MB) in ${s}s.`);
-  console.log("Run `bun run start` to start the MCP server.");
+  console.log("Run `pnpm start` to start the MCP server.");
 }
 
 await main();

@@ -1,14 +1,13 @@
-#!/usr/bin/env bun
 /**
  * Builds data/voko.db from the VOKO XML: the articles stored as tables (L1,
  * src/corpus/documents.ts), then the passes of the requested stage.
  *
- *   bun run corpus:build                 full rebuild: core + enrichment passes
- *   bun run corpus:build --stage core    articles + structure + search + morph, what a browser downloads
- *   bun run corpus:build --pass fts      run one pass on the existing DB
- *   bun run corpus:build --limit 200     dev: first N articles only
- *   bun run corpus:build --overlay DIR   merge that directory instead of corpus/overlay
- *   bun run corpus:build --out x.db
+ *   pnpm corpus:build                    full rebuild: core + enrichment passes
+ *   pnpm corpus:build --stage core       articles + structure + search + morph, what a browser downloads
+ *   pnpm corpus:build --pass fts         run one pass on the existing DB
+ *   pnpm corpus:build --limit 200        dev: first N articles only
+ *   pnpm corpus:build --overlay DIR      merge that directory instead of corpus/overlay
+ *   pnpm corpus:build --out x.db
  *
  * The core stage answers search, lookup, entries, languages and the Esperanto
  * gloss; the full stage adds the enrichment the server's other tools read
@@ -21,10 +20,12 @@
  * on an article that does not read back from the tables as its file parsed,
  * so nothing upstream adds slips through.
  */
-import { Database } from "bun:sqlite";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
+import { Database } from "../runtime/node-database";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { plainText, childElements, substituteEntities, parse, type Roots } from "voko-xml";
 import lingvoj from "voko-xml/data/cfg/lingvoj.json";
 import fakoj from "voko-xml/data/cfg/fakoj.json";
@@ -123,8 +124,8 @@ function pinnedRev(name: string): string | null {
  */
 function gitRev(dir: string, name: string): string {
   try {
-    const p = Bun.spawnSync(["git", "-C", dir, "rev-parse", "HEAD"]);
-    if (p.exitCode === 0) return p.stdout.toString().trim();
+    const p = spawnSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" });
+    if (p.status === 0) return p.stdout.trim();
   } catch {
     // No git binary: not an error here, the pins below are authoritative.
   }
@@ -184,7 +185,7 @@ export function finish(db: Database, out: string): void {
   db.exec("ANALYZE");
   db.exec("VACUUM");
   db.close();
-  writeFileSync(`${out}.gz`, Bun.gzipSync(readFileSync(out), { level: 9 }));
+  writeFileSync(`${out}.gz`, gzipSync(readFileSync(out), { level: 9 }));
 }
 
 function main() {
@@ -213,7 +214,8 @@ function main() {
   }
   finish(db, out);
   const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
-  console.log(`${out}: ${mb(Bun.file(out).size)} MB, ${out}.gz: ${mb(Bun.file(`${out}.gz`).size)} MB`);
+  console.log(`${out}: ${mb(statSync(out).size)} MB, ${out}.gz: ${mb(statSync(`${out}.gz`).size)} MB`);
 }
 
-if (import.meta.main) main();
+// Run as a script, not imported (tsx leaves import.meta.main unset).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main();

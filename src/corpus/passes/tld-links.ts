@@ -11,7 +11,7 @@
  * belongs to the core stage and this table does not, so the two share the
  * walk rather than the table.
  */
-import type { Database } from "bun:sqlite";
+import type { Database } from "../../runtime/node-database";
 import {
   expandTld, NODE_KIND_SET,
   type Element, type Node, type Roots,

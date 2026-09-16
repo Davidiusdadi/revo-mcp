@@ -76,7 +76,7 @@ export function requirePasses(db: SqlReader, what: string, passes: string[]): vo
   if (missing.length === 0) return;
   throw new Error(
     `${what} needs the ${missing.join(", ")} pass${missing.length > 1 ? "es" : ""}, which this database ` +
-      "was built without (a core build). Build the full stage with `bun run corpus:build`.",
+      "was built without (a core build). Build the full stage with `pnpm corpus:build`.",
   );
 }
 

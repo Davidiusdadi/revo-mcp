@@ -1,12 +1,10 @@
-#!/usr/bin/env bun
 /**
  * Profiles where time is actually spent inside lookupEsperanto + format
- * for a sample of headwords. Run: bun run scripts/profile-lookup.ts
+ * for a sample of headwords. Run: pnpm exec tsx scripts/profile-lookup.ts
  */
-import { Database } from "bun:sqlite";
+import { Database, configureNodeDatabase } from "../src/runtime/node-database";
 import { lookupEsperanto, closeDb, getDb } from "../src/db";
 import { formatResults } from "../src/formatter";
-import { configureBunDatabase } from "../src/runtime/bun-database";
 
 const DB_PATH = process.env.REVO_DB ?? process.env.REVO_DB_PATH ?? "data/voko.db";
 const SAMPLE = 200;
@@ -21,7 +19,7 @@ const sample = db
 db.close();
 
 // Warm up the shared db connection used by lookupEsperanto
-configureBunDatabase(DB_PATH);
+configureNodeDatabase(DB_PATH);
 lookupEsperanto(sample[0].kap, 1);
 
 let tLookup = 0n;
