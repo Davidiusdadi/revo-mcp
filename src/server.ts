@@ -13,7 +13,7 @@ import {
   entryOutputSchema,
   executeEntry,
 } from "./tools/search";
-import { glossInputSchema, handleGloss } from "./tools/gloss";
+import { glossInputSchema, glossOutputSchema, executeGloss, renderGloss } from "./tools/gloss";
 import {
   getLanguages,
   getHeadwordCount,
@@ -175,20 +175,24 @@ export function createMcpServer(): McpServer {
     structuredContent: { kind: "reverse_lookup", data: searchDefinitions(args.description, args.limit) },
   })));
 
-  server.tool(
-    "gloss",
-    "Gloss a whole text against the dictionary in one call — pass a paragraph or a passage, " +
-      "not a single word. With a source language (lang='en'/'de'/…) it returns, for every " +
+  server.registerTool("gloss", {
+    description: "Gloss a text against the dictionary in one call — a paragraph, a passage, or a word. " +
+      "With a source language (lang='en'/'de'/…) it returns, for every " +
       "content word and multi-word phrase, the Esperanto roots available for it, so a long " +
       "translation can be planned before it is written and the words with no entry at all are " +
-      "visible up front. With lang='eo' it audits an Esperanto draft instead: each word comes " +
+      "visible up front. With lang='eo' it audits an Esperanto text instead: each word comes " +
       "back as a headword, an inflection, a form attested in the examples, a regular derivation " +
-      "no article lists (farenda = far/end/a), or unknown — with the nearest real word named. " +
-      "Use it at the start of a translation and again on the draft; use `lookup` for one word's " +
-      "definition and senses.",
-    glossInputSchema.shape,
-    async (args) => toolResponse("gloss", args as Record<string, unknown>, () => handleGloss(args as any))
-  );
+      "no article lists (farenda = far/end/a), or unknown — with the nearest real word named, " +
+      "the word's parts glossed from their own articles, the entry's mark, and with `languages` " +
+      "its translations. Use it at the start of a translation and again on the draft; use " +
+      "`lookup` for one word's definition and senses.",
+    inputSchema: glossInputSchema,
+    outputSchema: glossOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("gloss", args as Record<string, unknown>, () => {
+    const result = executeGloss(args);
+    return { text: renderGloss(result), structuredContent: { ...result } };
+  }));
 
   return server;
 }

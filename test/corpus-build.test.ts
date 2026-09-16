@@ -13,12 +13,13 @@ import { join } from "path";
 import { descendants, domEqual, type Element } from "voko-xml";
 import { idOf, readRange } from "../src/articles";
 import { contentOf, entryContent, textIn, OMIT } from "../src/content";
-import { buildArticles, PASSES } from "../src/corpus/build";
+import { buildArticles, CORE_PASSES, PASSES } from "../src/corpus/build";
 import { articleTrees, type ArticleTree } from "../src/corpus/documents";
 import { runPass } from "../src/corpus/pass";
-import { TOKEN_GROUPS } from "../src/corpus/passes/morph";
+import { tldOccurrences, tokenGroups } from "../src/corpus/passes/tld-links";
 import { IS_ENTRY, assembleEntry, entryNodeByMark, sensesOf as sensesAt, thesaurusOf, searchDefinitions, translationsOf } from "../src/db-voko";
 import { lemmaCandidates } from "../src/morph";
+import { classify, inventoryOf } from "../src/gloss";
 
 let dir: string;
 let db: Database;
@@ -403,7 +404,7 @@ describe("pass morph", () => {
   test("the tilde pin comes from one occurrence, not two", () => {
     // cxeval writes some tildes as <tld lit="Ĉ"/>, so its occurrences of
     // "ĉevalo" differ in pre and rad; the pass must not mix them.
-    const groups = all<{ norm: string; article_id: number; pre: string; rad: string }>(TOKEN_GROUPS);
+    const groups = tokenGroups(tldOccurrences(db));
     expect(groups.length).toBeGreaterThan(100);
     const bad = groups.filter((g) => !one(
       `SELECT 1 FROM x_tld_occ WHERE norm = ? AND article_id = ? AND owner_kind <> 'kap'
@@ -484,5 +485,45 @@ describe("enrichment reads", () => {
 
   test("reverse lookup treats FTS operators as text", () => {
     expect(() => searchDefinitions(db, 'besto OR "x')).not.toThrow();
+  });
+});
+
+// A browser downloads the core stage and glosses from it: the morph tables
+// are there, the tilde occurrences they were built from are not.
+describe("core stage", () => {
+  let core: Database;
+  beforeAll(() => {
+    core = buildArticles(join(dir, "core.db"), 120, EXTRA);
+    for (const p of CORE_PASSES) runPass(core, p, () => {});
+  });
+  afterAll(() => core.close());
+  const tables = () => core.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type IN ('table','index')").all().map((r) => r.name);
+
+  test("carries the morphology and its affix table, not the tilde occurrences", () => {
+    expect(tables()).toEqual(expect.arrayContaining(["x_morpheme", "x_morph", "x_token", "x_pair", "x_affix", "idx_headword_norm"]));
+    expect(tables()).not.toContain("x_tld_occ");
+    expect(tables()).not.toContain("fts_dif");
+  });
+
+  test("glosses a word with its parts, its entry and its translations", () => {
+    const t = classify(core as never, "malsanulejo", inventoryOf(core as never), ["de"]);
+    expect(t.verdict).toBe("headword");
+    expect(t.seg).toBe("mal|san|ul|ej|o");
+    expect(t.mrk).toBe("san.mal0ulejo");
+    expect(t.translations).toBeDefined();
+    const mal = t.parts!.find((p) => p.m === "mal")!;
+    expect(mal.mrk).toBe("mal.0");
+    expect(mal.gloss!.length).toBeGreaterThan(12);
+    const hund = classify(core as never, "hundoj", inventoryOf(core as never), ["de"]);
+    expect(hund.mrk).toBe("hund.0o");
+    expect(hund.translations).toContainEqual({ lng: "de", trd: "Hund" });
+  });
+
+  test("the affix table says what each affix means, from the article's first telling definition", () => {
+    const rows = core.query<{ morph: string; kind: string; txt: string; mrk: string | null; gloss: string | null }, []>(
+      "SELECT morph, kind, txt, mrk, gloss FROM x_affix ORDER BY morph").all();
+    expect(rows.find((r) => r.morph === "mal")).toMatchObject({ kind: "P", txt: "mal-", mrk: "mal.0" });
+    expect(rows.find((r) => r.morph === "ul")).toMatchObject({ kind: "S", txt: "-ul", mrk: "ul.0" });
+    for (const r of rows) if (r.gloss) expect(r.gloss).not.toMatch(/^(sufikso|prefikso)/i);
   });
 });

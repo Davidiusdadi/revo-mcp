@@ -31,6 +31,7 @@ import {
   lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
+import { translationsOf } from "./db-voko";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -75,6 +76,8 @@ export interface Part {
   /** For an affix, its ReVo definition; for a root, the article's own headword. */
   gloss?: string;
   art?: string;
+  /** The mark of the entry that names the part: the affix's, or the root's own headword's. */
+  mrk?: string;
 }
 
 /** One way of taking a word apart, and the article it comes from. */
@@ -93,6 +96,10 @@ export interface EoTerm {
   /** headword / inflection: the dictionary form. */
   headword?: string;
   art?: string;
+  /** The mark of the dictionary form's entry, what `entry` loads. */
+  mrk?: string;
+  /** The entry's translations in the languages asked for, as `entry` lists them. */
+  translations?: { lng: string; trd: string }[];
   /** How the dictionary form was reached: infl · class · ptcp. */
   how?: string;
   /** attested: occurrences in the example corpus. */
@@ -143,6 +150,8 @@ export interface GlossOptions {
   perTerm?: number;
   /** Max distinct terms reported. */
   maxWords?: number;
+  /** Esperanto: the languages each dictionary form's translations are listed in; none when omitted. */
+  languages?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -180,90 +189,101 @@ const FUNCTION_WORDS: Record<string, ReadonlySet<string>> = {
 // cached corpus reads
 // ---------------------------------------------------------------------------
 
-const invCache = new WeakMap<SqlReader, Inventory>();
-const affixCache = new WeakMap<SqlReader, Map<string, { txt: string; gloss: string; art: string }>>();
+const invCache = new WeakMap<SqlReader, CorpusInventory>();
+const affixCache = new WeakMap<SqlReader, Map<string, AffixRow>>();
 const byLenCache = new WeakMap<SqlReader, Map<number, string[]>>();
 
-/** The morpheme inventory the `morph` pass wrote, as `segment` wants it. */
-export function inventoryOf(db: SqlReader): Inventory {
-  const hit = invCache.get(db);
-  if (hit) return hit;
-  const sets: Record<string, Set<string>> = { R: new Set(), P: new Set(), S: new Set(), W: new Set() };
-  const rootWeight = new Map<string, number>();
-  // the word class columns are per article row; summing them counts each
-  // headword of the root once (see the morph pass)
-  const classes = new Map<string, WordClass>();
-  for (const r of db.query<{ morph: string; kind: string; drv: number; o: number; a: number; e: number; i: number }, []>(
-    `SELECT morph, kind, SUM(drv) drv, SUM(o) o, SUM(a) a, SUM(e) e, SUM(i) i
-       FROM x_morpheme WHERE kind IN ('R','P','S','W') GROUP BY morph, kind`).all()) {
-    sets[r.kind].add(r.morph);
-    if (r.kind !== "R") continue;
-    rootWeight.set(r.morph, r.drv);
-    classes.set(r.morph, { o: r.o, a: r.a, e: r.e, i: r.i });
+/**
+ * The morpheme inventory the `morph` pass wrote, as `segment` wants it.
+ *
+ * The affixes and endingless words are read at once: every word's stored
+ * split is read through them, and they are a few hundred rows. The roots,
+ * their weights and classes, and the pairs are read the first time a word has
+ * to be segmented — which a headword, an inflection of one or an attested form
+ * never is. Over HTTP that read is some 240 pages, and most lookups never
+ * make it.
+ */
+class CorpusInventory implements Inventory {
+  readonly prefixes = new Set<string>();
+  readonly suffixes = new Set<string>();
+  readonly words = new Set<string>();
+  private full?: {
+    roots: Set<string>; pairs: Map<string, number>; rootWeight: Map<string, number>; classes: Map<string, WordClass>;
+  };
+
+  constructor(private readonly db: SqlReader) {
+    for (const r of db.query<{ morph: string; kind: string }, []>(
+      "SELECT DISTINCT morph, kind FROM x_morpheme WHERE kind IN ('P','S','W')").all()) {
+      (r.kind === "P" ? this.prefixes : r.kind === "S" ? this.suffixes : this.words).add(r.morph);
+    }
   }
-  const pairs = new Map<string, number>();
-  for (const p of db.query<{ a: string; b: string; n: number }, []>("SELECT a, b, n FROM x_pair").all()) pairs.set(`${p.a}+${p.b}`, p.n);
-  const inv: Inventory = { roots: sets.R, prefixes: sets.P, suffixes: sets.S, words: sets.W, pairs, rootWeight, classes };
-  invCache.set(db, inv);
+
+  private load() {
+    if (this.full) return this.full;
+    const roots = new Set<string>();
+    const rootWeight = new Map<string, number>();
+    // the word class columns are per article row; summing them counts each
+    // headword of the root once (see the morph pass)
+    const classes = new Map<string, WordClass>();
+    for (const r of this.db.query<{ morph: string; drv: number; o: number; a: number; e: number; i: number }, []>(
+      `SELECT morph, SUM(drv) drv, SUM(o) o, SUM(a) a, SUM(e) e, SUM(i) i
+         FROM x_morpheme WHERE kind = 'R' GROUP BY morph`).all()) {
+      roots.add(r.morph);
+      rootWeight.set(r.morph, r.drv);
+      classes.set(r.morph, { o: r.o, a: r.a, e: r.e, i: r.i });
+    }
+    const pairs = new Map<string, number>();
+    for (const p of this.db.query<{ a: string; b: string; n: number }, []>("SELECT a, b, n FROM x_pair").all()) {
+      pairs.set(`${p.a}+${p.b}`, p.n);
+    }
+    this.full = { roots, pairs, rootWeight, classes };
+    return this.full;
+  }
+
+  get roots(): ReadonlySet<string> { return this.load().roots; }
+  get pairs(): ReadonlyMap<string, number> { return this.load().pairs; }
+  get rootWeight(): ReadonlyMap<string, number> { return this.load().rootWeight; }
+  get classes(): ReadonlyMap<string, WordClass> { return this.load().classes; }
+
+  /** Whether the corpus has this root, without reading every one. */
+  hasRoot(m: string): boolean {
+    if (this.full) return this.full.roots.has(m);
+    return this.db.query<{ x: number }, [string]>(
+      "SELECT 1 AS x FROM x_morpheme WHERE morph = ? AND kind = 'R' LIMIT 1").get(m) !== null;
+  }
+}
+
+export function inventoryOf(db: SqlReader): Inventory {
+  let inv = invCache.get(db);
+  if (!inv) {
+    inv = new CorpusInventory(db);
+    invCache.set(db, inv);
+  }
   return inv;
 }
 
-/**
- * An affix definition cut down to the phrase that says what it means.
- *
- * ReVo opens nearly every one the same way ("Sufikso esprimanta …",
- * "Prefikso montranta …"); dropping that leaves the content, and one clause of
- * it is all a per-word line can carry.
- */
-function affixGloss(txt: string): string {
-  let s = txt.replace(/\s+/g, " ").trim();
-  s = s.replace(
-    /^(sufikso|prefikso|vortero|finaĵo)\s*(esprimanta|montranta|almetebla|signifanta|markanta|uzata|de|kiu)?\s*[,:;]?\s*/i,
-    ""
-  );
-  const cut = s.search(/[:;]| — /);
-  if (cut > 12) s = s.slice(0, cut);
-  if (s.length > 72) s = s.slice(0, 70).replace(/[\s,]+\S*$/, "") + "…";
-  return s.charAt(0).toLowerCase() + s.slice(1);
+/** Whether the inventory has a root, asked in the way that reads least. */
+function rootKnown(inv: Inventory, m: string): boolean {
+  return inv instanceof CorpusInventory ? inv.hasRoot(m) : inv.roots.has(m);
 }
 
-/**
- * Every affix article's own definition, keyed by the bare morpheme.
- *
- * The `-ul` headword itself usually only says "same meaning as the standalone
- * word", so the gloss is taken from the first substantial definition anywhere
- * in the article.
- */
-function affixesOf(db: SqlReader): Map<string, { txt: string; gloss: string; art: string }> {
+interface AffixRow {
+  /** the headword as written: "mal-", "-ul" */
+  txt: string;
+  /** its definition cut to the phrase that says what it means; empty when the article gives none */
+  gloss: string;
+  art: string;
+  mrk: string | null;
+}
+
+/** Every affix article as the `morph` pass stored it (`x_affix`), keyed by the bare morpheme. */
+function affixesOf(db: SqlReader): Map<string, AffixRow> {
   const hit = affixCache.get(db);
   if (hit) return hit;
-  const out = new Map<string, { txt: string; gloss: string; art: string }>();
-  // several candidate definitions per article: the first is sometimes only a
-  // colon and a connective ("Sufikso, kiu:"), with the content in the next one.
-  // fts_dif's rowid is the <dif>'s id, so an article's definitions are its id range.
-  const difs = db.query<{ dif: string }, [number, number]>(
-    `SELECT dif FROM fts_dif
-      WHERE rowid BETWEEN ? AND ? AND length(dif) > 8
-        AND dif NOT LIKE 'Samsignifa%' AND dif NOT LIKE 'Uzata memstare%'
-        AND dif NOT LIKE 'Vortero%'
-      ORDER BY node_id, rowid LIMIT 5`
-  );
-  for (const r of db.query<{ txt: string; art: string; id: number; last_id: number }, []>(
-    `SELECT h.txt AS txt, a.file AS art, a.id, a.last_id
-       FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
-      WHERE (h.txt LIKE '-%' OR h.txt LIKE '%-') AND h.txt NOT LIKE '% %'
-      ORDER BY h.node_id, h.id`).all()) {
-    const m = r.txt.toLowerCase().replace(/^-|-$/g, "");
-    if (!m || out.has(m)) continue;
-    let gloss = "";
-    for (const d of difs.all(r.id, r.last_id)) {
-      const g = affixGloss(d.dif);
-      if (g.length >= 12) {
-        gloss = g;
-        break;
-      }
-    }
-    out.set(m, { txt: r.txt, gloss, art: r.art });
+  const out = new Map<string, AffixRow>();
+  for (const r of db.query<{ morph: string; txt: string; art: string; mrk: string | null; gloss: string | null }, []>(
+    "SELECT morph, txt, art, mrk, gloss FROM x_affix").all()) {
+    out.set(r.morph, { txt: r.txt, gloss: r.gloss ?? "", art: r.art, mrk: r.mrk });
   }
   affixCache.set(db, out);
   return out;
@@ -292,19 +312,21 @@ function rootsByLength(db: SqlReader): Map<number, string[]> {
  * (`tar1`), so the morph itself names no file. A root shared by several
  * articles goes to the one with the most derivations. A plain word wins over
  * the affix spelling: the `end` article leads with the headword `-end`, but
- * `endi` is what names the root.
+ * `endi` is what names the root. The article's own headword is repeated by
+ * its first derivation, which has the mark an entry is loaded by.
  */
-function rootHeadword(db: SqlReader, morph: string): { txt: string; art: string } | null {
+function rootHeadword(db: SqlReader, morph: string): { txt: string; art: string; mrk: string | null } | null {
   const row = db
-    .query<{ txt: string; art: string }, [string]>(
-      `SELECT k.txt AS txt, a.file AS art
+    .query<{ txt: string; art: string; mrk: string | null }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art, n.mrk AS mrk
          FROM x_morpheme x
          JOIN article a ON a.id = x.article_id
          JOIN headword k ON k.id BETWEEN a.id AND a.last_id
+         JOIN node n ON n.id = k.node_id
         WHERE x.morph = ? AND x.kind IN ('R', 'W')
-        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), k.node_id, k.id LIMIT 1`)
+        ORDER BY x.drv DESC, (k.txt LIKE '-%' OR k.txt LIKE '%-'), (n.mrk IS NULL), k.node_id, k.id LIMIT 1`)
     .get(morph);
-  return row ? { txt: row.txt, art: fromXSystem(row.art) } : null;
+  return row ? { txt: row.txt, art: fromXSystem(row.art), mrk: row.mrk } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,32 +452,51 @@ function countOf(text: string, phrase: string): number {
 // Esperanto text → audit
 // ---------------------------------------------------------------------------
 
-/** The first headword spelled `norm`, with its article's file name and root. */
-function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string; root: string } | null {
+/** The node a headword is under: the entry it names, when the node is marked. */
+interface KapNode {
+  id: number;
+  last_id: number;
+  mrk: string | null;
+}
+
+/**
+ * The first headword spelled `norm`, with its article's file name and root,
+ * and its node. An article's own headword is repeated by its first
+ * derivation, and that one is marked, so it is the one taken.
+ */
+function kapByNorm(db: SqlReader, norm: string): { txt: string; art: string; root: string; node: KapNode } | null {
   const row = db
-    .query<{ txt: string; art: string; root: string }, [string]>(
-      `SELECT k.txt AS txt, a.file AS art, a.rad AS root
+    .query<{ txt: string; art: string; root: string; id: number; last_id: number; mrk: string | null }, [string]>(
+      `SELECT k.txt AS txt, a.file AS art, a.rad AS root, n.id AS id, n.last_id AS last_id, n.mrk AS mrk
          FROM headword k JOIN node n ON n.id = k.node_id JOIN article a ON a.id = n.article_id
-        WHERE k.norm = ? ORDER BY k.node_id, k.id LIMIT 1`)
+        WHERE k.norm = ? ORDER BY (n.mrk IS NULL), k.node_id, k.id LIMIT 1`)
     .get(norm);
-  return row ?? null;
+  return row ? { txt: row.txt, art: row.art, root: row.root, node: { id: row.id, last_id: row.last_id, mrk: row.mrk } } : null;
 }
 
 /** A form written with a `<tld/>` somewhere in the examples, with its count. */
 function tokenByNorm(
   db: SqlReader, norm: string
-): { n: number; art: string; root: string; headword: string | null } | null {
+): { n: number; art: string; root: string; headword: string | null; node: KapNode | null } | null {
   // one row per article the form was written under; the most frequent one names it
   const rows = db
-    .query<{ n: number; art: string; root: string; headword: string | null }, [string]>(
-      `SELECT t.n AS n, a.file AS art, a.rad AS root, k.txt AS headword
+    .query<{ n: number; art: string; root: string; headword: string | null; id: number | null; last_id: number | null; mrk: string | null }, [string]>(
+      `SELECT t.n AS n, a.file AS art, a.rad AS root, k.txt AS headword, n.id AS id, n.last_id AS last_id, n.mrk AS mrk
          FROM x_token t
          JOIN article a ON a.id = t.article_id
          LEFT JOIN headword k ON k.id = t.lemma_kap_id
+         LEFT JOIN node n ON n.id = k.node_id
         WHERE t.norm = ? ORDER BY t.n DESC, t.id`)
     .all(norm);
   if (rows.length === 0) return null;
-  return { n: rows.reduce((s, r) => s + r.n, 0), art: rows[0].art, root: rows[0].root, headword: rows[0].headword };
+  const [first] = rows;
+  return {
+    n: rows.reduce((s, r) => s + r.n, 0),
+    art: first.art,
+    root: first.root,
+    headword: first.headword,
+    node: first.id === null ? null : { id: first.id, last_id: first.last_id!, mrk: first.mrk },
+  };
 }
 
 /**
@@ -547,7 +588,7 @@ function suffixReadings(word: string, inv: Inventory): Morph[][] {
   suffixes.sort((a, b) => b.length - a.length);
   for (const suf of suffixes) {
     const base = stem.slice(0, stem.length - suf.length);
-    if (base.length < 3 || !inv.roots.has(base)) continue;
+    if (base.length < 3 || !rootKnown(inv, base)) continue;
     out.push([{ m: base, k: "R" }, { m: suf, k: "S" }, { m: ending, k: "E" }]);
   }
   return out;
@@ -586,11 +627,12 @@ interface StoredSplit {
  * the text and are left out.
  */
 function headwordSplits(db: SqlReader, norm: string): StoredSplit[] {
+  // by way of the headwords, which are indexed by spelling; x_morph is keyed by their ids
   return db
     .query<StoredSplit, [string]>(
       `SELECT m.seg AS seg, m.kinds AS kinds, a.file AS art, a.rad AS root
-         FROM x_morph m JOIN article a ON a.id = m.article_id
-        WHERE m.form = ? AND m.ok = 1 AND m.seg NOT LIKE '% %'
+         FROM headword h JOIN x_morph m ON m.kap_id = h.id JOIN article a ON a.id = m.article_id
+        WHERE h.norm = ? AND m.ok = 1 AND m.seg NOT LIKE '% %'
         ORDER BY m.node_id, m.kap_id`)
     .all(norm);
 }
@@ -719,12 +761,14 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
       if (a) {
         part.art = a.art;
         if (a.gloss) part.gloss = a.gloss;
+        if (a.mrk) part.mrk = a.mrk;
       }
     } else if (m.k === "R" || m.k === "W") {
       const head = rootHeadword(db, m.m);
       if (head) {
         part.art = head.art;
         part.gloss = head.txt;
+        if (head.mrk) part.mrk = head.mrk;
       }
     }
     return part;
@@ -780,7 +824,7 @@ export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions =
   const terms: EoTerm[] = [];
   const tally: Record<Verdict, number> = { headword: 0, inflection: 0, attested: 0, derived: 0, unknown: 0 };
   for (const word of order.slice(0, maxWords)) {
-    const term = classify(db, word, inv);
+    const term = classify(db, word, inv, opts.languages);
     term.n = counts.get(word)!;
     tally[term.verdict]++;
     terms.push(term);
@@ -805,9 +849,21 @@ export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions =
  * `headword` also carries the reading a long root hides, when there is one,
  * since that is what tells a translator whether an unlisted word is well
  * formed.
+ *
+ * A word the dictionary has names its entry by mark, and with `languages`
+ * lists the entry's translations in them, so a reader can show what the word
+ * means without a second call.
  */
-export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
+export function classify(db: SqlReader, word: string, inv: Inventory, languages?: string[]): EoTerm {
   let guess: { ms: Morph[]; seg: string; kinds: string } | null | undefined;
+
+  /** The entry a dictionary form belongs to, and what it says in the languages asked for. */
+  const withEntry = (term: EoTerm, node: KapNode | null): EoTerm => {
+    if (!node?.mrk) return term;
+    term.mrk = node.mrk;
+    if (languages) term.translations = translationsOf(db, node, languages);
+    return term;
+  };
   const guessed = () => {
     if (guess === undefined) {
       const ms = segment(word, inv);
@@ -854,7 +910,7 @@ export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
   if (exact) {
     const stored = headwordSplits(db, word).map((s) => ({ ms: storedMorphs(s, inv), art: s.art, root: s.root }));
     return withMorph(
-      { word, n: 1, verdict: "headword", headword: exact.txt, art: exact.art },
+      withEntry({ word, n: 1, verdict: "headword", headword: exact.txt, art: exact.art }, exact.node),
       readingsOf(db, [...stored, ...attested()])
     );
   }
@@ -868,7 +924,7 @@ export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
         if (ms) rows.push({ ms, art: s.art, root: s.root });
       }
       return withMorph(
-        { word, n: 1, verdict: "inflection", headword: hit.txt, art: hit.art, how: c.how },
+        withEntry({ word, n: 1, verdict: "inflection", headword: hit.txt, art: hit.art, how: c.how }, hit.node),
         readingsOf(db, [...rows, ...attested()]),
         hit.root
       );
@@ -879,7 +935,7 @@ export function classify(db: SqlReader, word: string, inv: Inventory): EoTerm {
   if (tok) {
     const term: EoTerm = { word, n: 1, verdict: "attested", attested: tok.n, art: tok.art };
     if (tok.headword) term.headword = tok.headword;
-    return withMorph(term, readingsOf(db, attested()), tok.root);
+    return withMorph(withEntry(term, tok.node), readingsOf(db, attested()), tok.root);
   }
 
   const morph = guessed();

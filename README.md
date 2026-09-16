@@ -103,7 +103,7 @@ database file. It needs no server of its own: a static host serving `voko.db`
 with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
-# The database a browser reads: search, lookup, entries and languages (~140 MB, ~60 MB gzipped)
+# The database a browser reads: search, lookup, entries, languages and Esperanto glossing (~150 MB, ~66 MB gzipped)
 bun run corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
@@ -151,8 +151,8 @@ it (too little storage, a second tab, a failed download) and `revo:error` for
 what does, such as an unreachable file without a copy
 (`src/browser/protocol.ts`).
 
-Measured in Chromium against the core build (13,079 articles, 141.0 MB,
-62.5 MB gzipped), requests and bytes per interaction in remote mode:
+Measured in Chromium against the core build of `d18ad4f` (13,079 articles,
+141.0 MB, 62.5 MB gzipped), requests and bytes per interaction in remote mode:
 
 | interaction | range requests | bytes |
 |---|---:|---:|
@@ -172,11 +172,12 @@ are made one after another, so at a 100 ms round trip a `mal` page takes about
 5 s and `Haus` about 1.5 s. Once the copy is stored a search makes no request
 (`mal` ~120 ms, `Haus` ~25 ms) and a start makes one, the revision check.
 
-The core file (141 MB, 62.5 MB gzipped) holds every article whole, one table
+The core file (150 MB, 66 MB gzipped) holds every article whole, one table
 per XML element (92 MB, citations, remarks and markup included), plus the
-search table (24 MB), the translations (22 MB), and the nodes and headwords
-(5.5 MB). The full build (`bun run setup`, 281 MB, 132 MB gzipped) adds the
-enrichment passes and their indexes.
+search table (24 MB), the translations (22 MB), the nodes and headwords
+(5.5 MB), and the morphology that glosses an Esperanto word (8 MB). The full
+build (`bun run setup`, 281 MB, 132 MB gzipped) adds the enrichment passes and
+their indexes.
 
 Search always includes Esperanto and ranks exact matches, then reduced or
 inflected forms, then literal prefixes; the request's language order breaks
@@ -201,9 +202,10 @@ The `search` and `entry` tools are the same on the Bun server;
 `MessagePortTransport` and `connectWorkerServer` connect the server to a Worker
 without Node or Bun globals.
 
-A core database answers `search`, `entry`, `lookup`, `lookup_root` and
-`languages`; `examples`, `thesaurus`, `reverse_lookup` and `gloss` need the
-enrichment of a full build and say so on a core one.
+A core database answers `search`, `entry`, `lookup`, `lookup_root`,
+`languages`, and `gloss` for Esperanto text; `examples`, `thesaurus`,
+`reverse_lookup` and a source-language `gloss` need the enrichment of a full
+build and say so on a core one.
 
 ### With Claude Desktop
 
@@ -364,12 +366,23 @@ A word can be well formed and still be a typo — `finsita` is a real compound o
 and `sit` — so derivations are checked for real words one letter away too, ranked by
 how well the corpus attests them.
 
+The same call answers a single word for a reader that shows it. The result is
+returned as structured content too: each term carries its dictionary form, the
+entry's mark (`mrk`, what `entry` loads), and with `languages` the entry's
+translations, and each part of a split carries the mark of the article that
+names it, so `mal·san·ul·ej·o` links to `mal.0`, `san.0a`, `ul.0` and `ej.0`.
+On a core database the Esperanto side works from the morph tables alone. Read
+remotely, a headword with its translations is about 15 page reads (64 KB); a
+word the dictionary has to segment first makes the Worker load its morpheme
+inventory, about 80 reads (1.6 MB), once per session.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `text` | string | (required) | The text to gloss: a sentence, a paragraph, a passage |
 | `lang` | string | `"en"` | Language of `text`; `"eo"` audits an Esperanto draft instead |
 | `per_word` | number | `4` | Esperanto candidates listed per source word (1-10) |
 | `max_words` | number | `80` | Cap on distinct words reported |
+| `languages` | string[] | — | With `lang: "eo"`, list each dictionary word's translations in these languages |
 
 ## Testing
 

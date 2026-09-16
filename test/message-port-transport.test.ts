@@ -26,6 +26,20 @@ describe("MessagePortTransport", () => {
     expect(tools.tools.map((tool) => tool.name)).toContain("search");
   });
 
+  test("glosses a word with its mark and translations, validated against the output schema", async () => {
+    const result = await client.callTool({
+      name: "gloss",
+      arguments: { text: "malsanulejo", lang: "eo", languages: ["de"] },
+    });
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as any;
+    expect(structured.mode).toBe("eo");
+    expect(structured.counts.headword).toBe(1);
+    expect(structured.terms[0]).toMatchObject({ word: "malsanulejo", verdict: "headword", mrk: "san.mal0ulejo", seg: "mal|san|ul|ej|o" });
+    expect(structured.terms[0].translations).toContainEqual({ lng: "de", trd: "Krankenhaus" });
+    expect(structured.terms[0].parts[0]).toMatchObject({ m: "mal", k: "P", mrk: "mal.0" });
+  });
+
   test("returns structured multilingual search results", async () => {
     const result = await client.callTool({
       name: "search",
