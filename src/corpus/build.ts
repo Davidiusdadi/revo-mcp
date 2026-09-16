@@ -6,6 +6,7 @@
  *   bun run corpus:build                 full rebuild + all passes
  *   bun run corpus:build --pass fts      re-run one pass on the existing DB
  *   bun run corpus:build --limit 200     dev: first N articles only
+ *   bun run corpus:build --overlay DIR   merge that directory instead of corpus/overlay
  *   bun run corpus:build --out x.db
  *
  * The build fails if any XML element type the inventory counted is missing
@@ -411,8 +412,12 @@ function gitRev(dir: string, name: string): string {
 
 // ---------------------------------------------------------------------------
 
-/** `limit`: first N articles only (dev, tests); `extra`: article keys added to that slice. */
-export function buildL2(out: string, limit?: number, extra: string[] = []): Database {
+/**
+ * `limit`: first N articles only (dev, tests); `extra`: article keys added to
+ * that slice; `overlay`: the directory merged over the submodule by file name
+ * (tests point it at a fixture).
+ */
+export function buildL2(out: string, limit?: number, extra: string[] = [], overlay: string = OVERLAY): Database {
   if (existsSync(out)) unlinkSync(out);
   const db = new Database(out);
   db.exec("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA cache_size = -200000; PRAGMA temp_store = MEMORY;");
@@ -423,7 +428,7 @@ export function buildL2(out: string, limit?: number, extra: string[] = []): Data
   const nBib = loadBibliogr(db);
   console.log(`cfg: ${(lingvoj as any[]).length} lng, ${(fakoj as any[]).length} fako, ${(stiloj as any[]).length} stilo, ${nBib} bib`);
 
-  let articles = listArticles({ fonto: join(FONTO, "revo"), overlay: OVERLAY });
+  let articles = listArticles({ fonto: join(FONTO, "revo"), overlay });
   if (limit) articles = articles.filter((a, i) => i < limit || extra.includes(a.key));
   const inv = emptyInventory();
   const t0 = Date.now();
@@ -470,6 +475,7 @@ function main() {
   const out = opt("--out") ?? DEFAULT_OUT;
   const only = opt("--pass");
   const limit = opt("--limit") ? Number(opt("--limit")) : undefined;
+  const overlay = opt("--overlay") ?? OVERLAY;
 
   let db: Database;
   if (only) {
@@ -478,7 +484,7 @@ function main() {
     if (!pass) throw new Error(`no such pass: ${only} (have ${PASSES.map((p) => p.name).join(", ")})`);
     runPass(db, pass);
   } else {
-    db = buildL2(out, limit);
+    db = buildL2(out, limit, [], overlay);
     if (!args.includes("--no-passes")) for (const p of PASSES) runPass(db, p);
   }
   db.exec("PRAGMA optimize");

@@ -19,3 +19,25 @@ Rules:
 
 Note: affixes need no overlay — ReVo already has full articles for them (e.g.
 `ar.xml` with 13 derivations); a stub here would replace them.
+
+## What an overlay actually changes
+
+The directory ships empty, so this is easy to assume rather than check.
+`test/overlay.test.ts` builds a slice against `test/fixtures/overlay/` and
+measures it: a file replaces the upstream article of the same name, a new name
+adds one, untouched articles keep `source = 'fonto'`, and — the part worth
+having — a usage sample added here is a real usage sample. It lands in `ekz`,
+the `tld-links` and `morph` passes pick it up, and a word that `gloss` could
+previously only call a *regular derivation* comes back as an *attested* form
+with a count.
+
+That is the lever for the words ReVo has no article for. `gloss` already builds
+regular derivations from the morpheme inventory (`farenda` = `far|end|a`), so an
+overlay is not needed to make such a word analysable. It is needed to put
+*evidence* behind one: an example sentence someone actually wrote.
+
+To try one without touching this directory:
+
+```bash
+bun run corpus:build --overlay path/to/dir --limit 200 --out /tmp/slice.db
+```

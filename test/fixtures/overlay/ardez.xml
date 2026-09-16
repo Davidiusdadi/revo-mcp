@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!DOCTYPE vortaro SYSTEM "../dtd/vokoxml.dtd">
+<!--
+  Test fixture, not corpus content: a cut-down `ardez` that replaces the
+  upstream article by file name, and adds one usage sample written with a
+  compound (`<tld/>tabuletoj`) that upstream only ever writes as two words.
+  test/overlay.test.ts uses it to check the merge and what it changes.
+-->
+<vortaro>
+<art mrk="$Id: ardez.xml,v 1.1 2026/09/12 00:00:00 test Exp $">
+<kap>
+  <rad>ardez</rad>/o
+</kap>
+<drv mrk="ardez.0o">
+  <kap><tld/>o</kap>
+  <snc mrk="ardez.0o.MIN">
+    <dif>
+      Nigregriza &scirc;tono, facile disigebla en tavolojn:
+      <ekz>
+        ni skribis sur <tld/>tabuletoj kaj matematikis per fingroj
+        <fnt><aut>fixture</aut></fnt>.
+      </ekz>
+    </dif>
+    <trd lng="en">slate</trd>
+    <trd lng="de">Schiefer</trd>
+  </snc>
+</drv>
+</art>
+</vortaro>

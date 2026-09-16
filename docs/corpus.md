@@ -312,6 +312,16 @@ name, version, rows and time in `meta_pass`.
 Passes never change the L2 tables. Content missing from the XML goes into the
 XML (see `corpus/overlay/README.md`), not into a pass.
 
+## Overlay
+
+`corpus/overlay/*.xml` is merged over the submodule by file name: same name
+replaces, new name adds, and `art.source` records which is which.
+`--overlay DIR` points the build at another directory, which is how
+`test/overlay.test.ts` exercises the path against a fixture. That test also
+pins what an overlay buys: a usage sample added there reaches `ekz`, then
+`x_tld_occ` and `x_token`, so a word the `gloss` tool could only analyse
+morphologically becomes an attested form with a count behind it.
+
 ## Docker
 
 The image builds the database instead of shipping one, in three stages:
