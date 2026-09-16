@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { MessagePortTransport } from "./message-port-transport";
 import type { RevoWorkerCommand, RevoWorkerEvent, RevoWorkerInit } from "./protocol";
 import type { SearchOutput, searchInputSchema } from "../tools/search";
+import type { FamilyExamplesOutput, FamilyOutput, familyExamplesInputSchema, familyInputSchema } from "../tools/family";
 
 export interface RevoWorkerLike {
   postMessage(message: unknown, transfer: Transferable[]): void;
@@ -53,6 +54,18 @@ export class RevoBrowserClient {
     const result = await this.client.callTool({ name: "search", arguments: input });
     if (result.isError) throw new Error((result.content as any[])?.[0]?.text ?? "ReVo search failed.");
     return result.structuredContent as SearchOutput;
+  }
+
+  async family(input: z.input<typeof familyInputSchema>): Promise<FamilyOutput> {
+    const result = await this.client.callTool({ name: "family", arguments: input });
+    if (result.isError) throw new Error((result.content as any[])?.[0]?.text ?? "ReVo family lookup failed.");
+    return result.structuredContent as FamilyOutput;
+  }
+
+  async familyExamples(input: z.input<typeof familyExamplesInputSchema>): Promise<FamilyExamplesOutput> {
+    const result = await this.client.callTool({ name: "familyExamples", arguments: input });
+    if (result.isError) throw new Error((result.content as any[])?.[0]?.text ?? "ReVo family examples failed.");
+    return result.structuredContent as FamilyExamplesOutput;
   }
 
   async languages(): Promise<{ code: string; name: string; count: number }[]> {

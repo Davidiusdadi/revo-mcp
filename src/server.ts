@@ -13,6 +13,16 @@ import {
   entryOutputSchema,
   executeEntry,
 } from "./tools/search";
+import {
+  familyInputSchema,
+  familyOutputSchema,
+  executeFamily,
+  renderFamily,
+  familyExamplesInputSchema,
+  familyExamplesOutputSchema,
+  executeFamilyExamples,
+  renderFamilyExamples,
+} from "./tools/family";
 import { glossInputSchema, glossOutputSchema, executeGloss, renderGloss } from "./tools/gloss";
 import {
   getLanguages,
@@ -89,6 +99,29 @@ export function createMcpServer(): McpServer {
   }, async (args) => toolResponse("entry", args as Record<string, unknown>, () => {
     const structuredContent = executeEntry(args);
     return { text: structuredContent.entry.headword, structuredContent };
+  }));
+
+  server.registerTool("family", {
+    description: "List an entry's word families: for each root of its headword, every entry built on that root in any " +
+      "article (hundo, ĉashundo, hundherbo under hund), in the family's order with tilde forms and translations. " +
+      "A family larger than limit comes in pages: pass only and offset.",
+    inputSchema: familyInputSchema,
+    outputSchema: familyOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("family", args as Record<string, unknown>, () => {
+    const structuredContent = executeFamily(args);
+    return { text: renderFamily(structuredContent), structuredContent };
+  }));
+
+  server.registerTool("familyExamples", {
+    description: "Find the example sentences, in every article, that use words of the given roots' families, a group " +
+      "per root; a sentence is listed once, under the first root it uses, with the family words it contains marked.",
+    inputSchema: familyExamplesInputSchema,
+    outputSchema: familyExamplesOutputSchema,
+    annotations: { readOnlyHint: true, idempotentHint: true },
+  }, async (args) => toolResponse("familyExamples", args as Record<string, unknown>, () => {
+    const structuredContent = executeFamilyExamples(args);
+    return { text: renderFamilyExamples(structuredContent), structuredContent };
   }));
 
   server.registerTool("lookup", {

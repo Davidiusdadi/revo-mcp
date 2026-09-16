@@ -23,7 +23,7 @@ afterAll(async () => {
 describe("MessagePortTransport", () => {
   test("discovers the ReVo tools across a MessageChannel", async () => {
     const tools = await client.listTools();
-    expect(tools.tools.map((tool) => tool.name)).toContain("search");
+    expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["search", "entry", "family", "familyExamples"]));
   });
 
   test("glosses a word with its mark and translations, validated against the output schema", async () => {
@@ -38,6 +38,37 @@ describe("MessagePortTransport", () => {
     expect(structured.terms[0]).toMatchObject({ word: "malsanulejo", verdict: "headword", mrk: "san.mal0ulejo", seg: "mal|san|ul|ej|o" });
     expect(structured.terms[0].translations).toContainEqual({ lng: "de", trd: "Krankenhaus" });
     expect(structured.terms[0].parts[0]).toMatchObject({ m: "mal", k: "P", mrk: "mal.0" });
+  });
+
+  test("lists an entry's word families across articles, validated against the output schema", async () => {
+    const result = await client.callTool({ name: "family", arguments: { mark: "hund.cxas0o", languages: ["de"] } });
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as any;
+    expect(structured.available).toBe(true);
+    expect(structured.families.map((family: any) => family.root)).toEqual(["hund", "ĉas"]);
+    const hund = structured.families[0];
+    expect(hund.members.map((member: any) => member.headword)).toEqual(expect.arrayContaining(["ĉashundo", "hundherbo", "hundimposto"]));
+    expect(structured.translations["herb.hund0o"]).toContainEqual({ lng: "de", trd: "Quecke" });
+  });
+
+  test("an unknown mark is a tool error", async () => {
+    const result = await client.callTool({ name: "family", arguments: { mark: "hund.nenio0o" } });
+    expect(result.isError).toBe(true);
+    expect((result.content as any[])[0].text).toContain("No dictionary entry has the mark hund.nenio0o.");
+  });
+
+  test("finds the examples of word families, validated against the output schema", async () => {
+    const result = await client.callTool({
+      name: "familyExamples",
+      arguments: { roots: ["hund", "cxas"], languages: ["de"], limit: 5, exactTotal: false },
+    });
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as any;
+    expect(structured.groups.map((group: any) => group.root)).toEqual(["hund", "ĉas"]);
+    for (const group of structured.groups) {
+      expect(group.examples.length).toBeLessThanOrEqual(5);
+      expect(group.total).toBeGreaterThanOrEqual(group.examples.length);
+    }
   });
 
   test("returns structured multilingual search results", async () => {
