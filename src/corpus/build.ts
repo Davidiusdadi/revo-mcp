@@ -8,6 +8,7 @@
  *   bun run corpus:build --pass fts      run one pass on the existing DB
  *   bun run corpus:build --limit 200     dev: first N articles only
  *   bun run corpus:build --overlay DIR   merge that directory instead of corpus/overlay
+ *   bun run corpus:build --freq FILE     read usage counts from FILE instead of corpus/freq/counts.tsv
  *   bun run corpus:build --out x.db
  *
  * The core stage answers search, lookup, entries and languages; the full stage
@@ -39,6 +40,7 @@ import { ftsPass } from "./passes/fts";
 import { tldLinksPass } from "./passes/tld-links";
 import { refsPass } from "./passes/refs";
 import { morphPass } from "./passes/morph";
+import { freqPass, freqPassFor } from "./passes/freq";
 import { ROOT, VENDOR, FONTO, GRUNDO, corpusArticles } from "./sources";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +50,7 @@ export type Stage = "core" | "full";
 /** What every runtime needs: nodes, headwords and translations, and the search tables over them. */
 export const CORE_PASSES: Pass[] = [structurePass, searchPass];
 /** Enrichment for the server's other tools, and the indexes they read through. */
-export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, morphPass];
+export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, morphPass, freqPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
 
 export function passesOf(stage: Stage): Pass[] {
@@ -194,21 +196,23 @@ function main() {
   const only = opt("--pass");
   const limit = opt("--limit") ? Number(opt("--limit")) : undefined;
   const overlay = opt("--overlay");
+  const freq = opt("--freq");
   const stage = (opt("--stage") ?? "full") as Stage;
   if (stage !== "core" && stage !== "full") throw new Error(`no such stage: ${stage} (have core, full)`);
+  const withFreq = (p: Pass) => (freq && p.name === "freq" ? freqPassFor(freq) : p);
 
   let db: Database;
   if (only) {
     db = new Database(out);
     const pass = PASSES.find((p) => p.name === only);
     if (!pass) throw new Error(`no such pass: ${only} (have ${PASSES.map((p) => p.name).join(", ")})`);
-    runPass(db, pass);
+    runPass(db, withFreq(pass));
     // a core file that has been given every enrichment pass is a full one
     const ran = new Set(db.query<{ pass: string }, []>("SELECT pass FROM meta_pass").all().map((r) => r.pass));
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('stage', ?)", [PASSES.every((p) => ran.has(p.name)) ? "full" : "core"]);
   } else {
     db = buildArticles(out, limit, [], overlay);
-    if (!args.includes("--no-passes")) for (const p of passesOf(stage)) runPass(db, p);
+    if (!args.includes("--no-passes")) for (const p of passesOf(stage)) runPass(db, withFreq(p));
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('stage', ?)", [stage]);
   }
   finish(db, out);

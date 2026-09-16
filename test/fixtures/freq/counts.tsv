@@ -1,0 +1,17 @@
+# Fixture counts for test/freq.test.ts: made-up numbers in the real file format
+# source hplt: tokens=1000000 documents=100 licence="CC0 1.0" url=https://example.org/hplt sha256=0 fetched=2026-01-01
+# source tekstaro: tokens=100000 documents=10 licence="none stated" url=https://example.org/tekstaro sha256=0 fetched=2026-01-01 edition="test"
+# lemma	hplt	tekstaro
+adresulo	4	1
+estis	7	0
+hundejo	3	0
+hundino	0	0
+hundoj	5	2
+la	100	10
+malsane	6	1
+malsano	8	1
+malsanulejeto	2	0
+malsanulejo	20	2
+malsanulo	9	1
+esti	50	5
+ŝtruflo	1	0

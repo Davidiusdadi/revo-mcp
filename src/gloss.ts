@@ -623,7 +623,7 @@ function attestedSplits(db: SqlReader, norm: string): StoredSplit[] {
  * stored as `art|e|far|it|a` with three roots; `e` joins the two, it is not a
  * third.
  */
-function storedMorphs(s: StoredSplit, inv: Inventory): Morph[] {
+export function storedMorphs(s: StoredSplit, inv: Inventory): Morph[] {
   const ms = s.seg.split("|").map((m, i) => ({ m, k: s.kinds[i] as MorphKind }));
   const rootish = (x: Morph | undefined) => x !== undefined && (x.k === "R" || x.k === "W");
   for (let i = 0; i < ms.length; i++) {
@@ -754,7 +754,7 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
  * that out, so the tool does not pretend to. It prints the parts, and names any
  * real word one letter away.
  */
-function plausible(ms: Morph[], word: string, inv: Inventory): boolean {
+export function plausible(ms: Morph[], word: string, inv: Inventory): boolean {
   const isRoot = (m: Morph) => m.k === "R" || m.k === "W";
   const roots = ms.filter(isRoot);
   if (roots.length === 0 || roots.length > 3) return false;
