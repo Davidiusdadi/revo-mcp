@@ -9,6 +9,7 @@
  */
 import { describe, test, expect, afterAll } from "vitest";
 import { closeDb, getDb, glossText } from "../src/db";
+import { hasPass } from "../src/db-voko";
 import { classify, inventoryOf, type EoGloss, type SourceGloss } from "../src/gloss";
 import { executeGloss, glossOutputSchema, handleGloss } from "../src/tools/gloss";
 
@@ -266,6 +267,16 @@ describe("gloss: Esperanto audit", () => {
     const t = classify(getDb(), "finsita", inventoryOf(getDb()));
     expect(t.verdict).toBe("derived");
     expect(t.near).toContain("finita");
+  });
+
+  test.skipIf(!hasPass(getDb(), "usage"))("with usage counts, a word is offered only when written far more often", () => {
+    const inv = inventoryOf(getDb());
+    // agado is written 115,000 times on the web; the words a letter away hardly at all
+    const agado = classify(getDb(), "agado", inv);
+    expect(agado.verdict).toBe("derived");
+    expect(agado.near ?? []).toEqual([]);
+    // nobody writes finsita; both neighbours are common, the more used first
+    expect(classify(getDb(), "finsita", inv).near).toEqual(["fiksita", "finita"]);
   });
 });
 

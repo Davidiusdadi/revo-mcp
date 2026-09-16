@@ -42,14 +42,15 @@ import { tldLinksPass } from "./passes/tld-links";
 import { refsPass } from "./passes/refs";
 import { morphPass, splitsPass } from "./passes/morph";
 import { freqPass, freqPassFor } from "./passes/freq";
+import { usagePass, usagePassFor } from "./passes/usage";
 import { ROOT, VENDOR, FONTO, GRUNDO, corpusArticles } from "./sources";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(ROOT, "data", "voko.db");
 
 export type Stage = "core" | "full";
-/** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology a gloss reads. */
-export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass];
+/** What every runtime needs: nodes, headwords and translations, the search tables over them, and the morphology and usage counts a gloss reads. */
+export const CORE_PASSES: Pass[] = [structurePass, searchPass, morphPass, usagePass];
 /** Enrichment for the server's other tools, the indexes they read through, the stored splits, and usage counts. */
 export const ENRICHMENT_PASSES: Pass[] = [indexPass, ftsPass, tldLinksPass, refsPass, splitsPass, freqPass];
 export const PASSES: Pass[] = [...CORE_PASSES, ...ENRICHMENT_PASSES];
@@ -200,7 +201,7 @@ function main() {
   const freq = opt("--freq");
   const stage = (opt("--stage") ?? "full") as Stage;
   if (stage !== "core" && stage !== "full") throw new Error(`no such stage: ${stage} (have core, full)`);
-  const withFreq = (p: Pass) => (freq && p.name === "freq" ? freqPassFor(freq) : p);
+  const withFreq = (p: Pass) => (!freq ? p : p.name === "freq" ? freqPassFor(freq) : p.name === "usage" ? usagePassFor(freq) : p);
 
   let db: Database;
   if (only) {

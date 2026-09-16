@@ -500,8 +500,8 @@ describe("core stage", () => {
   afterAll(() => core.close());
   const tables = () => core.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type IN ('table','index')").all().map((r) => r.name);
 
-  test("carries the morpheme inventory and its affix table, not the stored splits or the tilde occurrences", () => {
-    expect(tables()).toEqual(expect.arrayContaining(["x_morpheme", "x_pair", "x_affix", "idx_headword_norm"]));
+  test("carries the morpheme inventory, its affix table and the usage counts, not the stored splits or the tilde occurrences", () => {
+    expect(tables()).toEqual(expect.arrayContaining(["x_morpheme", "x_pair", "x_affix", "idx_headword_norm", "x_usage"]));
     for (const t of ["x_morph", "x_token", "x_tld_occ", "fts_dif"]) expect(tables()).not.toContain(t);
   });
 

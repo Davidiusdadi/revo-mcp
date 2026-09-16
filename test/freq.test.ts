@@ -2,7 +2,8 @@
  * The `freq` pass on the 120-article slice with a fixture counts file: every
  * lemma lands in x_freq_word with the verdict `classify` would give, roots
  * are summed from the splits, the header becomes meta, and a missing file
- * leaves the tables empty instead of failing the build.
+ * leaves the tables empty instead of failing the build. The `usage` pass
+ * copies the same counts, alone, into the table the core file carries.
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { Database } from "../src/runtime/node-database";
@@ -11,12 +12,14 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { buildArticles, PASSES } from "../src/corpus/build";
-import { runPass } from "../src/corpus/pass";
+import { runPass, type Pass } from "../src/corpus/pass";
 import { classify, inventoryOf } from "../src/gloss";
 import { freqPassFor, parseCounts } from "../src/corpus/passes/freq";
-import { freqSources, morphFrequency, wordFrequency } from "../src/freq";
+import { usagePassFor } from "../src/corpus/passes/usage";
+import { freqSources, morphFrequency, webUsage, wordFrequency } from "../src/freq";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "freq", "counts.tsv");
+const withCounts = (p: Pass, file: string) => (p.name === "freq" ? freqPassFor(file) : p.name === "usage" ? usagePassFor(file) : p);
 // san carries malsanulejo; hund carries hundejo and hundino (whose suffix article, in, the slice must have too)
 const EXTRA = ["san", "mal", "ul", "ej", "in", "hund", "est", "la", "kaj", "et"];
 
@@ -26,7 +29,7 @@ let db: Database;
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-freq-"));
   db = buildArticles(join(dir, "slice.db"), 120, EXTRA);
-  for (const p of PASSES) runPass(db, p.name === "freq" ? freqPassFor(FIXTURE) : p, () => {});
+  for (const p of PASSES) runPass(db, withCounts(p, FIXTURE), () => {});
 });
 afterAll(() => {
   db.close();
@@ -126,6 +129,13 @@ describe("the runtime helper", () => {
     expect(morphFrequency(db, "san")[0]).toMatchObject({ kind: "R", counts: { hplt: 45, tekstaro: 5 }, perMillion: { hplt: 45, tekstaro: 50 } });
     expect(morphFrequency(db, "san", "P")).toEqual([]);
   });
+
+  test("reads a word's web count from the usage table, 0 for a lemma the file lacks", () => {
+    expect((db.query("SELECT COUNT(*) c FROM x_usage").get() as { c: number }).c).toBe(13);
+    expect(webUsage(db, "Malsanulejojn")).toBe(20);
+    expect(webUsage(db, "hundino")).toBe(0);
+    expect(webUsage(db, "neniamvidita")).toBe(0);
+  });
 });
 
 describe("the counts file", () => {
@@ -141,10 +151,13 @@ describe("the counts file", () => {
     const empty = new Database(join(dir, "empty.db"));
     try {
       const other = buildArticles(join(dir, "empty.db"), 5, []);
-      for (const p of PASSES) runPass(other, p.name === "freq" ? freqPassFor(join(dir, "nope.tsv")) : p, () => {});
+      for (const p of PASSES) runPass(other, withCounts(p, join(dir, "nope.tsv")), () => {});
       expect((other.query("SELECT COUNT(*) c FROM x_freq_word").get() as { c: number }).c).toBe(0);
+      expect((other.query("SELECT COUNT(*) c FROM x_usage").get() as { c: number }).c).toBe(0);
       expect(freqSources(other)).toBeNull();
       expect(wordFrequency(other, "la")).toBeNull();
+      // no counts is not a count of 0: nothing may be judged rare on it
+      expect(webUsage(other, "la")).toBeNull();
       other.close();
     } finally {
       empty.close();

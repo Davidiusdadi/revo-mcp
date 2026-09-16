@@ -3,7 +3,11 @@
 `counts.tsv`: how often each Esperanto lemma (dictionary form) is used, in two
 corpora, one column each. The `freq` pass (`src/corpus/passes/freq.ts`) reads
 it at build time, holds every lemma against ReVo and writes `x_freq_word` and
-`x_freq_root` into `data/voko.db`; `docs/corpus.md` describes the tables.
+`x_freq_root` into `data/voko.db`. The `usage` pass (`src/corpus/passes/usage.ts`)
+copies the counts alone into `x_usage`, which the core file a browser
+downloads carries too: the gloss tool offers a word as the one probably meant
+only when the web writes it far more often than the word typed.
+`docs/corpus.md` describes the tables.
 
 Every lemma ReVo lists is in the file, zero counts included, so a word that
 never occurs is visible as such. Other lemmas are kept when used at least 50

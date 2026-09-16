@@ -3,6 +3,7 @@
  * writes (src/corpus/passes/freq.ts): counts per source and rates per million
  * tokens. One keyed read each; nothing here scans a table.
  */
+import { hasPass } from "./db-voko";
 import { lemmaOf } from "./morph";
 import type { SqlReader } from "./sql";
 
@@ -86,4 +87,16 @@ export function morphFrequency(db: SqlReader, morph: string, kind?: string): Mor
     const counts = { hplt: r.hplt, tekstaro: r.tekstaro };
     return { morph: r.morph, kind: r.kind, counts, perMillion: rates(counts, info), lemmas: r.lemmas };
   });
+}
+
+/**
+ * How often `word` (any inflection) is used on the web, from the `usage` table,
+ * which the core file carries too: 0 for a lemma the counts file lacks (it keeps
+ * a word ReVo does not list only from 50 uses), null when the database has no
+ * counts at all.
+ */
+export function webUsage(db: SqlReader, word: string): number | null {
+  if (!hasPass(db, "usage") || !freqSources(db)) return null;
+  const row = db.query<{ hplt: number }, [string]>("SELECT hplt FROM x_usage WHERE lemma = ?").get(lemmaOf(word));
+  return row?.hplt ?? 0;
 }

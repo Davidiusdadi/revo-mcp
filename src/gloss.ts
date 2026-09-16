@@ -29,6 +29,7 @@
  */
 
 import type { SqlReader } from "./sql";
+import { webUsage } from "./freq";
 import { fromXSystem, normalizeQuery } from "./stemmer";
 import {
   lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph, type MorphKind, type WordClass,
@@ -484,6 +485,16 @@ function tokenByNorm(
 }
 
 /**
+ * How many times as often as a word the web must write its neighbour before
+ * the neighbour is offered as what was meant. Of 12,267 forms the web writes
+ * 200 times or more and the gloss calls derived, 2,817 got a suggestion
+ * without counts and 471 at 30 (about 800 at 10, where real words like
+ * `finado`, `kronigo` and `donadi` still got one); of 3,000 generated slips
+ * the right word was offered for 1,483, against 1,471 without counts.
+ */
+const NEAR_USAGE_RATIO = 30;
+
+/**
  * Words one letter away from `word` that the dictionary actually has, best
  * evidence first.
  *
@@ -499,6 +510,13 @@ function tokenByNorm(
  * ahead of `fiksita`, which is only an inflection of one. An invented compound
  * like `makilaĵfaranto` gets no suggestion at all rather than a
  * plausible-looking one nobody has ever written.
+ *
+ * A database with usage counts (the `usage` pass) decides instead by how often
+ * the web writes each word. A neighbour has to be written NEAR_USAGE_RATIO
+ * times as often as the word itself, so a real word one letter from another
+ * gets no question: `agado` (115,000 uses) is nobody's slip for `agaco`, while
+ * `finsita`, which nobody writes, still gets `fiksita` and `finita`. The most
+ * used neighbour comes first.
  */
 function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
   const scored = new Map<string, { tier: number; n: number }>();
@@ -519,6 +537,14 @@ function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
   }
   for (let i = 0; i < word.length; i++) take(word.slice(0, i) + word.slice(i + 1));
 
+  const typed = webUsage(db, word);
+  if (typed !== null) {
+    const used = new Map([...scored.keys()].map((w) => [w, webUsage(db, w) ?? 0]));
+    return [...used.keys()]
+      .filter((w) => used.get(w)! >= NEAR_USAGE_RATIO * Math.max(typed, 1))
+      .sort((a, b) => used.get(b)! - used.get(a)!)
+      .slice(0, limit);
+  }
   return [...scored.entries()]
     .sort((a, b) => a[1].tier - b[1].tier || b[1].n - a[1].n)
     .slice(0, limit)
