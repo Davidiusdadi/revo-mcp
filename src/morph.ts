@@ -11,6 +11,8 @@
  *   morpheme inventory (the `morph` pass builds it from the corpus: article
  *   roots, affix articles, endingless words). A known root position (from a
  *   `<tld/>`) can be fixed.
+ * - `spellsNumber` and `numberLength` recognise the numeral words that make
+ *   one number (tri|dek, du|mil), a closed class like the table words.
  */
 
 import { SEGMENT_WEIGHTS } from "./morph-weights";
@@ -94,6 +96,73 @@ export function lemmaOf(word: string): string {
   if ((m = ADVERB_INFL.exec(w))) return m[1] + "e";
   if ((m = VERB_INFL.exec(w))) return m[1] + "i";
   return w;
+}
+
+// ---- numbers ---------------------------------------------------------------
+//
+// PMEG 23.1: the numeral words are nul, unu … naŭ, dek, cent and mil. Tens and
+// hundreds are written as one word (dudek, tricent), everything else apart
+// (dek du, du mil), though the web joins those too (dekdu 4,496 times, dumil
+// 969). Before an ending or -obl-, -on-, -op- the whole number is one word
+// (dekdua, dudekkvina, dumildudekoble), and a big number is an O-word that a
+// number multiplies (du|milion|a). kelk multiplies like a digit (kelkdek,
+// kelkmil). nul does not combine.
+
+const MULT = "(?:(?:du|tri|kvar|kvin|ses|sep|ok|naŭ|kelk) )";
+const UNIT = "(?:(?:unu|du|tri|kvar|kvin|ses|sep|ok|naŭ) )";
+const BELOW_1000 = `(?:${MULT}?cent )?(?:${MULT}?dek )?${UNIT}?`;
+const NUMBER_WORDS = `(?:(?:${BELOW_1000}|kelk )mil )?${BELOW_1000}`;
+/** One number, each piece followed by a space: thousands, hundreds, tens, units, largest first. */
+const NUMBER = new RegExp(`^${NUMBER_WORDS}$`);
+/** A number times a big number: du|milion, dek|du|miliard. */
+const NUMBER_BIG = new RegExp(`^${NUMBER_WORDS}(?:milion|miliard|bilion|trilion) $`);
+const NUMBER_PIECES: ReadonlySet<string> = new Set([
+  "unu", "du", "tri", "kvar", "kvin", "ses", "sep", "ok", "naŭ", "dek", "cent", "mil", "kelk",
+  "milion", "miliard", "bilion", "trilion",
+]);
+/** A piece at the start of a word; the big numbers before mil, so milion is read whole. */
+const NUMBER_PIECE = /^(?:milion|miliard|bilion|trilion|kelk|kvar|kvin|cent|unu|tri|ses|sep|naŭ|dek|mil|du|ok)/;
+
+const spaced = (pieces: readonly string[]) => pieces.map((p) => p + " ").join("");
+
+/**
+ * Whether `pieces` spell one number that stands without an ending: tri|dek,
+ * dek|du, du|mil|kvin|cent. Two pieces at least; ok|ok and dek|cent are no
+ * number, and du|milion needs an ending.
+ */
+export function spellsNumber(pieces: readonly string[]): boolean {
+  return pieces.length >= 2 && NUMBER.test(spaced(pieces));
+}
+
+/**
+ * How many pieces from `from` on make one number of two pieces or more, a big
+ * number included: 2 for du|mil|a and for du|milion|a, 0 for tri|angul|o.
+ */
+export function numberLength(pieces: readonly string[], from = 0): number {
+  if (!NUMBER_PIECES.has(pieces[from]) || !NUMBER_PIECES.has(pieces[from + 1])) return 0;
+  for (let to = pieces.length; to >= from + 2; to--) {
+    const s = spaced(pieces.slice(from, to));
+    if (NUMBER.test(s) || NUMBER_BIG.test(s)) return to - from;
+  }
+  return 0;
+}
+
+/** Where the pieces of the number a word opens with end: [2, 5] for du|mil|a, null for trianguloj. */
+function numberCuts(w: string): number[] | null {
+  const pieces: string[] = [];
+  for (let at = 0, m: RegExpExecArray | null; (m = NUMBER_PIECE.exec(w.slice(at))); at += m[0].length) pieces.push(m[0]);
+  const n = numberLength(pieces);
+  if (n === 0) return null;
+  let at = 0;
+  return pieces.slice(0, n).map((p) => (at += p.length));
+}
+
+/** Whether a piece of `ms` ends at every offset in `cuts`. */
+function cutsAt(ms: Morph[], cuts: number[]): boolean {
+  const ends = new Set<number>();
+  let at = 0;
+  for (const m of ms) ends.add((at += m.m.length));
+  return cuts.every((c) => ends.has(c));
 }
 
 // ---- segmentation ----------------------------------------------------------
@@ -198,19 +267,34 @@ export interface Reading {
  * the cheapest reading, which is the whole word or what ReVo files (neni|o):
  * the scorer is trained on words with a marked root, never on these, and would
  * read en as e|n.
+ *
+ * A number keeps its pieces. The scorer reads dumila as dum|il|a and dekoka
+ * as de|kok|a; when the reading it picks ends a piece where the number a word
+ * opens with ends, but cuts through the number before that, the best reading
+ * that keeps the number whole wins instead: du|mil|a, dek|ok|a, du|milion|a.
+ * A root that runs on past the number stays, since the number was then a
+ * coincidence: dekokt|aĵ|o (a decoction), mild|ul|o, cent|okul|a
+ * (hundred-eyed).
  */
 export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
   const rs = readings(word, inv, fixed);
   if (rs.length === 0) return null;
   const w = word.toLowerCase();
   if (rs.length === 1 || CORRELATIVE.test(w) || inv.words.has(w)) return rs[0].ms;
-  let pick = rs[0];
-  let low = Infinity;
-  for (const r of rs) {
-    const s = scoreReading(r, rs[0].cost, inv);
-    if (s < low - 1e-9) [pick, low] = [r, s];
+  const scores = rs.map((r) => scoreReading(r, rs[0].cost, inv));
+  let pick = 0;
+  scores.forEach((s, i) => {
+    if (s < scores[pick] - 1e-9) pick = i;
+  });
+  const cuts = numberCuts(w);
+  if (cuts && cutsAt(rs[pick].ms, cuts.slice(-1)) && !cutsAt(rs[pick].ms, cuts)) {
+    let whole = -1;
+    rs.forEach((r, i) => {
+      if (cutsAt(r.ms, cuts) && (whole < 0 || scores[i] < scores[whole] - 1e-9)) whole = i;
+    });
+    if (whole >= 0) pick = whole;
   }
-  return pick.ms;
+  return rs[pick].ms;
 }
 
 /**

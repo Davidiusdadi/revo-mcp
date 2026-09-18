@@ -32,7 +32,8 @@ import type { SqlReader } from "./sql";
 import { webUsage } from "./freq";
 import { fromXSystem, normalizeQuery } from "./stemmer";
 import {
-  lemmaCandidates, segment, formatSegments, ENDINGS, type Inventory, type Morph, type MorphKind, type WordClass,
+  lemmaCandidates, segment, formatSegments, numberLength, spellsNumber, ENDINGS,
+  type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
 import { hasPass, translationsOf } from "./db-voko";
@@ -860,14 +861,32 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
  * compound of two real roots and merely the wrong word. Morphology cannot rule
  * that out, so the tool does not pretend to. It prints the parts, and names any
  * real word one letter away.
+ *
+ * A number is one root however many numeral words spell it, so
+ * du|dek|jar|aĝ|a (twenty years old) has three, and it needs no ending:
+ * tri|dek, dek|du, du|mil (PMEG 23.1; see `spellsNumber`). Without that, 104
+ * of the 113 bare numbers the web writes five times or more were unknown.
  */
+/** The pieces a number may be made of: roots, endingless words, and kelk, which ReVo files as a prefix. */
+const numberPieces = (ms: Morph[]) => ms.map((m) => (m.k === "R" || m.k === "W" || m.k === "P" ? m.m : ""));
+
 export function plausible(ms: Morph[], word: string, inv: Inventory): boolean {
   const isRoot = (m: Morph) => m.k === "R" || m.k === "W";
-  const roots = ms.filter(isRoot);
-  if (roots.length === 0 || roots.length > 3) return false;
-  if (roots.some((m) => m.m.length < 2)) return false;
+  const pieces = numberPieces(ms);
+  let roots = 0;
+  for (let i = 0; i < ms.length; i++) {
+    const n = numberLength(pieces, i);
+    if (n > 0) {
+      roots++;
+      i += n - 1;
+    } else if (isRoot(ms[i])) {
+      if (ms[i].m.length < 2) return false;
+      roots++;
+    }
+  }
+  if (roots === 0 || roots > 3) return false;
   const last = ms[ms.length - 1];
-  return last.k === "E" || (ms.length === 1 && inv.words.has(word));
+  return last.k === "E" || (ms.length === 1 && inv.words.has(word)) || spellsNumber(pieces);
 }
 
 export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions = {}): EoGloss {
@@ -1004,12 +1023,16 @@ export function classify(db: SqlReader, word: string, inv: Inventory, languages?
   const morph = guessed();
   if (morph) {
     // a legal formation can still be a slip of the finger: `finsita` is a real
-    // compound of `fin` and `sit`, and one letter from `finita`
+    // compound of `fin` and `sit`, and one letter from `finita`. A number is
+    // spelled on purpose: dekok is eighteen, not a slip for deko
     const term: EoTerm = {
       word, n: 1, verdict: "derived", seg: morph.seg, kinds: morph.kinds, parts: partsOf(db, morph.ms),
     };
-    const near = nearRoots(db, word, 2);
-    if (near.length > 0) term.near = near;
+    const pieces = numberPieces(morph.ms);
+    if (!pieces.some((_, i) => numberLength(pieces, i) > 0)) {
+      const near = nearRoots(db, word, 2);
+      if (near.length > 0) term.near = near;
+    }
     return term;
   }
 

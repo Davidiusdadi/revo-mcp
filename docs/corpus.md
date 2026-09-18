@@ -335,6 +335,11 @@ So `flank|en|ir|i`, not `flan|ken|ir|i`; `film|far|ad|o`, not `film|farad|o`
 the inventory lists as endingless (`en`, `aj`) are a closed set and keep the
 cheapest reading, which is the whole word or ReVo's own filing (`neni|o`);
 the scorer never saw such words in training and would split `en` as `e|n`.
+Numbers are the other closed set: when the scorer's pick cuts through the
+number a word opens with but ends a piece where the number ends (`dum|il|a`,
+`de|kok|a`), the best reading that keeps the number's pieces wins (`du|mil|a`,
+`dek|ok|a`). Over the 245,582 words of the counts file and the root marks this
+changes four splits and no score of `corpus:eval-segment`.
 
 **Training.** `pnpm corpus:train-segment` (`scripts/train-segment.ts`,
 ~10 s) fits the weights on the tune part of the root-marked words (below) and

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { lemmaCandidates, lemmaOf, segment, readings, formatSegments, type Inventory, type Morph } from "../src/morph";
+import { lemmaCandidates, lemmaOf, segment, readings, formatSegments, numberLength, spellsNumber, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
@@ -195,6 +195,38 @@ describe("segment", () => {
   test("uncoverable words give null", () => {
     expect(seg("xyzo")).toBeNull();
     expect(seg("")).toBeNull();
+  });
+});
+
+describe("numbers", () => {
+  const split = (s: string) => s.split("|");
+
+  test("tens and hundreds, and what the web joins besides", () => {
+    for (const n of ["tri|dek", "du|cent", "dek|du", "du|mil", "du|mil|kvin|cent|dek|unu", "kelk|dek", "kelk|mil", "mil|unu"]) {
+      expect(`${n} ${spellsNumber(split(n))}`).toBe(`${n} true`);
+    }
+  });
+
+  test("pieces in the wrong order are no number", () => {
+    // units after units, a ten times a ten, and unudek, which nobody says (PMEG 23.1)
+    for (const n of ["ok|ok", "du|tri", "dek|cent", "dek|dek", "unu|dek", "mil|mil", "kelk"]) {
+      expect(`${n} ${spellsNumber(split(n))}`).toBe(`${n} false`);
+    }
+    // one numeral word is a word, not a compound
+    expect(spellsNumber(["dek"])).toBe(false);
+  });
+
+  test("a big number follows what multiplies it, and needs an ending", () => {
+    expect(spellsNumber(split("du|milion"))).toBe(false);
+    expect(numberLength(split("du|milion|a"))).toBe(2);
+  });
+
+  test("the run is measured from where it starts, and stops at the first piece that is no part of it", () => {
+    expect(numberLength(split("du|dek|jar|aĝ|a"))).toBe(2);
+    expect(numberLength(split("post|du|dek|jar|o"), 1)).toBe(2);
+    expect(numberLength(split("tri|angul|o"))).toBe(0);
+    // unu|ok|ul|a: one-eyed, and no number
+    expect(numberLength(split("unu|ok|ul|a"))).toBe(0);
   });
 });
 

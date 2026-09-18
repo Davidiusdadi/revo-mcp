@@ -11,6 +11,7 @@ import { describe, test, expect, afterAll } from "vitest";
 import { closeDb, getDb, glossText } from "../src/db";
 import { hasPass } from "../src/db-voko";
 import { classify, inventoryOf, type EoGloss, type SourceGloss } from "../src/gloss";
+import { formatSegments, segment } from "../src/morph";
 import { executeGloss, glossOutputSchema, handleGloss } from "../src/tools/gloss";
 
 afterAll(() => closeDb());
@@ -260,6 +261,34 @@ describe("gloss: Esperanto audit", () => {
     expect(t.seg).toBe("art|e|far|it|a");
     expect(t.kinds).toBe("RLRSE");
     expect(t.parts!.find((p) => p.m === "e")?.gloss).toBeUndefined();
+  });
+
+  test("a number needs no ending and counts as one root", () => {
+    const inv = inventoryOf(getDb());
+    // PMEG writes tens and hundreds as one word; the web joins the rest too
+    for (const [w, seg] of [["tridek", "tri|dek"], ["ducent", "du|cent"], ["dekdu", "dek|du"], ["dumil", "du|mil"], ["kelkdek", "kelk|dek"]]) {
+      const t = classify(getDb(), w, inv);
+      expect(`${w}: ${t.verdict} ${t.seg}`).toBe(`${w}: derived ${seg}`);
+    }
+    // du|dek + jar + aĝ: three roots, not four
+    expect(classify(getDb(), "dudekjaraĝa", inv).seg).toBe("du|dek|jar|aĝ|a");
+    // pieces that make no number stay unknown
+    for (const w of ["dudu", "sestri", "dekcent", "unudek"]) expect(`${w}: ${classify(getDb(), w, inv).verdict}`).toBe(`${w}: unknown`);
+  });
+
+  test("a number keeps its pieces and is not taken for a slip", () => {
+    const inv = inventoryOf(getDb());
+    // the scorer alone reads dum|il|a, with "Ĉu humila?", and de|kok|a
+    const dumila = classify(getDb(), "dumila", inv);
+    expect(dumila.seg).toBe("du|mil|a");
+    expect(dumila.near).toBeUndefined();
+    expect(classify(getDb(), "dekoka", inv).seg).toBe("dek|ok|a");
+    expect(classify(getDb(), "dumiliona", inv).seg).toBe("du|milion|a");
+    // dekok is eighteen, not a slip for deko
+    expect(classify(getDb(), "dekok", inv).near).toBeUndefined();
+    // a root that runs on past the number is left alone
+    expect(formatSegments(segment("dekoktaĵo", inv)!).seg).toBe("dekokt|aĵ|o");
+    expect(formatSegments(segment("centokula", inv)!).seg).toBe("cent|okul|a");
   });
 
   test("a legal compound that is one letter from a real word says so", () => {
