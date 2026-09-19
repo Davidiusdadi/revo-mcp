@@ -195,10 +195,12 @@ function formatSingleResult(
     }
   }
 
-  // Cross-references
-  const meaningfulRefs = result.crossRefs.filter(
-    (r) => r.targetKap && r.type !== "super"
-  );
+  // Cross-references: the most telling kinds first, so a synonym is not cut
+  // off by list memberships; within a kind, in the article's order. A ref to
+  // the entry's own word (hundo's genus listing its sense "dombesto") is left out.
+  const meaningfulRefs = result.crossRefs
+    .filter((r) => r.targetKap && r.targetKap !== result.headword && r.type !== "super")
+    .sort((a, b) => refRank(a.type) - refRank(b.type));
   if (meaningfulRefs.length > 0) {
     lines.push("");
     lines.push("### See also");
@@ -223,17 +225,35 @@ function filterTranslations(
   return translations.filter((t) => showLanguages.includes(t.lng));
 }
 
+/**
+ * ReVo's reference kinds, the most useful to a reader first; an untyped ref is
+ * a "see". The one whole a word belongs to comes before its many parts.
+ */
+const REF_ORDER = ["sin", "ant", "dif", "vid", "", "hom", "malprt", "sub", "prt", "super", "lst", "ekz"];
+
+function refRank(type: string): number {
+  const rank = REF_ORDER.indexOf(type);
+  return rank < 0 ? REF_ORDER.length : rank;
+}
+
+/**
+ * As ReVo reads them (voko-grundo's manual): `prt` names a part of this word
+ * (semajno → lundo), `malprt` the whole it is part of (monato → jaro), and
+ * `dif` the word whose article holds the definition (Germanio → Germanujo).
+ */
 function refTypeLabel(type: string): string {
   switch (type) {
     case "vid": return "See";
     case "sin": return "Synonym";
     case "ant": return "Antonym";
-    case "dif": return "Differs from";
+    case "dif": return "Same as";
     case "super": return "Broader";
     case "sub": return "Narrower";
-    case "prt": return "Part of";
+    case "prt": return "Has part";
+    case "malprt": return "Part of";
     case "hom": return "Homonym";
-    case "malprt": return "Contains";
-    default: return type;
+    case "lst": return "In list";
+    case "ekz": return "Example";
+    default: return type || "See";
   }
 }
