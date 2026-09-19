@@ -26,6 +26,7 @@
     "freq:reduce": "tsx scripts/freq/reduce.ts",
     "freq:candidates": "tsx scripts/freq/candidates.ts && tsx scripts/freq/evidence.ts",
     "browser:build": "tsx scripts/build-browser-worker.ts",
+    "browser:release": "tsx scripts/build-browser-release.ts",
     "browser:smoke:build": "tsx scripts/build-browser-smoke.ts",
     "check": "tsc --noEmit"
   },

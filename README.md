@@ -53,11 +53,17 @@ https://revo-mcp-production-b460.up.railway.app/mcp
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?template=https://github.com/Davidiusdadi/revo-mcp)
 
-The image builds the dictionary database from the XML at build time. It
-downloads the two source repositories itself as tarballs, pinned to the commits
-in the `ARG`s at the top of the `Dockerfile`, so it depends neither on the
-builder cloning submodules (Railway does not) nor on git being installable in
-the image. Nothing here needs credentials: both repositories are public.
+The image builds the dictionary database from the XML at build time. Railway
+builds from a snapshot without `.git` or submodules, so the image clones this
+repository at the commit being built (`RAILWAY_GIT_COMMIT_SHA`, which Railway
+passes to the build) and checks out the two source submodules at their pins.
+The submodules are the only record of which source commits are built. Nothing
+here needs credentials: both repositories are public. A local build names a
+commit that is on GitHub:
+
+```bash
+docker build --build-arg RAILWAY_GIT_COMMIT_SHA=$(git rev-parse HEAD) .
+```
 
 Expect a slow first build (the corpus build alone is ~2 min). Only the database
 and the server reach the final image; the XML and the DTDs stay in the build
@@ -105,7 +111,17 @@ database file. It needs no server of its own: a static host serving `voko.db`
 with range requests is enough, and a PWA works offline once the file is stored.
 
 ```bash
-# The database a browser reads: search, lookup, entries, languages, Esperanto glossing, word families and examples (~184 MB, ~89 MB gzipped)
+# All four files a browser app serves, from one commit
+pnpm browser:release --out ./dist/revo
+```
+
+That is three steps, which also run on their own:
+
+```bash
+# The parser's tables, from the pinned DTDs
+pnpm corpus:entities
+
+# The database a browser reads: search, lookup, entries, languages, Esperanto glossing, word families and examples (~193 MB, ~93 MB gzipped)
 pnpm corpus:build --stage core --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
