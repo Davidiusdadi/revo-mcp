@@ -501,3 +501,10 @@ The Reta Vortaro dictionary content is licensed under the
 [GNU General Public License v2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html)
 only, and so is anything here derived from it (generated data, VOKO articles,
 databases built from the corpus).
+
+The word counts in `corpus/freq/counts.tsv` were made from two corpora:
+[HPLT v2](https://hplt-project.org/datasets/v2.0), web text whose packaging
+HPLT releases under CC0 1.0, and the
+[Tekstaro de Esperanto](https://tekstaro.com/) by Bertilo Wennergren for the
+Esperantic Studies Foundation. The file holds counts only, no text from
+either; `corpus/freq/README.md` describes how they are made.

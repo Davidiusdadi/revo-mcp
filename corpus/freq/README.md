@@ -20,13 +20,17 @@ The file's own header lines record, per source, the URL, sha256 and date of
 the download, the licence, the edition, and the number of Esperanto tokens
 counted (the denominator of the rates per million).
 
-- **hplt** — HPLT v2, cleaned, `epo_Latn` (web text, one shard of 1.1 GB).
-  Released under CC0 1.0, which places no condition on the counts.
-  Only lines the release itself tags as Esperanto (`seg_langs`) are counted.
-- **tekstaro** — Tekstaro de Esperanto (tekstaro.com), TEI XML edition with
-  morpheme boundaries; 128 texts from 1887 on, the corpus ReVo cites. No
-  licence is stated for the text, so the text stays on the machine that
-  counts; the file holds counts only.
+- **hplt** — [HPLT v2](https://hplt-project.org/datasets/v2.0), cleaned,
+  `epo_Latn` (web text, one shard of 1.1 GB). HPLT releases its packaging
+  under CC0 1.0; the text itself remains its authors'. Only lines the release
+  itself tags as Esperanto (`seg_langs`) are counted.
+- **tekstaro** — [Tekstaro de Esperanto](https://tekstaro.com/), created by
+  Bertilo Wennergren for the Esperantic Studies Foundation (ESF): the TEI XML
+  edition with morpheme boundaries, 128 texts from 1887 on, the corpus ReVo
+  cites. No licence is stated for the text, so the text stays on the machine
+  that counts.
+
+The file holds counts only, no text from either corpus.
 
 ## How a count is made
 
