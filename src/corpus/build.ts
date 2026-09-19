@@ -112,7 +112,7 @@ function loadBibliogr(db: Database): number {
 
 // ---------------------------------------------------------------------------
 
-/** The commit `name` was fetched at, as recorded by scripts/fetch-sources.ts. */
+/** The commit `name` was checked out at, as the Dockerfile's sources stage recorded it. */
 function pinnedRev(name: string): string | null {
   const file = join(VENDOR, "SOURCES.json");
   if (!existsSync(file)) return null;
@@ -128,8 +128,8 @@ function pinnedRev(name: string): string | null {
  * Which commit of the sources this database was built from.
  *
  * A development tree answers with git over the submodule checkout. A container
- * build has no git at all (see scripts/fetch-sources.ts), so the pins that the
- * fetch recorded stand in — the provenance is the same either way.
+ * build checks the submodules out in a stage of its own and has no git here, so
+ * the commits that stage recorded stand in — the provenance is the same either way.
  */
 function gitRev(dir: string, name: string): string {
   try {

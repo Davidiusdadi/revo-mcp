@@ -602,12 +602,11 @@ morphologically becomes an attested form with a count behind it.
 
 The image builds the database instead of shipping one, in three stages:
 
-1. `sources` — `scripts/fetch-sources.ts` downloads `revo-fonto` and
-   `voko-grundo` as tarballs at the commits pinned in the Dockerfile's `ARG`s,
-   unpacking only `revo/`, `cfg/`, `dtd/`, and recording them in
-   `vendor/SOURCES.json`. It runs on Node's own type stripping
-   (`node scripts/fetch-sources.ts`): it imports only Node built-ins, so the
-   stage installs no dependencies.
+1. `sources` — on `node:${NODE_VERSION}-alpine` with git from Alpine's
+   package index: clones this repository at `RAILWAY_GIT_COMMIT_SHA`, runs
+   `scripts/fonto.sh --checkout` to check out `revo-fonto` (`revo/`, `cfg/`)
+   and `voko-grundo` (`dtd/`, `cfg/`) at their submodule pins, and records the
+   two commits in `vendor/SOURCES.json`.
 2. `build` — `corepack enable` for the pnpm `package.json` names, then
    `pnpm install --frozen-lockfile` (`pnpm-workspace.yaml` and `packages/` are
    copied first, or the workspace dependency fails to resolve), then
@@ -616,25 +615,29 @@ The image builds the database instead of shipping one, in three stages:
    run as `node --import tsx src/http.ts` (tsx is a runtime dependency; pnpm is
    not needed). The XML, the DTDs and git stay behind in the earlier stages.
 
-The sources are fetched in-image rather than copied in because builders that
-clone from GitHub — Railway among them — ship neither the submodule contents
-nor `.git`, leaving an in-image `git submodule update` nothing to work from.
-Tarballs rather than `git clone` because installing git ties the build to
-Debian's package mirrors — an earlier base image on Debian 11 already hit 404s
-for the package versions its own indexes named — while `fetch` and `tar` are
-already there. Both repositories are public, so none of this needs credentials.
-`test/deploy-pins.test.ts` fails if the `ARG` commits drift from the pins.
+The sources are checked out in-image rather than copied in because builders
+that clone from GitHub — Railway among them — ship neither the submodule
+contents nor `.git`, and a submodule's pin lives only in git's tree. So the
+stage clones the commit being built, whose tree has the pins: Railway passes
+`RAILWAY_GIT_COMMIT_SHA` (and `RAILWAY_GIT_REPO_OWNER`/`_NAME`) to the build,
+and a local build passes it by hand, a commit that is on GitHub:
+`docker build --build-arg RAILWAY_GIT_COMMIT_SHA=$(git rev-parse HEAD) .`.
+Without it the stage stops and says so. The submodules stay the only record of
+the source commits; `test/deploy-pins.test.ts` fails if the Dockerfile names a
+commit. git comes from Alpine rather than Debian because an earlier Debian 11
+base image hit 404s on its mirrors for the package versions its own indexes
+named. Both repositories are public, so none of this needs credentials.
 
 `.dockerignore` keeps `data/`, `vendor/` and the generated parser tables out of
 the build context, so `setup.ts` regenerates the tables from the vendored DTDs
 — `scripts/gen-entities.ts` reads `dtd/` and `cfg/` and needs no git.
 
-Nothing on the build path requires git, so a container build still records
-where it came from: `meta.fonto_rev` and `meta.voko_grundo_rev` fall back to
-the commits in `vendor/SOURCES.json` when there is no repository to ask.
+The build stage has no git, so a container build records where it came from
+through the sources stage: `meta.fonto_rev` and `meta.voko_grundo_rev` fall
+back to the commits in `vendor/SOURCES.json` when there is no repository to ask.
 
 The base image is pinned (`ARG NODE_VERSION`, an exact release such as
-`24.15.0`, used as `node:${NODE_VERSION}-slim`) rather than tracking a floating
+`24.15.0`, used as `node:${NODE_VERSION}-slim` and `-alpine`) rather than tracking a floating
 tag like `node:24-slim`, which makes the build depend on whichever image the
 builder has cached — locally that once was a two-year-old copy. The passes and
 the server read SQLite through `node:sqlite`, whose API grew over Node 22 and

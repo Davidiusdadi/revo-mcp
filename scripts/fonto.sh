@@ -3,6 +3,8 @@
 # .gitmodules) and generate the parser's entity and cfg tables from them:
 #   vendor/revo-fonto   the VOKO articles        sparse: revo/ cfg/
 #   vendor/voko-grundo  DTDs and the name lists  sparse: dtd/ cfg/
+# `--checkout` stops after the checkout: the Dockerfile's sources stage has no
+# dependencies installed, and the build stage generates the tables.
 set -eu
 cd "$(dirname "$0")/.."
 git submodule update --init --depth 1 --filter=blob:none --no-checkout vendor/revo-fonto 2>/dev/null \
@@ -16,5 +18,7 @@ git submodule update --init --filter=blob:none --no-checkout vendor/voko-grundo 
 git -C vendor/voko-grundo sparse-checkout set --cone dtd cfg
 git -C vendor/voko-grundo checkout --quiet
 echo "vendor/voko-grundo at $(git -C vendor/voko-grundo rev-parse --short HEAD)"
+
+[ "${1:-}" = "--checkout" ] && exit 0
 
 pnpm exec tsx scripts/gen-entities.ts

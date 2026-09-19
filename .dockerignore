@@ -6,9 +6,10 @@ data/
 node_modules/
 packages/*/node_modules/
 
-# The `sources` stage fetches the VOKO XML and the DTDs at pinned SHAs, so a
-# local submodule checkout is neither needed nor wanted here — and .git is not
-# available on every builder (Railway does not ship it).
+# The `sources` stage checks the VOKO XML and the DTDs out from GitHub at the
+# commits the submodules pin, so a local submodule checkout is neither needed
+# nor wanted here — and .git is not available on every builder (Railway does
+# not ship it).
 vendor/
 .git/
 .gitmodules

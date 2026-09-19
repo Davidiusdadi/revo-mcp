@@ -10,36 +10,50 @@
 ARG NODE_VERSION=24.15.0
 
 # ---------------------------------------------------------------------------
-# Stage 1 — the VOKO sources.
+# Stage 1 — the VOKO sources, at the commits the submodules pin.
 #
-# The submodules cannot be relied on here: builders that clone from GitHub
-# (Railway among them) fetch neither the submodule contents nor .git, so an
-# in-image `git submodule update` has nothing to work from. Installing git is
-# not worth it either: it ties the build to Debian's package mirrors, which for
-# an older release have already 404ed on the versions its indexes named. So the
-# sources are downloaded as pinned tarballs, with the fetch and tar the image
-# already has.
+# Railway builds from a snapshot of the repository without .git, so the build
+# context has neither the submodules nor their pins: a pin lives only in git's
+# tree. This stage asks GitHub instead. It clones revo-mcp itself at the commit
+# being built (Railway passes RAILWAY_GIT_COMMIT_SHA to the build) and checks
+# out the submodules with scripts/fonto.sh, as a development tree does. The
+# submodules stay the only record of which commits are built; nothing here
+# repeats them. Both repositories are public, so this needs no credentials.
 #
-# The script runs on Node's own type stripping: it imports nothing but Node's
-# built-in modules, so this stage needs no dependency install, and a change to
-# the dependencies does not invalidate the download.
+# git comes from Alpine's package index. An earlier Debian-based image hit 404s
+# on its mirrors for the package versions its own indexes named.
 #
-# Keep the SHAs in step with the submodules — test/deploy-pins.test.ts fails if
-# they drift. Both repositories are public, so this needs no credentials.
+# A local build names a commit that is on GitHub:
+#   docker build --build-arg RAILWAY_GIT_COMMIT_SHA=$(git rev-parse HEAD) .
 # ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS sources
+FROM node:${NODE_VERSION}-alpine AS sources
 
-ARG REVO_FONTO_REPO=Davidiusdadi/revo-fonto
-ARG REVO_FONTO_SHA=f6da172934c3dbca3e3ad698c89cf0cdf30ea6fb
-ARG VOKO_GRUNDO_REPO=revuloj/voko-grundo
-ARG VOKO_GRUNDO_SHA=cb1c84d605af268b341751e273acc48a8c2300c2
+RUN apk add --no-cache git
 
-WORKDIR /sources
-COPY scripts/fetch-sources.ts ./scripts/
-# ARGs above are in the environment for RUN; the script reads the pins from it
-# and unpacks only the directories the corpus build reads.
-ENV VENDOR_DIR=/sources/vendor
-RUN node scripts/fetch-sources.ts
+ARG RAILWAY_GIT_REPO_OWNER=Davidiusdadi
+ARG RAILWAY_GIT_REPO_NAME=revo-mcp
+ARG RAILWAY_GIT_COMMIT_SHA
+
+WORKDIR /src
+# SOURCES.json records the commits for the database's meta table, since the
+# build stage has no git to ask. It is written here from the submodules, not
+# kept anywhere.
+RUN set -euo pipefail; \
+    if [ -z "${RAILWAY_GIT_COMMIT_SHA:-}" ]; then \
+      echo 'RAILWAY_GIT_COMMIT_SHA is empty. Railway sets it; a local build names a pushed commit:' >&2; \
+      echo '  docker build --build-arg RAILWAY_GIT_COMMIT_SHA=$(git rev-parse HEAD) .' >&2; \
+      exit 1; \
+    fi; \
+    git init -q; \
+    git remote add origin "https://github.com/$RAILWAY_GIT_REPO_OWNER/$RAILWAY_GIT_REPO_NAME.git"; \
+    git fetch -q --depth 1 origin "$RAILWAY_GIT_COMMIT_SHA"; \
+    git checkout -q FETCH_HEAD; \
+    sh scripts/fonto.sh --checkout; \
+    git submodule foreach --quiet 'echo "${sm_path#vendor/} $sha1"' \
+      | node -e 'const rows = require("fs").readFileSync(0, "utf8").trim().split("\n").map((l) => { const [name, commit] = l.split(" "); return { name, commit }; }); process.stdout.write(JSON.stringify(rows, null, 1) + "\n");' \
+      > vendor/SOURCES.json; \
+    rm -f vendor/*/.git; \
+    cat vendor/SOURCES.json
 
 # ---------------------------------------------------------------------------
 # Stage 2 — build the database.
@@ -61,7 +75,7 @@ COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY corpus/ ./corpus/
 COPY tsconfig.json ./
-COPY --from=sources /sources/vendor/ ./vendor/
+COPY --from=sources /src/vendor/ ./vendor/
 
 # Generates the parser's entity and cfg tables from the DTDs, then builds
 # data/voko.db: L2 from the XML, followed by every enrichment pass.
