@@ -341,6 +341,24 @@ describe("MCP Protocol: Response format validation", () => {
     // Should contain markdown bold
     expect(text).toContain("**");
   });
+
+  test("the chat tools answer in text alone, which a client then shows whole", async () => {
+    const calls = [
+      { name: "lookup", arguments: { query: "hundo", limit: 1 } },
+      { name: "lookup_root", arguments: { root: "rav" } },
+      { name: "examples", arguments: { query: "abelojn" } },
+      { name: "thesaurus", arguments: { word: "hundo" } },
+      { name: "reverse_lookup", arguments: { description: "granda birdo" } },
+    ];
+    for (const call of calls) {
+      const result = await client.callTool(call);
+      expect(result.structuredContent, call.name).toBeUndefined();
+    }
+    const { tools } = await client.listTools();
+    for (const { name } of calls) {
+      expect(tools.find((tool) => tool.name === name)?.outputSchema, name).toBeUndefined();
+    }
+  });
 });
 
 describe("the application dictionary tools", () => {

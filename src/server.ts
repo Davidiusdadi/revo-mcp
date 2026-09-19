@@ -26,18 +26,10 @@ import {
   renderWordExamples,
 } from "./tools/word-examples";
 import { glossInputSchema, glossOutputSchema, executeGloss, renderGloss } from "./tools/gloss";
-import {
-  getLanguages,
-  getHeadwordCount,
-  lookupFamily,
-  lookupThesaurus,
-  searchDefinitions,
-  searchExamples,
-} from "./db";
+import { getLanguages, getHeadwordCount } from "./db";
 import { languageName } from "./formatter";
 import { z } from "zod";
 
-const genericOutputSchema = z.object({ kind: z.string(), data: z.any() });
 const languagesOutputSchema = z.object({
   languages: z.array(z.object({ code: z.string(), name: z.string(), count: z.number() })),
 });
@@ -127,6 +119,9 @@ export function createMcpServer(): McpServer {
     return { text: renderWordExamples(structuredContent), structuredContent };
   }));
 
+  // The chat tools answer in text alone. A client such as claude.ai shows a
+  // tool's structuredContent in place of its text, so a structured copy would
+  // have to carry all the text does.
   server.registerTool("lookup", {
     description: "Look up a word in the Reta Vortaro (Esperanto dictionary). " +
       "Search Esperanto headwords (lang='eo'), translations in a specific language " +
@@ -135,16 +130,8 @@ export function createMcpServer(): McpServer {
       "Supports x-system input (e.g., 'cxirkaux' for 'ĉirkaŭ') and grammatical form stemming " +
       "(e.g., 'amikojn' finds 'amiko').",
     inputSchema: lookupInputSchema,
-    outputSchema: genericOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("lookup", args as Record<string, unknown>, () => ({
-    text: handleLookup(args),
-    structuredContent: { kind: "lookup", data: executeSearch({
-      query: args.query,
-      languages: args.lang === "eo" ? (args.show_languages ?? []) : [args.lang],
-      limit: Math.min(args.limit, 50),
-    }) },
-  })));
+  }, async (args) => toolResponse("lookup", args as Record<string, unknown>, () => handleLookup(args)));
 
   server.registerTool("languages", {
     description: "List all available languages in the Reta Vortaro dictionary with their translation counts.",
@@ -164,12 +151,8 @@ export function createMcpServer(): McpServer {
     description: "Look up all derived word forms of an Esperanto root (e.g. 'rav' → ravi, rava, rave, ravado…). " +
       "Returns translations only (no definitions or examples), filtered to the specified languages.",
     inputSchema: lookupRootInputSchema,
-    outputSchema: genericOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => ({
-    text: handleLookupRoot(args),
-    structuredContent: { kind: "word_family", data: lookupFamily(args.root) },
-  })));
+  }, async (args) => toolResponse("lookup_root", args as Record<string, unknown>, () => handleLookupRoot(args)));
 
   server.registerTool("examples", {
     description: "Search the corpus of Esperanto example sentences harvested from every article. " +
@@ -177,12 +160,8 @@ export function createMcpServer(): McpServer {
       "or proper nouns that don't appear as dictionary headwords. Returns matching " +
       "example sentences grouped by the article they live in.",
     inputSchema: examplesInputSchema,
-    outputSchema: genericOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("examples", args as Record<string, unknown>, () => ({
-    text: handleExamples(args),
-    structuredContent: { kind: "examples", data: searchExamples(args.query, args.limit) },
-  })));
+  }, async (args) => toolResponse("examples", args as Record<string, unknown>, () => handleExamples(args)));
 
   server.registerTool("thesaurus", {
     description: "Show how an Esperanto word relates to others in the Reta Vortaro: synonyms, antonyms, " +
@@ -191,12 +170,8 @@ export function createMcpServer(): McpServer {
       "themselves a kind of dog), which do not appear in the article's own text. " +
       "Use it to explore a semantic field; use `lookup` for the word's definition.",
     inputSchema: thesaurusInputSchema,
-    outputSchema: genericOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => ({
-    text: handleThesaurus(args),
-    structuredContent: { kind: "thesaurus", data: lookupThesaurus(args.word) },
-  })));
+  }, async (args) => toolResponse("thesaurus", args as Record<string, unknown>, () => handleThesaurus(args)));
 
   server.registerTool("reverse_lookup", {
     description: "Find an Esperanto word from a description of its meaning, by searching the text of the " +
@@ -204,12 +179,8 @@ export function createMcpServer(): McpServer {
       "The description must be in Esperanto. Use this when you know what something is but not " +
       "what it is called; `lookup` searches headwords and translations instead.",
     inputSchema: reverseLookupInputSchema,
-    outputSchema: genericOutputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
-  }, async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => ({
-    text: handleReverseLookup(args),
-    structuredContent: { kind: "reverse_lookup", data: searchDefinitions(args.description, args.limit) },
-  })));
+  }, async (args) => toolResponse("reverse_lookup", args as Record<string, unknown>, () => handleReverseLookup(args)));
 
   server.registerTool("gloss", {
     description: "Gloss a text against the dictionary in one call — a paragraph, a passage, or a word. " +
