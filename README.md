@@ -169,6 +169,13 @@ it (too little storage, a second tab, a failed download) and `revo:error` for
 what does, such as an unreachable file without a copy
 (`src/browser/protocol.ts`).
 
+Both carry an English `message` and, when the Worker knows what went wrong, a
+`code` from `src/browser/trouble.ts` with the `detail` the sentence turns on —
+a size, an HTTP status, or what the browser itself said. A page that speaks
+another language writes its own sentence from the code and shows the message
+only for a code it does not know. `RevoBrowserClient` rejects with the same
+`RevoTrouble`.
+
 Measured in Chromium against the core build of `d18ad4f` (13,079 articles,
 141.0 MB, 62.5 MB gzipped), requests and bytes per interaction in remote mode:
 

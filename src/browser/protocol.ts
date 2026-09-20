@@ -1,4 +1,5 @@
 /** Messages between a page and the dictionary Worker (worker-entry.ts). */
+import type { RevoTroubleCode } from "./trouble";
 
 /** Where queries read the database: the published file over HTTP ranges, or the local copy. */
 export type RevoEngine = "remote" | "local";
@@ -27,5 +28,5 @@ export type RevoWorkerEvent =
   /** Queries read from this engine from now on. */
   | { type: "revo:engine"; engine: RevoEngine }
   /** The Worker goes on without what the message names, such as a local copy. */
-  | { type: "revo:notice"; message: string }
-  | { type: "revo:error"; message: string };
+  | { type: "revo:notice"; message: string; code?: RevoTroubleCode; detail?: string }
+  | { type: "revo:error"; message: string; code?: RevoTroubleCode; detail?: string };

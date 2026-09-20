@@ -16,6 +16,7 @@ import { databaseBytes, fetchHeader, type DatabaseHeader } from "./database-file
 import { initSqlite, openRemoteDatabase } from "./http-sqlite-reader";
 import { LocalCopies, type LocalCopy } from "./local-copy";
 import type { RevoEngine, RevoWorkerCommand, RevoWorkerEvent, RevoWorkerInit } from "./protocol";
+import { RevoTrouble } from "./trouble";
 
 const worker = self as unknown as DedicatedWorkerGlobalScope;
 
@@ -38,10 +39,19 @@ function emit(event: RevoWorkerEvent): void {
   worker.postMessage(event);
 }
 
+/**
+ * What a failure says, for a page that reads English and for one that writes
+ * its own words: the sentence, and the code behind it when there is one.
+ */
+function said(error: unknown): { message: string; code?: RevoTrouble["code"]; detail?: string } {
+  if (error instanceof RevoTrouble) return { message: error.message, code: error.code, detail: error.detail };
+  return { message: error instanceof Error ? error.message : String(error) };
+}
+
 function notice(error: unknown): void {
   // Deleting the copy cancels its download on purpose.
   if (error instanceof Error && error.name === "AbortError") return;
-  emit({ type: "revo:notice", message: error instanceof Error ? error.message : String(error) });
+  emit({ type: "revo:notice", ...said(error) });
 }
 
 worker.addEventListener("message", (event: MessageEvent<RevoWorkerInit | RevoWorkerCommand>) => {
@@ -49,7 +59,7 @@ worker.addEventListener("message", (event: MessageEvent<RevoWorkerInit | RevoWor
   if (message?.type === "revo:init" && !started) {
     started = true;
     start(message).catch((error) => {
-      emit({ type: "revo:error", message: error instanceof Error ? error.message : String(error) });
+      emit({ type: "revo:error", ...said(error) });
     });
   } else if (message?.type === "revo:local" && session) {
     const current = session;
@@ -95,7 +105,10 @@ async function openCopies(current: Session, access: NonNullable<RevoWorkerInit["
   try {
     current.copies = await LocalCopies.open(current.sqlite3);
   } catch (error) {
-    if (access === "auto") notice(`The dictionary keeps no local copy in this tab: ${error instanceof Error ? error.message : error}`);
+    if (access === "auto") {
+      const why = error instanceof Error ? error.message : String(error);
+      notice(new RevoTrouble("copy/none-in-tab", `The dictionary keeps no local copy in this tab: ${why}`, why));
+    }
   }
 }
 
@@ -103,7 +116,7 @@ async function openCopies(current: Session, access: NonNullable<RevoWorkerInit["
 async function attachCopies(current: Session, access: NonNullable<RevoWorkerInit["access"]>, published?: DatabaseHeader): Promise<void> {
   // A reload's previous Worker lets go within moments; another tab's does not.
   if (!await LocalCopies.free(3000)) {
-    if (access === "auto") notice("The dictionary keeps no local copy in this tab; another tab holds it.");
+    if (access === "auto") notice(new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it."));
     return;
   }
   await openCopies(current, access);
@@ -120,7 +133,8 @@ function useCopy(current: Session, copy: LocalCopy): boolean {
     configureDatabase(current.copies!.read(copy));
   } catch (error) {
     current.copies!.removeAllBut(current.local);
-    notice(`The local copy of the dictionary was deleted: ${error instanceof Error ? error.message : error}`);
+    const why = error instanceof Error ? error.message : String(error);
+    notice(new RevoTrouble("copy/deleted", `The local copy of the dictionary was deleted: ${why}`, why));
     return false;
   }
   current.engine = "local";
@@ -141,7 +155,7 @@ function download(current: Session, published?: DatabaseHeader): Promise<void> {
 
 async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHeader): Promise<void> {
   const copies = current.copies;
-  if (!copies) throw new Error("The dictionary keeps no local copy in this tab.");
+  if (!copies) throw new RevoTrouble("copy/none-in-tab", "The dictionary keeps no local copy in this tab.");
   let published: DatabaseHeader;
   try {
     published = known ?? await fetchHeader(current.url);
@@ -154,7 +168,8 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
 
   const estimate = await navigator.storage?.estimate?.();
   if (estimate?.quota !== undefined && estimate.quota - (estimate.usage ?? 0) < published.size) {
-    throw new Error(`The browser allows too little storage for a local copy of the dictionary (${Math.ceil(published.size / 1e6)} MB).`);
+    const megabytes = `${Math.ceil(published.size / 1e6)} MB`;
+    throw new RevoTrouble("copy/too-little-storage", `The browser allows too little storage for a local copy of the dictionary (${megabytes}).`, megabytes);
   }
 
   const total = published.size;
@@ -180,7 +195,7 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
   if (revision !== published.revision) {
     reader.close();
     copies.removeAllBut(current.local);
-    throw new Error(`The downloaded dictionary (${current.url}.gz) is not the revision of ${current.url}; they are published together.`);
+    throw new RevoTrouble("download/revision-mismatch", `The downloaded dictionary (${current.url}.gz) is not the revision of ${current.url}; they are published together.`);
   }
   // Replaces and closes what queries read until now.
   configureDatabase(reader);
@@ -193,7 +208,7 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
 
 /** Deletes the local copy; queries read the published file again. */
 async function deleteCopy(current: Session): Promise<void> {
-  if (!current.copies) throw new Error("The dictionary keeps no local copy in this tab; another tab holds it.");
+  if (!current.copies) throw new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it.");
   if (current.download) {
     current.download.abort.abort();
     await current.download.done.catch(() => undefined);

@@ -2,6 +2,7 @@
  * The published database file, read without SQLite: its header, to compare
  * revisions, and its bytes, to store a local copy.
  */
+import { RevoTrouble } from "./trouble";
 
 export interface DatabaseHeader {
   /** user_version, which the build sets to the time the file was finished */
@@ -14,7 +15,7 @@ const MAGIC = "SQLite format 3\0";
 
 export function parseHeader(bytes: Uint8Array): DatabaseHeader {
   if (bytes.byteLength < 100 || String.fromCharCode(...bytes.subarray(0, 16)) !== MAGIC) {
-    throw new Error("The dictionary file is not an SQLite database.");
+    throw new RevoTrouble("file/not-sqlite", "The dictionary file is not an SQLite database.");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, 100);
   const pageSize = view.getUint16(16) === 1 ? 65536 : view.getUint16(16);
@@ -24,7 +25,7 @@ export function parseHeader(bytes: Uint8Array): DatabaseHeader {
 /** The published file's header: its first 100 bytes, one small request. */
 export async function fetchHeader(url: string): Promise<DatabaseHeader> {
   const response = await fetch(url, { headers: { Range: "bytes=0-99" }, cache: "no-store" });
-  if (!response.ok) throw new Error(`The dictionary file could not be read (${response.status}).`);
+  if (!response.ok) throw new RevoTrouble("file/unreadable", `The dictionary file could not be read (${response.status}).`, String(response.status));
   // A server that ignores the range sends the whole file; its start is the same.
   const reader = response.body!.getReader();
   const header = new Uint8Array(100);
@@ -53,7 +54,7 @@ export async function databaseBytes(
   signal: AbortSignal,
 ): Promise<() => Promise<Uint8Array | undefined>> {
   const bytes = await openBytes(`${url}.gz`, signal) ?? await openBytes(url, signal);
-  if (!bytes) throw new Error("The dictionary download is not an SQLite database.");
+  if (!bytes) throw new RevoTrouble("download/not-sqlite", "The dictionary download is not an SQLite database.");
   return async () => {
     const next = await bytes.read();
     return next.done ? undefined : next.value;
@@ -63,7 +64,7 @@ export async function databaseBytes(
 async function openBytes(url: string, signal: AbortSignal): Promise<ReadableStreamDefaultReader<Uint8Array> | undefined> {
   const response = await fetch(url, { cache: "no-store", signal });
   if (response.status === 404) return undefined;
-  if (!response.ok || !response.body) throw new Error(`The dictionary download failed (${response.status}).`);
+  if (!response.ok || !response.body) throw new RevoTrouble("download/failed", `The dictionary download failed (${response.status}).`, String(response.status));
   const body = response.body.getReader();
   const first = await body.read();
   const start = first.done ? new Uint8Array() : first.value;

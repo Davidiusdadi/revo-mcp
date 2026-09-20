@@ -5,6 +5,7 @@ import type { RevoWorkerCommand, RevoWorkerEvent, RevoWorkerInit } from "./proto
 import type { SearchOutput, searchInputSchema } from "../tools/search";
 import type { FamilyOutput, familyInputSchema } from "../tools/family";
 import type { WordExamplesOutput, wordExamplesInputSchema } from "../tools/word-examples";
+import { RevoTrouble } from "./trouble";
 
 export interface RevoWorkerLike {
   postMessage(message: unknown, transfer: Transferable[]): void;
@@ -34,7 +35,10 @@ export class RevoBrowserClient {
       worker.addEventListener("message", (event: MessageEvent<RevoWorkerEvent>) => {
         options.onEvent?.(event.data);
         if (event.data.type === "revo:ready") resolve();
-        if (event.data.type === "revo:error") reject(new Error(event.data.message));
+        if (event.data.type === "revo:error") {
+          const { message, code, detail } = event.data;
+          reject(code ? new RevoTrouble(code, message, detail) : new Error(message));
+        }
       });
     });
     const message: RevoWorkerInit = {
