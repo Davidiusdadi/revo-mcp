@@ -218,24 +218,33 @@ export interface Translation {
   parts?: TranslationPart[];
   /** Its reading, as kana or pinyin. */
   pr?: string;
+  /**
+   * Where it was found, when the <trd> says: `Vikt: de en; juĝis <model>` is a
+   * translation taken from Wiktionary and judged by a model, `; kontrolita`
+   * after it one a person has checked since.
+   */
+  fnt?: string;
+  /** Its style or field code (ARK, VULG …), when it carries one. */
+  kod?: string;
   /** Which of the entry's `senses` it translates; none when it translates the entry as a whole. */
   sense?: number;
 }
 
-const notesByDb = new WeakMap<SqlReader, boolean>();
+const structureByDb = new WeakMap<SqlReader, number>();
 
 /**
- * Whether `translation` keeps the notes and readings (structure pass 3). A
- * copy of the database stored in a browser before it did is still read.
+ * The structure pass the database was built with: from 3 `translation` keeps
+ * the notes and readings, from 4 where each was found. A copy of the database
+ * stored in a browser before that is still read.
  */
-function keepsNotes(db: SqlReader): boolean {
-  let keeps = notesByDb.get(db);
-  if (keeps === undefined) {
+function structureVersion(db: SqlReader): number {
+  let version = structureByDb.get(db);
+  if (version === undefined) {
     const row = db.query<{ version: number }, []>("SELECT version FROM meta_pass WHERE pass = 'structure'").get();
-    keeps = (row?.version ?? 0) >= 3;
-    notesByDb.set(db, keeps);
+    version = row?.version ?? 0;
+    structureByDb.set(db, version);
   }
-  return keeps;
+  return version;
 }
 
 /**
@@ -253,19 +262,23 @@ export function translationsOf(
   // `+lng`: the entry's range is the narrow index; a full build's
   // idx_translation_lng_key would otherwise scan a whole language.
   const only = languages ? ` AND +lng IN (${languages.map(() => "?").join(",")})` : "";
-  const notes = keepsNotes(db) ? ", klr, pr" : ", NULL AS klr, NULL AS pr";
+  const version = structureVersion(db);
+  const notes = (version >= 3 ? ", klr, pr" : ", NULL AS klr, NULL AS pr")
+    + (version >= 4 ? ", fnt, kod" : ", NULL AS fnt, NULL AS kod");
   return db
-    .query<{ lng: string; trd: string; ind: string | null; klr: string | null; pr: string | null; node_id: number }, unknown[]>(
+    .query<{ lng: string; trd: string; ind: string | null; klr: string | null; pr: string | null; fnt: string | null; kod: string | null; node_id: number }, unknown[]>(
       `SELECT lng, txt AS trd, ind${notes}, node_id FROM translation
         WHERE id BETWEEN ? AND ? AND in_ekz = 0${only}
         ORDER BY lng, node_id <> ?, node_id, id`,
     )
     .all(node.id, node.last_id, ...(languages ?? []), node.id)
-    .map(({ lng, trd, ind, klr, pr, node_id }) => {
+    .map(({ lng, trd, ind, klr, pr, fnt, kod, node_id }) => {
       const translation: Translation = { lng, trd };
       if (ind && ind !== trd) translation.ind = ind;
       if (klr) translation.parts = JSON.parse(klr) as TranslationPart[];
       if (pr) translation.pr = pr;
+      if (fnt) translation.fnt = fnt;
+      if (kod) translation.kod = kod;
       const sense = senses?.get(node_id);
       if (sense !== undefined) translation.sense = sense;
       return translation;

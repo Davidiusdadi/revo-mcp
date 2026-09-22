@@ -144,6 +144,20 @@ describe("corpus build", () => {
     expect(pr.txt).not.toContain(pr.pr);
   });
 
+  test("a translation keeps the fnt and kod its <trd> gives", () => {
+    const trds = allContent().filter(({ c }) => c.el.name === "trd");
+    for (const { c } of trds) {
+      expect(one<{ fnt: string | null; kod: string | null }>("SELECT fnt, kod FROM translation WHERE id = ?", idOf(c.el)))
+        .toEqual({ fnt: c.el.attrs.fnt ?? null, kod: c.el.attrs.kod ?? null });
+    }
+    // ReVo's own articles code some translations (ARK, FIG …); none says where it was found
+    expect(trds.some(({ c }) => c.el.attrs.kod)).toBe(true);
+    const coded = one<{ mrk: string }>(
+      `SELECT d.mrk FROM node d WHERE d.kind = 'drv' AND d.mrk IS NOT NULL
+         AND EXISTS (SELECT 1 FROM translation t WHERE t.node_id = d.id AND t.kod IS NOT NULL AND t.in_ekz = 0) LIMIT 1`).mrk;
+    expect(assembleEntry(db as never, entryNodeByMark(db as never, coded)!).translations.some((t) => t.kod)).toBe(true);
+  });
+
   // The DTD lets <klr> hold trd/trdgrp, which ReVo uses to gloss a translation
   // in a third language: `unu` has Finnish inside a Spanish trd, `li` Ido inside
   // an Indonesian one.
@@ -292,23 +306,31 @@ describe("entries read from the stored articles", () => {
   });
 
   // A browser keeps the copy it downloaded, which a newer Worker still reads.
-  test("an entry reads a database built before translations kept their notes", () => {
-    const older = join(dir, "older.db");
-    copyFileSync(join(dir, "slice.db"), older);
-    const old = new Database(older);
-    old.run("ALTER TABLE translation DROP COLUMN klr");
-    old.run("ALTER TABLE translation DROP COLUMN pr");
-    old.run("UPDATE meta_pass SET version = 2 WHERE pass = 'structure'");
+  test("an entry reads a database built before translations kept their notes or their source", () => {
     const mrk = one<{ mrk: string }>(
       `SELECT d.mrk FROM node d WHERE d.kind = 'drv' AND d.mrk IS NOT NULL
-         AND EXISTS (SELECT 1 FROM translation t WHERE t.id BETWEEN d.id AND d.last_id AND t.klr IS NOT NULL AND t.in_ekz = 0) LIMIT 1`).mrk;
+         AND EXISTS (SELECT 1 FROM translation t WHERE t.id BETWEEN d.id AND d.last_id AND t.klr IS NOT NULL AND t.in_ekz = 0)
+         AND EXISTS (SELECT 1 FROM translation t WHERE t.id BETWEEN d.id AND d.last_id AND t.kod IS NOT NULL AND t.in_ekz = 0) LIMIT 1`).mrk;
     const now = assembleEntry(db as never, entryNodeByMark(db as never, mrk)!);
-    const then = assembleEntry(old as never, entryNodeByMark(old as never, mrk)!);
-    old.close();
     expect(now.translations.some((t) => t.parts)).toBe(true);
-    expect(then.translations.some((t) => t.parts || t.pr)).toBe(false);
-    expect(then.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })))
-      .toEqual(now.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })));
+    expect(now.translations.some((t) => t.kod)).toBe(true);
+    const olderAt = (version: number, drop: string[]) => {
+      const older = join(dir, `older${version}.db`);
+      copyFileSync(join(dir, "slice.db"), older);
+      const old = new Database(older);
+      for (const column of drop) old.run(`ALTER TABLE translation DROP COLUMN ${column}`);
+      old.run("UPDATE meta_pass SET version = ? WHERE pass = 'structure'", [version]);
+      const then = assembleEntry(old as never, entryNodeByMark(old as never, mrk)!);
+      old.close();
+      expect(then.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })))
+        .toEqual(now.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })));
+      return then;
+    };
+    const two = olderAt(2, ["klr", "pr", "fnt", "kod"]);
+    expect(two.translations.some((t) => t.parts || t.pr || t.fnt || t.kod)).toBe(false);
+    const three = olderAt(3, ["fnt", "kod"]);
+    expect(three.translations.some((t) => t.parts)).toBe(true);
+    expect(three.translations.some((t) => t.fnt || t.kod)).toBe(false);
   });
 
   test("translations of examples are the ones marked in_ekz", () => {
