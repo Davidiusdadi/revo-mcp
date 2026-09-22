@@ -15,7 +15,9 @@ export const translationSchema = z.object({
   parts: z.array(z.union([z.string(), noteSchema])).optional().describe("The translation with its notes in place."),
   pr: z.string().optional().describe("Its reading, as kana or pinyin."),
   fnt: z.string().optional()
-    .describe("Where it was found, when ReVo says: 'Vikt: de en; juĝis <model>' is taken from Wiktionary and judged by a model, '; kontrolita' after it checked by a person since."),
+    .describe("Where it was found, when ReVo says: 'Vikt: de en; juĝis <model>' is taken from Wiktionary and judged by a model, " +
+      "'AI: pl fr; proponis <model>; kontrolis <model>' proposed by a model from those languages' words and checked by another; " +
+      "'; kontrolita' after either: checked by a person since."),
   kod: z.string().optional().describe("Its style or field code (ARK dated, VULG vulgar …), when it has one."),
   sense: z.number().int().optional().describe("Which of the entry's senses it translates, counted from 0."),
 });

@@ -27,13 +27,7 @@ export interface LookupResult {
   headword: string;
   article: string;
   mrk: string;
-  senses: {
-    mrk?: string;
-    num?: string;
-    definition: string;
-    examples: string[];
-    domain?: string;
-  }[];
+  senses: SenseEntry[];
   translations: Translation[];
   crossRefs: { target: string; type: string; targetKap?: string }[];
   usageDomains: string[];
@@ -364,11 +358,22 @@ export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOpti
     headword: node.headword,
     article: node.article,
     mrk: node.mrk,
-    senses: full ? content!.senses : [],
+    senses: full ? sensesIn(content!.senses, options.languages) : [],
     translations: translationsOf(db, node, options.languages, full ? sensesById(content!, node.id) : undefined),
     crossRefs,
     usageDomains: options.domains ?? content!.usageDomains,
   };
+}
+
+/** The senses with their definitions in other languages kept to those asked for; all when none are named. */
+function sensesIn(senses: SenseEntry[], languages?: string[]): SenseEntry[] {
+  if (!languages) return senses;
+  return senses.map((sense) => {
+    if (!sense.definitions) return sense;
+    const { definitions, ...rest } = sense;
+    const kept = definitions.filter((d) => languages.includes(d.lng));
+    return kept.length > 0 ? { ...rest, definitions: kept } : rest;
+  });
 }
 
 /**

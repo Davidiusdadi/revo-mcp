@@ -186,6 +186,9 @@ function formatSingleResult(
       if (sense.definition) {
         lines.push(`${prefix}${sense.definition}${domain}`);
       }
+      for (const d of sense.definitions ?? []) {
+        lines.push(`  - (${d.lng}) ${d.txt}${d.fnt ? ` _[${d.fnt}]_` : ""}`);
+      }
 
       // Examples
       for (const ex of sense.examples) {

@@ -5,7 +5,8 @@
  * links, the attested half of the morphology `morph` builds on.
  *
  * Owner = the innermost kap, dif, ekz, rim, trd, ref or bld around the tilde,
- * else the structural node; `owner_id` is that element's id.
+ * else the structural node; `owner_id` is that element's id. A definition in
+ * another language (<dif lng="de">) is left out.
  *
  * The walk is `tldOccurrences`, which the `morph` pass reads as well: it
  * belongs to the core stage and this table does not, so the two share the
@@ -18,6 +19,7 @@ import {
 } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
+import { inEsperanto } from "../../content";
 import { articleTrees } from "../documents";
 
 const OWNER_SET: ReadonlySet<string> = new Set(["kap", "dif", "ekz", "rim", "trd", "ref", "bld"]);
@@ -56,6 +58,8 @@ export function* tldOccurrences(db: Database): Generator<TldOccurrence> {
     const walk = (el: Element, nodeId: number, kind: string, ownerId: number): void => {
       for (const c of el.children) {
         if (c.type !== "element" || NODE_KIND_SET.has(c.name)) continue;
+        // a definition in another language says nothing about Esperanto words
+        if (c.name === "dif" && !inEsperanto(c)) continue;
         if (OWNER_SET.has(c.name)) {
           walk(c, nodeId, c.name, idOf(c)!);
           continue;

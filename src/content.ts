@@ -197,11 +197,28 @@ export function usesVariantRoots(el: Element): boolean {
   return false;
 }
 
+/**
+ * Whether a <dif> is the Esperanto definition: one without lng, or lng="eo".
+ * One in another language (<dif lng="de">) translates it, and the passes that
+ * read Esperanto (search, attested forms, tilde links) leave it out.
+ */
+export const inEsperanto = (dif: Element): boolean => (dif.attrs.lng ?? "eo") === "eo";
+
+/** A sense's definition in another language, with where it came from if it says (<dif lng fnt>). */
+export interface ForeignDefinition {
+  lng: string;
+  txt: string;
+  fnt?: string;
+}
+
 /** One sense of a derivation, as `lookup` renders it under a headword. */
 export interface SenseEntry {
   mrk?: string;
   num?: string;
+  /** in Esperanto */
   definition: string;
+  /** the definition in other languages, when the article gives it */
+  definitions?: ForeignDefinition[];
   examples: string[];
   domain?: string;
 }
@@ -222,14 +239,15 @@ export interface EntryContent {
  * Senses are in document order, numbered as ReVo renders them: snc "1." "2."
  * (unnumbered when alone), subsnc "a)" "b)", subdrv "A." "B.". A sense has its
  * own definitions and examples, not those of the senses inside it. With no
- * <dif>, a sense defined by reference reads "= X" (<ref tip="dif">X</ref>).
+ * Esperanto <dif>, a sense defined by reference reads "= X" (<ref tip="dif">X</ref>).
  */
 export function entryContent(drv: Element, roots: Roots): EntryContent {
   const [own, ...below] = [...nodesWithContent(drv)];
 
   const senseAt = (content: Content[], mrk: string | undefined): SenseEntry => {
     const of = (name: string) => content.filter((c) => c.el.name === name);
-    let definition = of("dif").map((c) => textIn(c.el, roots, OMIT.dif)).join(" ");
+    const difs = of("dif");
+    let definition = difs.filter((c) => inEsperanto(c.el)).map((c) => textIn(c.el, roots, OMIT.dif)).join(" ");
     const refs = of("ref").filter((c) => c.owner === "node" && c.tip === "dif");
     if (!definition && refs.length > 0) definition = `= ${refs.map((c) => textIn(c.el, roots)).join(", ")}`;
     const sense: SenseEntry = {
@@ -237,6 +255,12 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
       definition,
       examples: of("ekz").map((c) => textIn(c.el, roots, OMIT.ekz)).filter((t) => t.length > 0),
     };
+    const foreign = difs.filter((c) => !inEsperanto(c.el)).map((c): ForeignDefinition => {
+      const d: ForeignDefinition = { lng: c.el.attrs.lng!, txt: textIn(c.el, roots, OMIT.dif) };
+      if (c.el.attrs.fnt) d.fnt = c.el.attrs.fnt;
+      return d;
+    });
+    if (foreign.length > 0) sense.definitions = foreign;
     const domains = of("uzo").filter((c) => c.owner === "node" && c.el.attrs.tip === "fak").map((c) => textIn(c.el, roots));
     if (domains.length > 0) sense.domain = domains.join(", ");
     return sense;

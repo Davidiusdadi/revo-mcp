@@ -11,7 +11,7 @@
 import type { NodeInfo } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
-import { childText, contentOf, textIn, OMIT } from "../../content";
+import { childText, contentOf, inEsperanto, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 
 export const ftsPass: Pass = {
@@ -45,7 +45,7 @@ export const ftsPass: Pass = {
             insTrd.run(id, textIn(c.el, roots, OMIT.trd), childText(c.el, "ind", roots),
               childText(c.el, "baz", roots), childText(c.el, "pr", roots));
             nTrd++;
-          } else if (c.el.name === "dif") {
+          } else if (c.el.name === "dif" && inEsperanto(c.el)) {
             insDif.run(id, textIn(c.el, roots, OMIT.dif), nodeId);
             nDif++;
           }
