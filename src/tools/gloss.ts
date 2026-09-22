@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { glossText } from "../db";
 import type { Candidate, EoGloss, EoTerm, Part, SourceGloss, SourceTerm } from "../gloss";
+import { translationSchema } from "./translation";
 
 export const glossInputSchema = z.object({
   languages: z
@@ -76,7 +77,7 @@ const eoTermSchema = z.object({
   headword: z.string().optional().describe("The dictionary form."),
   art: z.string().optional(),
   mrk: z.string().optional().describe("The dictionary form's entry, what `entry` loads."),
-  translations: z.array(z.object({ lng: z.string(), trd: z.string() })).optional(),
+  translations: z.array(translationSchema).optional(),
   how: z.string().optional(),
   attested: z.number().int().optional(),
   seg: z.string().optional().describe("The reading, morphemes separated by |."),

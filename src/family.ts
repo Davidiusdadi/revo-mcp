@@ -10,7 +10,7 @@
  */
 
 import type { SqlReader } from "./sql";
-import { entryNodeByMark, hasTable, translationsOf } from "./db-voko";
+import { entryNodeByMark, hasTable, translationsOf, type Translation } from "./db-voko";
 import { parseSpans } from "./morph";
 import { fromXSystem, hasXSystem } from "./stemmer";
 
@@ -64,7 +64,7 @@ export interface FamilyResult {
   entry: FamilyWord & { mrk: string; article: string; articleRoot: string; variants: FamilyWord[] };
   families: WordFamily[];
   /** the listed members' translations, by mark */
-  translations: Record<string, { lng: string; trd: string }[]>;
+  translations: Record<string, Translation[]>;
 }
 
 export interface FamilyOptions {

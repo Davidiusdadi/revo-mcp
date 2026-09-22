@@ -7,12 +7,12 @@
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { Database } from "../src/runtime/node-database";
-import { mkdtempSync, rmSync } from "fs";
+import { copyFileSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { descendants, domEqual, type Element } from "voko-xml";
 import { idOf, readRange } from "../src/articles";
-import { contentOf, entryContent, textIn, OMIT } from "../src/content";
+import { contentOf, entryContent, textIn, OMIT, type TranslationPart } from "../src/content";
 import { buildArticles, CORE_PASSES, PASSES } from "../src/corpus/build";
 import { articleTrees, type ArticleTree } from "../src/corpus/documents";
 import { runPass } from "../src/corpus/pass";
@@ -123,6 +123,25 @@ describe("corpus build", () => {
       "SELECT t.txt, k.txt klr FROM translation t JOIN klr k ON k.parent = t.id WHERE k.txt IS NOT NULL LIMIT 1");
     expect(klr.txt).not.toContain("<");
     expect(klr.txt).not.toContain(`(${klr.klr})`);
+  });
+
+  test("what a translation's text leaves out is kept beside it: its notes in place, its reading", () => {
+    const missing = (column: string, table: string) => one<{ c: number }>(
+      `SELECT COUNT(*) c FROM translation t WHERE t.${column} IS NULL AND EXISTS (SELECT 1 FROM ${table} e WHERE e.parent = t.id)`).c;
+    expect(missing("klr", "klr")).toBe(0);
+    expect(missing("pr", "pr")).toBe(0);
+    const rows = all<{ txt: string; klr: string }>("SELECT txt, klr FROM translation WHERE klr IS NOT NULL");
+    expect(rows.length).toBeGreaterThan(0);
+    const tips = new Set<string | undefined>();
+    for (const row of rows) {
+      const parts = JSON.parse(row.klr) as TranslationPart[];
+      // the notes taken out again, the text is the translation's
+      expect(parts.map((p) => (typeof p === "string" ? p : "")).join("").replace(/\s+/g, " ").trim()).toBe(row.txt);
+      for (const p of parts) if (typeof p !== "string") tips.add(p.tip);
+    }
+    expect([...tips].every((tip) => tip === undefined || tip === "ind" || tip === "amb")).toBe(true);
+    const pr = one<{ txt: string; pr: string }>("SELECT txt, pr FROM translation WHERE pr IS NOT NULL LIMIT 1");
+    expect(pr.txt).not.toContain(pr.pr);
   });
 
   // The DTD lets <klr> hold trd/trdgrp, which ReVo uses to gloss a translation
@@ -239,19 +258,57 @@ describe("entries read from the stored articles", () => {
     for (const mrk of marks) {
       const node = entryNodeByMark(db as never, mrk)!;
       const [drv] = readRange(db as never, node.id, node.last_id);
-      const whole = entryContent(drv as Element, treeOf(node.article).roots);
+      const { senses, crossRefs, usageDomains } = entryContent(drv as Element, treeOf(node.article).roots);
       const entry = assembleEntry(db as never, node);
       expect({ senses: entry.senses, crossRefs: entry.crossRefs.map(({ target, type }) => ({ target, type })), usageDomains: entry.usageDomains })
-        .toEqual(whole);
+        .toEqual({ senses, crossRefs, usageDomains });
     }
   });
 
-  test("an entry lists a translation by its <ind> form when it marks one", () => {
+  // "quelle <ind>chose</ind>" is filed under chose and means quelle chose
+  test("an entry lists a translation whole, the <ind> form it is filed under beside it", () => {
     const t = one<{ node_id: number; ind: string; txt: string }>(
       "SELECT node_id, ind, txt FROM translation WHERE ind IS NOT NULL AND ind <> txt AND in_ekz = 0 LIMIT 1");
     const node = one<{ id: number; last_id: number }>("SELECT id, last_id FROM node WHERE id = ?", t.node_id);
     expect(t.txt).toContain(t.ind);
-    expect(JSON.stringify(translationsOf(db as never, node))).toContain(JSON.stringify(t.ind));
+    expect(translationsOf(db as never, node)).toContainEqual(expect.objectContaining({ trd: t.txt, ind: t.ind }));
+  });
+
+  test("an entry's translation names the sense it translates; the derivation's own translate it whole", () => {
+    const s = one<{ id: number; mrk: string; drv: string; drv_id: number }>(
+      `SELECT s.id, s.mrk, d.mrk drv, d.id drv_id FROM node s JOIN node d ON d.id = s.parent_id
+        WHERE s.kind = 'snc' AND d.kind = 'drv' AND s.mrk IS NOT NULL
+          AND EXISTS (SELECT 1 FROM translation t WHERE t.node_id = s.id AND t.in_ekz = 0)
+          AND EXISTS (SELECT 1 FROM translation t WHERE t.node_id = d.id AND t.in_ekz = 0) LIMIT 1`);
+    const count = (id: number) => one<{ c: number }>("SELECT COUNT(*) c FROM translation WHERE node_id = ? AND in_ekz = 0", id).c;
+    const entry = assembleEntry(db as never, entryNodeByMark(db as never, s.drv)!);
+    const sense = entry.senses.findIndex((x) => x.mrk === s.mrk);
+    expect(sense).toBeGreaterThanOrEqual(0);
+    expect(entry.translations.filter((t) => t.sense === sense)).toHaveLength(count(s.id));
+    expect(entry.translations.filter((t) => t.sense === undefined).length).toBeGreaterThanOrEqual(count(s.drv_id));
+    // a result card lists no senses, so its translations name none
+    expect(assembleEntry(db as never, entryNodeByMark(db as never, s.drv)!, { detail: "summary", domains: [] })
+      .translations.some((t) => t.sense !== undefined)).toBe(false);
+  });
+
+  // A browser keeps the copy it downloaded, which a newer Worker still reads.
+  test("an entry reads a database built before translations kept their notes", () => {
+    const older = join(dir, "older.db");
+    copyFileSync(join(dir, "slice.db"), older);
+    const old = new Database(older);
+    old.run("ALTER TABLE translation DROP COLUMN klr");
+    old.run("ALTER TABLE translation DROP COLUMN pr");
+    old.run("UPDATE meta_pass SET version = 2 WHERE pass = 'structure'");
+    const mrk = one<{ mrk: string }>(
+      `SELECT d.mrk FROM node d WHERE d.kind = 'drv' AND d.mrk IS NOT NULL
+         AND EXISTS (SELECT 1 FROM translation t WHERE t.id BETWEEN d.id AND d.last_id AND t.klr IS NOT NULL AND t.in_ekz = 0) LIMIT 1`).mrk;
+    const now = assembleEntry(db as never, entryNodeByMark(db as never, mrk)!);
+    const then = assembleEntry(old as never, entryNodeByMark(old as never, mrk)!);
+    old.close();
+    expect(now.translations.some((t) => t.parts)).toBe(true);
+    expect(then.translations.some((t) => t.parts || t.pr)).toBe(false);
+    expect(then.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })))
+      .toEqual(now.translations.map(({ lng, trd, sense }) => ({ lng, trd, sense })));
   });
 
   test("translations of examples are the ones marked in_ekz", () => {

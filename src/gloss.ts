@@ -36,7 +36,7 @@ import {
   type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
-import { hasPass, translationsOf } from "./db-voko";
+import { hasPass, translationsOf, type Translation } from "./db-voko";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -104,7 +104,7 @@ export interface EoTerm {
   /** The mark of the dictionary form's entry, what `entry` loads. */
   mrk?: string;
   /** The entry's translations in the languages asked for, as `entry` lists them. */
-  translations?: { lng: string; trd: string }[];
+  translations?: Translation[];
   /** How the dictionary form was reached: infl · class · ptcp. */
   how?: string;
   /** attested: occurrences in the example corpus. */

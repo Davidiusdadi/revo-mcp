@@ -11,7 +11,9 @@
  *   a variant (<var><kap>) names the headword it is a variant of.
  * - `translation`: every <trd> under its id, in the language its <trdgrp>
  *   gives it, its text without klr, pr, baz and ofc; `in_ekz` marks one that
- *   translates an example sentence, which no lookup lists.
+ *   translates an example sentence, which no lookup lists. What the text
+ *   leaves out a reader still wants is kept beside it: `klr` the translation
+ *   with its notes in place (content.ts translationParts), `pr` its reading.
  *
  * Content and its owners are content.ts's. The pass also checks what an entry
  * read at runtime relies on: an article's roots are its `rad` and the
@@ -20,13 +22,13 @@
  */
 import { kapForms, type Element } from "voko-xml";
 import { COMMENT, TEXT, idOf, lastIdOf, storedTablesOf } from "../../articles";
-import { contentOf, childText, rootsFrom, textIn, OMIT } from "../../content";
+import { contentOf, childText, rootsFrom, textIn, translationParts, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 import type { Pass } from "../pass";
 
 export const structurePass: Pass = {
   name: "structure",
-  version: 2,
+  version: 3,
   tables: ["node", "headword", "translation"],
   run(db, log) {
     db.run(`
@@ -55,11 +57,13 @@ export const structurePass: Pass = {
         lng     TEXT NOT NULL,           -- its own lng, else its <trdgrp>'s
         txt     TEXT NOT NULL,           -- klr, pr, baz and ofc left out
         ind     TEXT,                    -- the <ind> it is filed under, if any
-        in_ekz  INTEGER NOT NULL         -- 1: translates an example sentence
+        in_ekz  INTEGER NOT NULL,        -- 1: translates an example sentence
+        klr     TEXT,                    -- with its <klr> notes in place, as JSON, if it has any
+        pr      TEXT                     -- its <pr> reading (kana, pinyin), if any
       )`);
     const insNode = db.prepare("INSERT INTO node VALUES (?,?,?,?,?,?,?,?)");
     const insHeadword = db.prepare("INSERT INTO headword VALUES (?,?,?,?,?)");
-    const insTranslation = db.prepare("INSERT INTO translation VALUES (?,?,?,?,?,?)");
+    const insTranslation = db.prepare("INSERT INTO translation VALUES (?,?,?,?,?,?,?,?)");
     const variantRoots = db.query<{ var: string; txt: string | null }, [number, number]>(
       "SELECT var, txt FROM rad WHERE id BETWEEN ? AND ? AND var IS NOT NULL ORDER BY id");
 
@@ -103,8 +107,9 @@ export const structurePass: Pass = {
             if (kap === null && !c.main) kap = idOf(c.el)!;
             nHeadwords++;
           } else if (c.el.name === "trd") {
+            const parts = translationParts(c.el, roots);
             insTranslation.run(idOf(c.el)!, id, c.lng!, textIn(c.el, roots, OMIT.trd), childText(c.el, "ind", roots),
-              c.owner === "ekz" ? 1 : 0);
+              c.owner === "ekz" ? 1 : 0, parts && JSON.stringify(parts), childText(c.el, "pr", roots));
             nTranslations++;
           }
         }

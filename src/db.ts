@@ -37,11 +37,12 @@ import {
   type EntryOptions,
   type LookupResult,
   type SearchRow,
+  type Translation,
   type ThesaurusResult,
   type DefinitionHit,
 } from "./db-voko";
 
-export type { LookupResult } from "./db-voko";
+export type { LookupResult, Translation } from "./db-voko";
 
 let _db: SqlReader | null = null;
 let _databaseFactory: (() => SqlReader) | null = null;
@@ -404,7 +405,7 @@ export function lookupMarks(mrks: string[], limit: number = mrks.length, options
 export interface FamilyMember {
   headword: string;
   mrk: string;
-  translations: { lng: string; trd: string }[];
+  translations: Translation[];
 }
 
 export interface FamilyResult {

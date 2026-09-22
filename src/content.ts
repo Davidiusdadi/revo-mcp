@@ -17,7 +17,7 @@
 
 import {
   NODE_KIND_SET, childElements, firstChild, nodes, plainText,
-  type Element, type Roots,
+  type Element, type Node, type Roots,
 } from "voko-xml/view";
 
 /** Content whose inside does not count: what a citation or a usage tag holds is theirs alone. */
@@ -127,6 +127,49 @@ export function textIn(el: Element, roots: Roots, omit: ReadonlySet<string> = OM
   return plainText(el, { roots, omit });
 }
 
+/**
+ * A piece of a translation: its text, or one of its <klr> notes. A note's tip
+ * says which list ReVo shows it in (revo_trd.xsl, inx_eltiro.xsl): none, the
+ * article's, where the sense is in view; "ind", the index's, where it is not
+ * ("worker (bee)"); "amb", both.
+ */
+export type TranslationPart = string | { klr: string; tip?: "ind" | "amb" };
+
+const NOTE_OPEN = "\uE000";
+const NOTE_CLOSE = "\uE001";
+const OMIT_TRD_NOT_KLR: ReadonlySet<string> = new Set([...OMIT.trd].filter((name) => name !== "klr"));
+
+/**
+ * A translation with its notes where they stand, or null when it has none:
+ * "<klr>(sich)</klr> verabschieden" is [{ klr: "(sich)" }, " verabschieden"].
+ * Each piece keeps the whitespace around it, so the text pieces joined and
+ * collapsed are the translation without notes (its `txt`), and any choice of
+ * notes put back reads as ReVo writes it. A note inside a note is its text.
+ */
+export function translationParts(trd: Element, roots: Roots): TranslationPart[] | null {
+  const tips: ("ind" | "amb" | undefined)[] = [];
+  const marked = (el: Element): Element => ({
+    ...el,
+    children: el.children.flatMap((c): Node[] => {
+      if (c.type !== "element" || OMIT_TRD_NOT_KLR.has(c.name)) return [c];
+      if (c.name !== "klr") return [marked(c)];
+      const tip = c.attrs.tip;
+      tips.push(tip === "ind" || tip === "amb" ? tip : undefined);
+      return [{ type: "text", value: NOTE_OPEN }, c, { type: "text", value: NOTE_CLOSE }];
+    }),
+  });
+  const text = plainText(marked(trd), { roots, omit: OMIT_TRD_NOT_KLR });
+  if (tips.length === 0) return null;
+  const [head, ...rest] = text.split(NOTE_OPEN);
+  const parts: TranslationPart[] = head ? [head] : [];
+  rest.forEach((piece, i) => {
+    const [note, after] = piece.split(NOTE_CLOSE);
+    parts.push(tips[i] ? { klr: note, tip: tips[i] } : { klr: note });
+    if (after) parts.push(after);
+  });
+  return parts;
+}
+
 /** The text of an element's `name` children, joined; null when it has none. */
 export function childText(el: Element, name: string, roots: Roots): string | null {
   const parts = childElements(el, name).map((c) => textIn(c, roots));
@@ -165,6 +208,8 @@ export interface SenseEntry {
 
 export interface EntryContent {
   senses: SenseEntry[];
+  /** The element each sense is read from, in the same order: what a translation under it translates. */
+  senseNodes: Element[];
   /** every reference in the entry, the derivation's own first, then its senses' in reading order */
   crossRefs: { target: string; type: string }[];
   /** the fak and stl tags outside examples, once each, in the same order */
@@ -206,8 +251,12 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
   const seen = new Map<Element | null, Map<string, number>>();
 
   const senses: SenseEntry[] = [];
+  const senseNodes: Element[] = [];
   const first = senseAt(own.content, drv.attrs.mrk);
-  if (first.definition || first.examples.length > 0 || below.length === 0) senses.push(first);
+  if (first.definition || first.examples.length > 0 || below.length === 0) {
+    senses.push(first);
+    senseNodes.push(own.el);
+  }
   for (const n of below) {
     const counts = seen.get(n.parent) ?? new Map<string, number>();
     const i = counts.get(n.el.name) ?? 0;
@@ -220,6 +269,7 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
     const sense = senseAt(n.content, n.el.attrs.mrk);
     sense.num = num;
     senses.push(sense);
+    senseNodes.push(n.el);
   }
 
   const all = [own, ...below].flatMap((n) => n.content);
@@ -228,6 +278,7 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
     .map((c) => textIn(c.el, roots)));
   return {
     senses,
+    senseNodes,
     crossRefs: all.filter((c) => c.el.name === "ref").map((c) => ({ target: c.el.attrs.cel ?? "", type: c.tip ?? "" })),
     usageDomains: [...usageDomains],
   };
