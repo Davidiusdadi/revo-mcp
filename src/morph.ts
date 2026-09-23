@@ -16,6 +16,7 @@
  */
 
 import { SEGMENT_WEIGHTS } from "./morph-weights";
+import { fromXSystem } from "./stemmer";
 
 export interface Candidate {
   lemma: string;
@@ -237,6 +238,34 @@ export function pinFits(word: string, fixed: { at: number; root: string }): bool
   return w.slice(fixed.at, fixed.at + r.length) === r;
 }
 
+/**
+ * A root at a known offset. `rootOnly` where it can only be read as a root,
+ * not as the endingless word it may also spell (Mi in Miĉjo, Miĥael shortened).
+ */
+export interface Fixed {
+  at: number;
+  root: string;
+  rootOnly?: boolean;
+}
+
+/**
+ * Where an entry's mark puts the root of a one-word headword that does not
+ * spell it out. The mark writes the root as 0 between what comes before and
+ * after it: "mihxael.0cxjo" is the root, then ĉjo, so the root of "miĉjo" is
+ * "mi", Miĥael shortened, not the pronoun. A capital just before the 0 is the
+ * root's own first letter, as the kap's tilde would write it (`tifon.T0o`:
+ * Tifaono), not a word before it. Undefined for a headword the mark does not
+ * fit, a mark of several words, or one leaving the root empty.
+ */
+export function markPin(word: string, mrk: string | null | undefined): Fixed | undefined {
+  const tail = mrk?.slice(mrk.indexOf(".") + 1);
+  if (!tail || !/^[a-z]*0[a-z]*$/i.test(tail) || !/^\p{L}+$/u.test(word)) return undefined;
+  const [pre, post] = fromXSystem(tail.replace(/^[A-Z][xX]?(?=0)/, "").toLowerCase()).split("0");
+  const w = word.toLowerCase();
+  if (w.length <= pre.length + post.length || !w.startsWith(pre) || !w.endsWith(post)) return undefined;
+  return { at: pre.length, root: w.slice(pre.length, w.length - post.length), rootOnly: true };
+}
+
 // Costs. Measured with `pnpm corpus:eval-segment` on the words whose root
 // the corpus marks; each term earned its place there, and a term that lowered
 // the score (a bigger length bonus, a penalty on proper-name roots, linking
@@ -276,7 +305,7 @@ export interface Reading {
  * coincidence: dekokt|aĵ|o (a decoction), mild|ul|o, cent|okul|a
  * (hundred-eyed).
  */
-export function segment(word: string, inv: Inventory, fixed?: { at: number; root: string }): Morph[] | null {
+export function segment(word: string, inv: Inventory, fixed?: Fixed): Morph[] | null {
   const rs = readings(word, inv, fixed);
   if (rs.length === 0) return null;
   const w = word.toLowerCase();
@@ -319,7 +348,7 @@ export function segment(word: string, inv: Inventory, fixed?: { at: number; root
  * with pairs the eight cheapest per state, and up to 16 distinct readings
  * come out.
  */
-export function readings(word: string, inv: Inventory, fixed?: { at: number; root: string }): Reading[] {
+export function readings(word: string, inv: Inventory, fixed?: Fixed): Reading[] {
   const w = word.toLowerCase();
   const n = w.length;
   if (n === 0) return [];
@@ -371,7 +400,7 @@ export function readings(word: string, inv: Inventory, fixed?: { at: number; roo
           };
           if (isFixed) {
             relax(1, "R", 0.5);
-            if (inv.words.has(s)) relax(3, "W", 0.5);
+            if (inv.words.has(s) && !pin?.rootOnly) relax(3, "W", 0.5);
             continue;
           }
           // after an inner a/e/i only a root the corpus writes after that vowel fits

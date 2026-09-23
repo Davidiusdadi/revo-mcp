@@ -38,7 +38,12 @@ export interface FamilyMember extends FamilyWord {
   articleRoot: string;
   /** for a variant headword, the headword it is a variant of */
   variantOf?: string;
+  /** built on the family's root shortened, as a name (Miĉjo, Mi from Miĥael) */
+  shortened?: true;
 }
+
+/** Where a family lists the members built on its root shortened: in place, last, or not at all. */
+export type Shortened = "normal" | "last" | "hidden";
 
 export interface WordFamily {
   /** the root the family is built on, lowercased */
@@ -76,6 +81,8 @@ export interface FamilyOptions {
   offset?: number;
   /** only this root's family */
   only?: string;
+  /** members built on the root shortened (Miĉjo in Miĥael's family); last when omitted */
+  shortened?: Shortened;
 }
 
 interface FamilyRow {
@@ -122,7 +129,10 @@ function familyRank(headword: string, root: string): number {
 
 const spansOf = (text: string): FamilySpan[] => parseSpans(text).map((s) => ({ morph: s.m, kind: s.k, at: s.at }));
 
-const member = (r: FamilyRow): FamilyMember => ({
+/** A member whose headword does not spell the family's root: it is filed under it by its mark (x_family). */
+const shortens = (r: FamilyRow, root: string) => !parseSpans(r.spans).some((s) => s.m === root);
+
+const member = (r: FamilyRow, root: string): FamilyMember => ({
   headword: r.txt,
   tilde: r.tilde,
   spans: spansOf(r.spans),
@@ -130,6 +140,7 @@ const member = (r: FamilyRow): FamilyMember => ({
   article: r.art,
   articleRoot: r.rad,
   ...(r.variant_of ? { variantOf: r.variant_of } : {}),
+  ...(shortens(r, root) ? { shortened: true as const } : {}),
 });
 
 /** A root as a caller may write it: x-system, any case. */
@@ -137,15 +148,22 @@ function normalizeRoot(root: string): string {
   return (hasXSystem(root) ? fromXSystem(root) : root).toLowerCase();
 }
 
-/** A family's members, one per entry (the main headword over a variant), in the family's order. */
-function membersOf(db: SqlReader, root: string): FamilyRow[] {
+/**
+ * A family's members, one per entry (the main headword over a variant), in
+ * the family's order; the ones built on the root shortened placed as
+ * `shortened` says, the entry asked about (`own`) listed whatever it says.
+ */
+function membersOf(db: SqlReader, root: string, shortened: Shortened, own: string): FamilyRow[] {
   const byMark = new Map<string, FamilyRow>();
   for (const r of db.query<FamilyRow, [string]>(`${FAMILY_ROW} WHERE morph = ?`).all(root)) {
     const seen = byMark.get(r.mrk);
     if (!seen || (seen.variant_of !== null && r.variant_of === null)) byMark.set(r.mrk, r);
   }
-  return [...byMark.values()].sort((a, b) =>
-    familyRank(a.txt, root) - familyRank(b.txt, root) || compareEsperanto(a.txt, b.txt) || (a.mrk < b.mrk ? -1 : 1));
+  const last = (r: FamilyRow) => (shortened === "last" && shortens(r, root) ? 1 : 0);
+  return [...byMark.values()]
+    .filter((r) => shortened !== "hidden" || r.mrk === own || !shortens(r, root))
+    .sort((a, b) => last(a) - last(b) ||
+      familyRank(a.txt, root) - familyRank(b.txt, root) || compareEsperanto(a.txt, b.txt) || (a.mrk < b.mrk ? -1 : 1));
 }
 
 /**
@@ -156,7 +174,7 @@ function membersOf(db: SqlReader, root: string): FamilyRow[] {
 export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}): FamilyResult {
   const node = entryNodeByMark(db, mark);
   if (!node) throw new Error(`No dictionary entry has the mark ${mark}.`);
-  const { limit = 200, offset = 0 } = opts;
+  const { limit = 200, offset = 0, shortened = "last" } = opts;
   const languages = opts.languages && [...new Set(opts.languages.filter((language) => language !== "eo"))];
   const entry: FamilyResult["entry"] = {
     headword: node.headword, tilde: node.headword, spans: [], mrk: node.mrk,
@@ -177,7 +195,11 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
   let roots: string[];
   if (opts.only !== undefined) roots = [normalizeRoot(opts.only)];
   else {
-    roots = [...new Set(entry.spans.filter((s) => (s.kind === "R" || s.kind === "W") && s.morph.length >= 2).map((s) => s.morph))];
+    // the families the headword is filed under, in its order: a root shortened
+    // from the article's (Mi in Miĉjo) is filed under the article's, a name's
+    // foreign words under none
+    const filed = main ? db.query<{ morph: string }, [number, number]>("SELECT morph FROM x_family WHERE node_id = ? AND kap_id = ?").all(node.id, main.kap_id).map((r) => r.morph) : [];
+    roots = [...new Set([...entry.spans.map((s) => s.morph).filter((m) => filed.includes(m)), ...filed])];
     // a headword the inventory cannot split still belongs to its article's root
     if (roots.length === 0 && articleRoot.length >= 2) roots = [articleRoot];
     if (roots.includes(articleRoot)) roots = [articleRoot, ...roots.filter((root) => root !== articleRoot)];
@@ -190,7 +212,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
   const translations: FamilyResult["translations"] = {};
   const families: WordFamily[] = [];
   for (const root of roots) {
-    const all = membersOf(db, root);
+    const all = membersOf(db, root, shortened, node.mrk);
     if (all.length === 0) continue;
     const listed = all.slice(offset, offset + limit);
     const counts = new Map<string, number>();
@@ -204,7 +226,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
       ...(affix ? { affix } : {}),
       own: root === articleRoot,
       articles: articlesOf.all(root),
-      members: listed.map(member),
+      members: listed.map((r) => member(r, root)),
       entries: all.length,
       offset,
       translated: [...counts].map(([language, count]) => ({ language, count }))

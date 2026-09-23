@@ -95,6 +95,16 @@ describe("gloss: Esperanto audit", () => {
     expect(t.parts!.find((p) => p.m === "et")?.gloss).toMatch(/malaltan gradon/);
   });
 
+  test("a name's shortened root is named by its article, not by the word it spells", () => {
+    // Miĉjo is written out in Miĥael: its mark (mihxael.0cxjo) puts the root before ĉjo
+    const t = word(eo("Miĉjo venis."), "miĉjo")!;
+    expect(t.parts!.map((p) => [p.m, p.k])).toEqual([["mi", "R"], ["ĉj", "S"], ["o", "E"]]);
+    expect(t.parts![0]).toMatchObject({ gloss: "Miĥaelo", shortFor: "Miĥael" });
+    // a spelling of the root, not a shortening of it
+    const kazuaro = word(eo("La kazuaro kuras."), "kazuaro")!;
+    expect(kazuaro.parts!.some((p) => p.shortFor)).toBe(false);
+  });
+
   test("-end-/-it- derivations resolve through the affix articles", () => {
     const g = eo("Tio estas farenda kaj jam endita.");
     const farenda = word(g, "farenda")!;

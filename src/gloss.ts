@@ -32,7 +32,7 @@ import type { SqlReader } from "./sql";
 import { webUsage } from "./freq";
 import { fromXSystem, normalizeQuery } from "./stemmer";
 import {
-  lemmaCandidates, segment, formatSegments, numberLength, spellsNumber, ENDINGS,
+  lemmaCandidates, markPin, segment, formatSegments, numberLength, spellsNumber, ENDINGS,
   type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
@@ -83,6 +83,8 @@ export interface Part {
   art?: string;
   /** The mark of the entry that names the part: the affix's, or the root's own headword's. */
   mrk?: string;
+  /** The root the part shortens, as ReVo writes it, where it is a name's shortened root: Miĥael for Mi in Miĉjo. */
+  shortFor?: string;
 }
 
 /** One way of taking a word apart, and the article it comes from. */
@@ -672,6 +674,21 @@ interface Split {
   art: string;
   /** The article's root as ReVo writes it (`distord`, `ĥameleon`) — what its root mark stands for. */
   root: string;
+  /** The piece the entry's mark says is that root, where it spells it otherwise (Mi in Miĉjo). */
+  marked?: number;
+}
+
+/** Which piece of a headword's split its entry's mark puts the root at, if the mark fits it. */
+function markedPiece(ms: Morph[], mrk: string | null): number | undefined {
+  const pin = markPin(ms.map((m) => m.m).join(""), mrk);
+  if (!pin) return undefined;
+  let off = 0;
+  const i = ms.findIndex((m) => {
+    const hit = off === pin.at && m.m === pin.root;
+    off += m.m.length;
+    return hit;
+  });
+  return i >= 0 ? i : undefined;
 }
 
 /**
@@ -684,25 +701,29 @@ function headwordSplits(db: SqlReader, norm: string, inv: Inventory): Split[] {
   if (splitsStored(db)) {
     // by way of the headwords, which are indexed by spelling; x_morph is keyed by their ids
     return db
-      .query<{ seg: string; kinds: string; art: string; root: string }, [string]>(
-        `SELECT m.seg AS seg, m.kinds AS kinds, a.file AS art, a.rad AS root
+      .query<{ seg: string; kinds: string; art: string; root: string; mrk: string | null }, [string]>(
+        `SELECT m.seg AS seg, m.kinds AS kinds, a.file AS art, a.rad AS root, n.mrk AS mrk
            FROM headword h JOIN x_morph m ON m.kap_id = h.id JOIN article a ON a.id = m.article_id
+           JOIN node n ON n.id = h.node_id
           WHERE h.norm = ? AND m.ok = 1 AND m.seg NOT LIKE '% %'
           ORDER BY m.node_id, m.kap_id`)
       .all(norm)
-      .map((s) => ({ ms: relabel(parseSplit(s), inv), art: s.art, root: s.root }));
+      .map((s) => {
+        const ms = relabel(parseSplit(s), inv);
+        return { ms, art: s.art, root: s.root, marked: markedPiece(ms, s.mrk) };
+      });
   }
   // the word itself: "-ul" is split as "ul", a two-word headword not at all
   const words = norm.match(EO_WORD) ?? [];
   if (words.length !== 1) return [];
   const out: Split[] = [];
   for (const r of db
-    .query<{ id: number; art: string; root: string }, [string]>(
-      `SELECT a.id AS id, a.file AS art, a.rad AS root FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
+    .query<{ id: number; art: string; root: string; mrk: string | null }, [string]>(
+      `SELECT a.id AS id, a.file AS art, a.rad AS root, n.mrk AS mrk FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
         WHERE h.norm = ? ORDER BY h.node_id, h.id`)
     .all(norm)) {
-    const ms = pinnedSplit(words[0], articleRoots(db, r.id, r.root), inv);
-    if (ms) out.push({ ms: relabel(ms, inv), art: r.art, root: r.root });
+    const ms = pinnedSplit(words[0], articleRoots(db, r.id, r.root), inv, r.mrk);
+    if (ms) out.push({ ms: relabel(ms, inv), art: r.art, root: r.root, marked: markedPiece(ms, r.mrk) });
   }
   return out;
 }
@@ -719,11 +740,13 @@ function articleRoots(db: SqlReader, id: number, rad: string): string[] {
  * A headword split the way the `splits` pass would store it: the article's
  * root pinned where it occurs — the first of `roots` that does, exactly once,
  * where the free segmentation does not already read a longer root
- * (`sekvestracio` in `sekvestr`, `hejmo` in `he`); free when none does. The
+ * (`sekvestracio` in `sekvestr`, `hejmo` in `he`); else where the entry's
+ * mark puts it (`miĉjo`, `mihxael.0cxjo`: mi, Miĥael shortened); free when
+ * neither does. The
  * pass also has the kap's own root mark to go by, which this has not, so the
  * two differ on a few hundred of the 49,000 headwords (see docs/corpus.md).
  */
-export function pinnedSplit(word: string, roots: string[], inv: Inventory): Morph[] | null {
+export function pinnedSplit(word: string, roots: string[], inv: Inventory, mrk?: string | null): Morph[] | null {
   const free = segment(word, inv);
   for (const root of roots) {
     const at = root ? word.indexOf(root) : -1;
@@ -736,7 +759,8 @@ export function pinnedSplit(word: string, roots: string[], inv: Inventory): Morp
     });
     return longer ? free : segment(word, inv, { at, root }) ?? free;
   }
-  return free;
+  const marked = markPin(word, mrk);
+  return (marked && segment(word, inv, marked)) ?? free;
 }
 
 /** The splits stored for a form the examples write with a root mark, most frequent first; none without the `splits` pass. */
@@ -836,7 +860,7 @@ function readingsOf(db: SqlReader, rows: Split[]): Reading[] {
     if (hit) hit.own.add(r.root.toLowerCase());
     else {
       bySeg.set(f.seg, {
-        reading: { ...f, parts: partsOf(db, r.ms), art: fromXSystem(r.art) },
+        reading: { ...f, parts: partsOf(db, r.ms, r), art: fromXSystem(r.art) },
         keeps: keeps(r.ms),
         own: new Set([r.root.toLowerCase()]),
       });
@@ -856,10 +880,15 @@ function readingsOf(db: SqlReader, rows: Split[]): Reading[] {
     .sort((a, b) => longest(b) - longest(a));
 }
 
-/** The morphemes of a segmentation, each with what the corpus says about it. */
-function partsOf(db: SqlReader, ms: Morph[]): Part[] {
+/**
+ * The morphemes of a segmentation, each with what the corpus says about it.
+ * The piece the entry's mark makes the article's root is named by that
+ * article where its letters would name another (Mi in Miĉjo is Miĥaelo, not
+ * the pronoun).
+ */
+function partsOf(db: SqlReader, ms: Morph[], split?: Split): Part[] {
   const affixes = affixesOf(db);
-  return ms.map((m) => {
+  return ms.map((m, i) => {
     const part: Part = { m: m.m, k: m.k };
     if (m.k === "P" || m.k === "S") {
       const a = affixes.get(m.m);
@@ -869,7 +898,12 @@ function partsOf(db: SqlReader, ms: Morph[]): Part[] {
         if (a.mrk) part.mrk = a.mrk;
       }
     } else if (m.k === "R" || m.k === "W") {
-      const head = rootHeadword(db, m.m);
+      let head = rootHeadword(db, m.m);
+      if (split && i === split.marked && head?.art !== fromXSystem(split.art)) {
+        head = rootHeadword(db, split.root.toLowerCase()) ?? head;
+        // a spelling of its own (kazuar in kasuar) is not a shortening
+        if (m.m.length < split.root.length) part.shortFor = split.root;
+      }
       if (head) {
         part.art = head.art;
         part.gloss = head.txt;
@@ -1046,7 +1080,7 @@ export function classify(db: SqlReader, word: string, inv: Inventory, languages?
       const rows: Split[] = [];
       for (const s of headwordSplits(db, c.lemma, inv)) {
         const ms = carryOver(s.ms, word, inv);
-        if (ms) rows.push({ ms, art: s.art, root: s.root });
+        if (ms) rows.push({ ms, art: s.art, root: s.root, marked: s.marked });
       }
       return withMorph(
         withEntry({ word, n: 1, verdict: "inflection", headword: hit.txt, art: hit.art, how: c.how }, hit.node),

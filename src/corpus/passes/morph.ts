@@ -47,17 +47,18 @@ import { contentOf, inEsperanto, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 import { tldOccurrences, tokenGroups, type TokenGroup } from "./tld-links";
 import {
-  lemmaCandidates, segment, formatSegments, formatSpans, morphSpans, pinFits, ENDINGS,
-  type Inventory, type Morph, type MorphSpan, type WordClass,
+  lemmaCandidates, segment, formatSegments, formatSpans, markPin, morphSpans, pinFits, ENDINGS,
+  type Fixed, type Inventory, type Morph, type MorphSpan, type WordClass,
 } from "../../morph";
 
 const WORD = /\p{L}+/gu;
+const WORD_ONLY = /^\p{L}+$/u;
 /** Articles for grammatical endings, not word-building affixes. */
 const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as", "is", "os", "us", "j", "n"]);
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 13,
+  version: 14,
   tables: ["x_morpheme", "x_pair", "x_affix", "x_family"],
   run(db, log) {
     const { inv, pairs, heads } = prepare(db, log);
@@ -109,7 +110,7 @@ function prepare(db: Database, log: (m: string) => void) {
 }
 
 /** Where a headword or attested form puts its root. */
-type Pin = { word: string; at: number; root: string };
+type Pin = Fixed & { word: string };
 
 /** An affix article as `x_affix` stores it. */
 interface Affix {
@@ -390,14 +391,14 @@ function writePairs(db: Database, pairs: Pairs, log: (m: string) => void): numbe
 }
 
 /** Segment every word of `form`; the word equal to `fixed.word` gets its root pinned. */
-function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: number; root: string }, pairs?: Pairs) {
+function segmentForm(form: string, inv: Inventory, fixed?: Pin, pairs?: Pairs) {
   const segs: string[] = [], kinds: string[] = [], roots: string[] = [];
   const spans: MorphSpan[] = [];
   let ok = true;
   let pinned = false;
   for (const match of form.matchAll(WORD)) {
     const w = match[0];
-    const candidate = fixed && !pinned && w === fixed.word ? { at: fixed.at, root: fixed.root } : undefined;
+    const candidate = fixed && !pinned && w === fixed.word ? fixed : undefined;
     // segment() ignores a pin the word does not bear; say so here too, so the
     // recorded source ("tilde" vs "free") is what actually happened.
     const pin = candidate && pinFits(w, candidate) ? candidate : undefined;
@@ -417,6 +418,37 @@ function segmentForm(form: string, inv: Inventory, fixed?: { word: string; at: n
     spans.push(...morphSpans(s, match.index));
   }
   return { seg: segs.join(" "), kinds: kinds.join(" "), roots: roots.join(" "), spans, ok, pinned };
+}
+
+/**
+ * An entry headword's spans and the families they may file it under, `root`
+ * for its roots and endingless words; a root shortened from the article's
+ * (`short`) under the article's. In a name (`alone` given), a word that is a
+ * name of its own is read as that name (Miĉjo in Miĉjo Muso), and a
+ * capitalized word that only falls apart into endingless words is a foreign
+ * one, not split at all (Ho-Ĉi-Min-Urbo, Badeno: ba|de|no); Suda, Nova and
+ * Sankta are Esperanto.
+ */
+function filed(form: string, txt: string, inv: Inventory, pin: Pin | undefined, short: string | undefined,
+  alone?: Map<string, { pin?: Pin; short?: string }>) {
+  const spans: MorphSpan[] = [], families: { m: string; root: boolean }[] = [];
+  let pinned = false;
+  for (const match of form.matchAll(WORD)) {
+    const w = match[0];
+    let fixed = !pinned && pin && w === pin.word && pinFits(w, pin) ? pin : undefined;
+    let root = fixed ? short : undefined;
+    if (fixed) pinned = true;
+    else if (alone?.has(w)) ({ pin: fixed, short: root } = alone.get(w)!);
+    const s = segment(w, inv, fixed);
+    if (!s) continue;
+    if (alone && !fixed && /^\p{Lu}/u.test(txt.slice(match.index)) && s.some((x) => x.k === "W")) continue;
+    for (const x of morphSpans(s, match.index)) {
+      spans.push(x);
+      const shortened = fixed && x.at === match.index + fixed.at && x.m === fixed.root;
+      families.push({ m: (shortened && root) || x.m, root: x.k === "R" || x.k === "W" });
+    }
+  }
+  return { spans, families };
 }
 
 /** Does `fixed` pin a word of `form`? Mirrors what segmentForm will do with it. */
@@ -460,7 +492,15 @@ function segmentHeadwords(
     id: number; node_id: number; article_id: number; norm: string; rad: string;
     txt: string; file: string; kind: string; mrk: string | null; last_id: number; main: string | null;
   };
-  const rows: { k: Kap; pin?: Pin }[] = [];
+  // a name — of a person, a place — is foreign words around its root, not Esperanto ones
+  const names = db.query<{ id: number }, []>(
+    `SELECT id FROM uzo WHERE tip = 'fak' AND txt IN ('NOM', 'PERS', 'GEOG') ORDER BY id`).all().map((u) => u.id);
+  const named = (k: Kap) => {
+    let lo = 0, hi = names.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (names[mid] < k.node_id) lo = mid + 1; else hi = mid; }
+    return lo < names.length && names[lo] <= k.last_id;
+  };
+  const rows: { k: Kap; pin?: Pin; short?: string; name: boolean }[] = [];
   let n = 0, ok = 0, pinned = 0;
   const write = (k: Kap, inv: Inventory, pin?: Pin) => {
     const r = segmentForm(k.norm, inv, pin);
@@ -506,9 +546,19 @@ function segmentHeadwords(
         if (!longer) pin = cand;
       }
     }
+    // a kap that spells no root its article names (Miĉjo in Miĥael): the root is
+    // where the mark puts it, a shortened one, filed under the article's own
+    let short: string | undefined;
+    if (!pin && WORD_ONLY.test(k.norm)) {
+      const at = markPin(k.norm, k.mrk);
+      if (at) {
+        pin = { word: k.norm, ...at };
+        if (!(articleRoots.get(k.article_id) ?? []).includes(at.root)) short = k.rad.toLowerCase();
+      }
+    }
     // first round, evidence-free: the neighbours of the pinned root are the pairs
     if (pins(k.norm, pin)) segmentForm(k.norm, inv, pin, pairs);
-    rows.push({ k, pin });
+    rows.push({ k, pin, short, name: named(k) });
   }
   return {
     write(inv) {
@@ -537,13 +587,18 @@ function segmentHeadwords(
       const ins = db.prepare("INSERT INTO x_family VALUES (?,?,?,?,?,?,?,?,?,?,?)");
       // the offsets are the lowercased form's; they fit the headword as written where lowercasing keeps its length
       const entries = rows.filter(({ k }) => isEntryMark(k.kind, k.mrk) && k.txt.length === k.norm.length);
-      const split = entries.map(({ k, pin }) => ({ k, spans: segmentForm(k.norm, inv, pin).spans }));
+      // the names that are entries of their own, for a name built on one (Miĉjo in Miĉjo Muso)
+      const alone = new Map<string, { pin?: Pin; short?: string }>();
+      for (const { k, pin, short } of entries) {
+        if (WORD_ONLY.test(k.norm) && /^\p{Lu}/u.test(k.txt) && !alone.has(k.norm)) alone.set(k.norm, { pin, short });
+      }
+      const split = entries.map(({ k, pin, short, name }) => ({ k, ...filed(k.norm, k.txt, inv, pin, short, name ? alone : undefined) }));
       // an affix keys a family only where an entry is built on it as a root
-      const keys = new Set(split.flatMap(({ spans }) => spans.filter((x) => (x.k === "R" || x.k === "W") && x.m.length >= 2).map((x) => x.m)));
+      const keys = new Set(split.flatMap(({ families }) => families.filter((f) => f.root && f.m.length >= 2).map((f) => f.m)));
       let n = 0, rootless = 0;
-      for (const { k, spans } of split) {
-        const morphs = new Set(spans.filter((x) => keys.has(x.m)).map((x) => x.m));
-        if (!spans.some((x) => x.k === "R" || x.k === "W")) rootless++;
+      for (const { k, spans, families } of split) {
+        const morphs = new Set(families.filter((f) => keys.has(f.m)).map((f) => f.m));
+        if (!families.some((f) => f.root)) rootless++;
         for (const m of morphs) {
           ins.run(m, k.id, k.node_id, k.last_id, k.mrk, k.main, k.txt, tildes.get(k.id) ?? k.txt, k.file, k.rad, formatSpans(spans));
           n++;

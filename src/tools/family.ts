@@ -16,6 +16,8 @@ export const familyInputSchema = z.object({
   limit: z.number().int().min(1).max(2000).default(200).describe("Members listed per family."),
   offset: z.number().int().min(0).default(0).describe("Members skipped per family, in the family's order."),
   only: z.string().min(1).max(60).optional().describe("Only the family of this root, such as hund."),
+  shortened: z.enum(["normal", "last", "hidden"]).default("last")
+    .describe("Where to list members built on the root shortened, as a name is (Miĉjo in Miĥael's family): in place, last, or not at all."),
 });
 
 const spanSchema = z.object({ morph: z.string(), kind: z.enum(["R", "W", "P", "S"]), at: z.number().int() });
@@ -39,6 +41,7 @@ export const familyOutputSchema = z.object({
       article: z.string(),
       articleRoot: z.string(),
       variantOf: z.string().optional(),
+      shortened: z.literal(true).optional().describe("Built on the family's root shortened (Miĉjo, Mi from Miĥael)."),
     })),
     entries: z.number().int().describe("Members in the whole family."),
     offset: z.number().int(),

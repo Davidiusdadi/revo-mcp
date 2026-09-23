@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { lemmaCandidates, lemmaOf, segment, readings, formatSegments, numberLength, spellsNumber, type Inventory, type Morph } from "../src/morph";
+import { lemmaCandidates, lemmaOf, markPin, segment, readings, formatSegments, numberLength, spellsNumber, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
@@ -242,5 +242,26 @@ describe("Pairs", () => {
     // an inflection of the same derivation, same mark: counted once
     pairs.add([...ms.slice(0, 4), { m: "aj", k: "E" }], 4);
     expect(pairs.counts.get("e+far")).toBe(1);
+  });
+});
+
+describe("markPin", () => {
+  test("a headword that does not spell its root has it where the mark puts it", () => {
+    // Miĉjo in Miĥael: the root, then ĉjo — Mi is Miĥael shortened, not the pronoun
+    expect(markPin("Miĉjo", "mihxael.0cxjo")).toEqual({ at: 0, root: "mi", rootOnly: true });
+    expect(markPin("kazuaro", "kasuar.0o")).toMatchObject({ at: 0, root: "kazuar" });
+    expect(markPin("malsanulejo", "san.mal0ulejo")).toMatchObject({ at: 3, root: "san" });
+    // a capital before the 0 is the root's first letter, a word before it is not
+    expect(markPin("Tifaono", "tifon.T0o")).toMatchObject({ at: 0, root: "tifaon" });
+    expect(markPin("Ĉaristo", "cxar1.CX0isto")).toMatchObject({ at: 0, root: "ĉar" });
+    expect(markPin("Triangulo", "angul.Tri0o")).toMatchObject({ at: 3, root: "angul" });
+  });
+
+  test("nothing where the headword does not fit the mark", () => {
+    expect(markPin("Ernjo", "ernest.0ino")).toBeUndefined();
+    expect(markPin("ĉjo", "mihxael.0cxjo")).toBeUndefined(); // the root would be empty
+    expect(markPin("Miĉjo Muso", "mus.micxj0o")).toBeUndefined();
+    expect(markPin("kotopo", "plu.kaj_tiel_0")).toBeUndefined();
+    expect(markPin("hundo", null)).toBeUndefined();
   });
 });

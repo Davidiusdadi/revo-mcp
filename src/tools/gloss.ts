@@ -62,6 +62,7 @@ const partSchema = z.object({
   gloss: z.string().optional().describe("An affix's definition, or the root's own headword."),
   art: z.string().optional(),
   mrk: z.string().optional().describe("The entry that names the part."),
+  shortFor: z.string().optional().describe("The root the part shortens, as a name does: Miĥael for Mi in Miĉjo."),
 });
 
 const readingSchema = z.object({
