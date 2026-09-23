@@ -17,11 +17,13 @@ import { fileURLToPath } from "url";
 import { buildArticles, PASSES } from "../src/corpus/build";
 import { runPass } from "../src/corpus/pass";
 import { classify, inventoryOf } from "../src/gloss";
+import { assembleEntry, entryNodeByMark, searchDefinitions } from "../src/db-voko";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "overlay");
 // ardez + tabul + et carry the compound in the fixture's usage sample; superardez is
-// overlay-only, so the slice filter has to be told about it by key
-const EXTRA = ["ardez", "tabul", "et", "superardez"];
+// overlay-only, so the slice filter has to be told about it by key; so is difardez, a
+// sense whose definition is also given in German
+const EXTRA = ["ardez", "tabul", "et", "superardez", "difardez"];
 
 let dir: string;
 let db: Database;
@@ -71,5 +73,30 @@ describe("overlay merge", () => {
     expect(term.verdict).toBe("attested");
     expect(term.attested).toBe(1);
     expect(term.seg).toBe("ardez|tabul|et|oj");
+  });
+});
+
+describe("a definition in another language", () => {
+  const entry = (languages?: string[]) => assembleEntry(db as never, entryNodeByMark(db as never, "difardez.0o")!, { languages });
+
+  test("is kept, with its source, beside the Esperanto one", () => {
+    const [sense] = entry().senses;
+    expect(sense.definition).toBe("Elpensita ŝtono, ekzistanta nur en testo.");
+    expect(sense.definitions).toEqual([
+      { lng: "de", txt: "Ein erfundener Schieferstein, difardezo genannt.", fnt: "AI: tradukis claude-opus-5-5" },
+    ]);
+  });
+
+  test("follows the languages asked for", () => {
+    expect(entry(["de", "en"]).senses[0].definitions).toHaveLength(1);
+    expect(entry(["en"]).senses[0].definitions).toBeUndefined();
+  });
+
+  test("stays out of what reads Esperanto: definition search and tilde links", () => {
+    expect(searchDefinitions(db as never, "Schieferstein")).toEqual([]);
+    expect(searchDefinitions(db as never, "elpensita ŝtono").length).toBeGreaterThan(0);
+    const owners = db.query("SELECT owner_kind FROM x_tld_occ WHERE article_id = (SELECT id FROM article WHERE file = 'difardez')").all() as { owner_kind: string }[];
+    // the headword's tilde alone; the one in the German definition is no Esperanto word
+    expect(owners.map((r) => r.owner_kind)).toEqual(["kap"]);
   });
 });

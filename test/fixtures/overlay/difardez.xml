@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!DOCTYPE vortaro SYSTEM "../dtd/vokoxml.dtd">
+<!--
+  Test fixture, not corpus content: a sense whose definition is also given in
+  German, the way ai-enrich writes one (<dif lng fnt> after the Esperanto one).
+-->
+<vortaro>
+<art mrk="$Id: difardez.xml,v 1.1 2026/09/23 00:00:00 test Exp $">
+<kap>
+  <rad>difardez</rad>/o
+</kap>
+<drv mrk="difardez.0o">
+  <kap><tld/>o</kap>
+  <snc mrk="difardez.0o.0">
+    <dif>
+      Elpensita &scirc;tono, ekzistanta nur en testo.
+    </dif>
+    <dif lng="de" fnt="AI: tradukis claude-opus-5-5">
+      Ein erfundener Schieferstein, <tld/>o genannt.
+    </dif>
+    <trd lng="en">test stone</trd>
+  </snc>
+</drv>
+</art>
+</vortaro>

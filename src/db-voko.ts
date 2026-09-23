@@ -15,8 +15,8 @@ import type { SqlReader } from "./sql";
 import type { Element, Roots } from "voko-xml/view";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
-import { inMask, maskOf, readRange, storedTablesOf } from "./articles";
-import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry } from "./content";
+import { idOf, inMask, maskOf, readRange, storedTablesOf } from "./articles";
+import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry, type TranslationPart } from "./content";
 
 export type { SenseEntry } from "./content";
 
@@ -27,13 +27,8 @@ export interface LookupResult {
   headword: string;
   article: string;
   mrk: string;
-  senses: {
-    num?: string;
-    definition: string;
-    examples: string[];
-    domain?: string;
-  }[];
-  translations: { lng: string; trd: string }[];
+  senses: SenseEntry[];
+  translations: Translation[];
   crossRefs: { target: string; type: string; targetKap?: string }[];
   usageDomains: string[];
   matchedVia?: string; // How the result was found (e.g., "stem:amik", "translation:en:friend")
@@ -202,27 +197,86 @@ export interface EntryOptions {
   domains?: string[];
 }
 
+/** One translation of an entry, and what ReVo says about it beside its text. */
+export interface Translation {
+  lng: string;
+  /** The translation, without its notes. */
+  trd: string;
+  /**
+   * The word inside it that ReVo alphabetises the entry under: "quelle
+   * <ind>chose</ind>" is filed under "chose" but means "quelle chose", so the
+   * mark comes beside the translation, never in its place.
+   */
+  ind?: string;
+  /** The translation with its notes in place, when it has any; content.ts TranslationPart says which list shows a note. */
+  parts?: TranslationPart[];
+  /** Its reading, as kana or pinyin. */
+  pr?: string;
+  /**
+   * Where it was found, when the <trd> says: `Vikt: de en; juĝis <model>` is a
+   * translation taken from Wiktionary and judged by a model, `; kontrolita`
+   * after it one a person has checked since.
+   */
+  fnt?: string;
+  /** Its style or field code (ARK, VULG …), when it carries one. */
+  kod?: string;
+  /** Which of the entry's `senses` it translates; none when it translates the entry as a whole. */
+  sense?: number;
+}
+
+const structureByDb = new WeakMap<SqlReader, number>();
+
+/**
+ * The structure pass the database was built with: from 3 `translation` keeps
+ * the notes and readings, from 4 where each was found. A copy of the database
+ * stored in a browser before that is still read.
+ */
+function structureVersion(db: SqlReader): number {
+  let version = structureByDb.get(db);
+  if (version === undefined) {
+    const row = db.query<{ version: number }, []>("SELECT version FROM meta_pass WHERE pass = 'structure'").get();
+    version = row?.version ?? 0;
+    structureByDb.set(db, version);
+  }
+  return version;
+}
+
 /**
  * An entry's translations outside examples, by language: the derivation's own
- * first, then its senses' in reading order. `trd` is the index form when the
- * translation is filed under one, as upstream lists it.
+ * first, then its senses' in reading order. `senses` maps the id of each node
+ * the entry lists as a sense to its place in the list.
  */
 export function translationsOf(
   db: SqlReader,
   node: { id: number; last_id: number },
   languages?: string[],
-): { lng: string; trd: string }[] {
+  senses?: ReadonlyMap<number, number>,
+): Translation[] {
   if (languages?.length === 0) return [];
   // `+lng`: the entry's range is the narrow index; a full build's
   // idx_translation_lng_key would otherwise scan a whole language.
   const only = languages ? ` AND +lng IN (${languages.map(() => "?").join(",")})` : "";
+  const version = structureVersion(db);
+  const notes = (version >= 3 ? ", klr, pr" : ", NULL AS klr, NULL AS pr")
+    + (version >= 4 ? ", fnt, kod" : ", NULL AS fnt, NULL AS kod");
   return db
-    .query<{ lng: string; trd: string }, unknown[]>(
-      `SELECT lng, COALESCE(ind, txt) AS trd FROM translation
+    .query<{ lng: string; trd: string; ind: string | null; klr: string | null; pr: string | null; fnt: string | null; kod: string | null; node_id: number }, unknown[]>(
+      `SELECT lng, txt AS trd, ind${notes}, node_id FROM translation
         WHERE id BETWEEN ? AND ? AND in_ekz = 0${only}
         ORDER BY lng, node_id <> ?, node_id, id`,
     )
-    .all(node.id, node.last_id, ...(languages ?? []), node.id);
+    .all(node.id, node.last_id, ...(languages ?? []), node.id)
+    .map(({ lng, trd, ind, klr, pr, fnt, kod, node_id }) => {
+      const translation: Translation = { lng, trd };
+      if (ind && ind !== trd) translation.ind = ind;
+      if (klr) translation.parts = JSON.parse(klr) as TranslationPart[];
+      if (pr) translation.pr = pr;
+      if (fnt) translation.fnt = fnt;
+      if (kod) translation.kod = kod;
+      const sense = senses?.get(node_id);
+      if (sense !== undefined) translation.sense = sense;
+      return translation;
+    });
 }
 
 /** The roots an entry's tildes stand for: the article's root, and its variant roots where a tilde names one. */
@@ -279,6 +333,16 @@ function headwordsByMark(db: SqlReader, marks: string[]): Map<string, string> {
   return headwords;
 }
 
+/** Each listed sense's node id, to its place in `senses`; the derivation itself is the entry as a whole, not a sense. */
+function sensesById(content: EntryContent, derivation: number): Map<number, number> {
+  const byId = new Map<number, number>();
+  content.senseNodes.forEach((el, i) => {
+    const id = idOf(el);
+    if (id !== undefined && id !== derivation) byId.set(id, i);
+  });
+  return byId;
+}
+
 export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOptions = {}): LookupResult {
   const full = (options.detail ?? "full") === "full";
   const content = full || !options.domains ? contentOf(db, node) : null;
@@ -294,11 +358,22 @@ export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOpti
     headword: node.headword,
     article: node.article,
     mrk: node.mrk,
-    senses: full ? content!.senses : [],
-    translations: translationsOf(db, node, options.languages),
+    senses: full ? sensesIn(content!.senses, options.languages) : [],
+    translations: translationsOf(db, node, options.languages, full ? sensesById(content!, node.id) : undefined),
     crossRefs,
     usageDomains: options.domains ?? content!.usageDomains,
   };
+}
+
+/** The senses with their definitions in other languages kept to those asked for; all when none are named. */
+function sensesIn(senses: SenseEntry[], languages?: string[]): SenseEntry[] {
+  if (!languages) return senses;
+  return senses.map((sense) => {
+    if (!sense.definitions) return sense;
+    const { definitions, ...rest } = sense;
+    const kept = definitions.filter((d) => languages.includes(d.lng));
+    return kept.length > 0 ? { ...rest, definitions: kept } : rest;
+  });
 }
 
 /**

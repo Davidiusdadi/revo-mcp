@@ -186,6 +186,9 @@ function formatSingleResult(
       if (sense.definition) {
         lines.push(`${prefix}${sense.definition}${domain}`);
       }
+      for (const d of sense.definitions ?? []) {
+        lines.push(`  - (${d.lng}) ${d.txt}${d.fnt ? ` _[${d.fnt}]_` : ""}`);
+      }
 
       // Examples
       for (const ex of sense.examples) {
@@ -213,10 +216,10 @@ function formatSingleResult(
   return lines.join("\n");
 }
 
-function filterTranslations(
-  translations: { lng: string; trd: string }[],
+function filterTranslations<T extends { lng: string }>(
+  translations: T[],
   showLanguages?: string[]
-): { lng: string; trd: string }[] {
+): T[] {
   if (!showLanguages || showLanguages.length === 0) {
     // Show a default set of common languages
     const defaultLangs = ["en", "de", "fr", "es", "ru", "zh", "ja"];

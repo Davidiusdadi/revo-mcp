@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { getDb } from "../db";
 import { familyOf } from "../family";
+import { translationSchema } from "./translation";
 
 export const familyInputSchema = z.object({
   mark: z.string().min(1).max(200).describe("The entry's ReVo mark, such as hund.cxas0o."),
@@ -19,7 +20,6 @@ export const familyInputSchema = z.object({
 
 const spanSchema = z.object({ morph: z.string(), kind: z.enum(["R", "W", "P", "S"]), at: z.number().int() });
 const wordSchema = z.object({ headword: z.string(), tilde: z.string(), spans: z.array(spanSchema) });
-const translationSchema = z.object({ lng: z.string(), trd: z.string() });
 
 export const familyOutputSchema = z.object({
   available: z.boolean().describe("False when the database has no word families."),

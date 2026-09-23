@@ -43,7 +43,7 @@ import type { Database } from "../../runtime/node-database";
 import { descendants, firstChild, kapForms, outerXml, textOf } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
-import { contentOf, textIn, OMIT } from "../../content";
+import { contentOf, inEsperanto, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 import { tldOccurrences, tokenGroups, type TokenGroup } from "./tld-links";
 import {
@@ -208,7 +208,7 @@ export function buildInventory(db: Database): Built {
     for (const n of nodes) {
       for (const c of contentOf(n.el)) {
         if (c.el.name === "dif") {
-          difs.push(textIn(c.el, articleRoots, OMIT.dif));
+          if (inEsperanto(c.el)) difs.push(textIn(c.el, articleRoots, OMIT.dif));
           continue;
         }
         if (c.el.name !== "kap") continue;

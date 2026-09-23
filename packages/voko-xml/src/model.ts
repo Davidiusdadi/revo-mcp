@@ -33,7 +33,7 @@ export const ATTRIBUTES: Readonly<Record<string, readonly string[]>> = {
   sncref: ["ref"],
   rad: ["var"],
   uzo: ["tip"],
-  dif: ["lng"],
+  dif: ["lng", "fnt"],
   ekz: ["mrk"],
   rim: ["num", "mrk"],
   refgrp: ["tip"],
