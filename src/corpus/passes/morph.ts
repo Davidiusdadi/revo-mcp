@@ -4,7 +4,7 @@
  *
  * `morph`, in the core stage, is what a gloss segments with:
  *
- * - x_morpheme: the inventory — article roots (and `<rad var>` roots; not the
+ * - x_morpheme: the inventory — article roots (and their variants' roots; not the
  *   ending articles "-is", nor exclamations that derive nothing "eh"),
  *   prefixes and suffixes from the affix articles (kap "mal-", "-ul"), the
  *   endings, and endingless words (drv kap = bare root: ĉar, hodiaŭ, kiu).
@@ -40,7 +40,7 @@
  * the core stage leaves out.
  */
 import type { Database } from "../../runtime/node-database";
-import { kapForms, outerXml } from "voko-xml";
+import { descendants, firstChild, kapForms, outerXml, textOf } from "voko-xml";
 import type { Pass } from "../pass";
 import { idOf } from "../../articles";
 import { contentOf, textIn, OMIT } from "../../content";
@@ -57,7 +57,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 12,
+  version: 13,
   tables: ["x_morpheme", "x_pair", "x_affix", "x_family"],
   run(db, log) {
     const { inv, pairs, heads } = prepare(db, log);
@@ -74,7 +74,7 @@ export const morphPass: Pass = {
 
 export const splitsPass: Pass = {
   name: "splits",
-  version: 1,
+  version: 2,
   tables: ["x_morph", "x_token"],
   run(db, log) {
     const { inv, pairs, heads, toks } = prepare(db, log);
@@ -103,7 +103,7 @@ function prepare(db: Database, log: (m: string) => void) {
     occurrences.push(...tokenGroups(outside));
   }
   const pairs = new Pairs();
-  const heads = segmentHeadwords(db, inv, inv.tildes, marked, pairs, log);
+  const heads = segmentHeadwords(db, inv, inv.tildes, inv.rootArts, marked, pairs, log);
   const toks = attestedTokens(db, inv, occurrences, pairs, log);
   return { inv, pairs, heads, toks };
 }
@@ -195,6 +195,13 @@ export function buildInventory(db: Database): Built {
   // an exclamation does not join other roots: mult|eh|ar|a is no reading of
   // multehara. Exclamations ReVo builds on (pafi, halti, jesi) stay roots.
   const EXCLAMATION = /<vspec>(ekkrio|sonimito)<\/vspec>/;
+  const headNorms = new Map<number, string[]>();
+  for (const h of db.query<{ article_id: number; norm: string }, []>(
+    "SELECT n.article_id, h.norm FROM headword h JOIN node n ON n.id = h.node_id").iterate()) {
+    const a = headNorms.get(h.article_id) ?? [];
+    a.push(h.norm);
+    headNorms.set(h.article_id, a);
+  }
   for (const { article, art, roots: articleRoots, nodes } of articleTrees(db)) {
     // the article's definitions, in document order, for the affix articles among them
     const difs: string[] = [];
@@ -226,7 +233,22 @@ export function buildInventory(db: Database): Built {
     if (endingArts.has(article.id) && GRAMMATICAL.has(rad.toLowerCase())) continue;
     if (EXCLAMATION.test(xml) && (drv.get(article.id) ?? 0) <= 1) continue;
     addRoot(rad, article.id);
-    for (const m of xml.matchAll(/<rad var="[^"]*">([^<]*)<\/rad>/g)) addRoot(m[1].trim(), article.id);
+    // every root the article's head names: `<rad var="…">`, and a variant
+    // headword with a root of its own — anarĥi/o's `<var><kap><rad>anarki</rad>/o`,
+    // without which anarkio is read as an|ar|kio
+    const head = firstChild(art, "kap");
+    const own = head ? [...descendants(head, "rad")].map((r) => textOf(r).trim().toLowerCase()).filter(Boolean) : [];
+    for (const r of own) addRoot(r, article.id);
+    // a root in -i whose -ism and -ist the article's own headwords write with
+    // one i, not two (anarkismo, anarkisto in anarĥi/o, next to anarkiismo):
+    // that i is the suffix's, and the stem before it is a root too
+    const norms = headNorms.get(article.id) ?? [];
+    for (const r of own) {
+      if (!r.endsWith("i") || r.length < 5) continue;
+      // ending the word, so frakcistreko (frakci/strek/o) is no frakc/ist
+      const single = new RegExp(`${r}s[mt][oaei]j?n?$`, "u");
+      if (norms.some((w) => single.test(w))) addRoot(r.slice(0, -1), article.id);
+    }
   }
   // the word-building affixes: the ending articles ("-o", "-as", "-j") are not
   // affixes, but "-an" and "-on" are (member, fraction) even though they spell endings too
@@ -411,7 +433,8 @@ const isEntryMark = (kind: string, mrk: string | null): mrk is string =>
   kind === "drv" && mrk !== null && /^[^.]+\.[^.]+$/.test(mrk);
 
 function segmentHeadwords(
-  db: Database, inv: Inventory, tildes: Map<number, string>, marked: Map<number, Pin>, pairs: Pairs, log: (m: string) => void,
+  db: Database, inv: Inventory, tildes: Map<number, string>, rootArts: Map<string, number[]>,
+  marked: Map<number, Pin>, pairs: Pairs, log: (m: string) => void,
 ): Deferred & { family(inv: Inventory): number } {
   const create = () => db.run(`
     CREATE TABLE x_morph (
@@ -425,6 +448,13 @@ function segmentHeadwords(
       source  TEXT NOT NULL,         -- tilde: root pinned by the kap (or found once in it) · free: inventory only
       ok      INTEGER NOT NULL       -- every word fully segmented
     )`);
+  // every root an article's head names, the main one and its variants'
+  const articleRoots = new Map<number, string[]>();
+  for (const [r, arts] of rootArts) for (const art of arts) {
+    const a = articleRoots.get(art) ?? [];
+    a.push(r);
+    articleRoots.set(art, a);
+  }
   let ins: ReturnType<Database["prepare"]>;
   type Kap = {
     id: number; node_id: number; article_id: number; norm: string; rad: string;
@@ -453,8 +483,14 @@ function segmentHeadwords(
       if (word) pin = { word, at: 0, root };
     }
     // a kap written out in full ("hufofero" in fer): the article's root, where it
-    // occurs exactly once — twice ("ferfero") would leave the choice to the segmenter
-    const root = k.rad.toLowerCase();
+    // occurs exactly once — twice ("ferfero") would leave the choice to the segmenter.
+    // A variant spelled apart is read with the variant's root (anarkio in anarĥi is
+    // anarki/o), and a root in -i can lose it before a suffix, as the headwords
+    // write it (anarkismo, anarkisto: anark/ism/o)
+    const root = pin ? undefined : headRoot(k.norm, k.rad.toLowerCase(), articleRoots.get(k.article_id) ?? [], (r) => {
+      const word = k.norm.match(WORD)?.find((w) => w.includes(r));
+      return Boolean(word && segment(word, inv, { at: word.indexOf(r), root: r }));
+    });
     if (!pin && root) {
       const at = k.norm.indexOf(root);
       const word = at >= 0 && k.norm.indexOf(root, at + 1) < 0 ? k.norm.match(WORD)?.find((w) => w.includes(root)) : undefined;
@@ -574,6 +610,19 @@ function attestedTokens(db: Database, inv: Inventory, groups: TokenGroup[], pair
       return n;
     },
   };
+}
+
+/**
+ * The root of an article a headword written out in full is built on: the
+ * main root when the word has it, else the longest of the article's other
+ * roots it has that the word splits with — a variant's (anarki/o in
+ * anarĥi/o), or the stem an -ism word is built on (anark/ism/o, where
+ * anarki leaves "smo").
+ */
+function headRoot(word: string, main: string, roots: string[], splits: (root: string) => boolean): string | undefined {
+  if (main && word.includes(main)) return main;
+  const found = roots.filter((r) => r !== main && word.includes(r)).sort((a, b) => b.length - a.length);
+  return found.find(splits) ?? found[0] ?? (main || undefined);
 }
 
 const pct = (a: number, b: number) => `${((100 * a) / Math.max(1, b)).toFixed(1)}%`;

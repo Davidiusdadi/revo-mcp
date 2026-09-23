@@ -36,8 +36,9 @@ let trees: ArticleTree[];
 // swallows the linking o when nothing pins fer; ĉashundo is in the families of hund
 // and cxas, hundherbo is filed under herb, and hundiĉo and hundedoj have roots of their own;
 // cxas and ras quote "hundo bonrasa estas bona por ĉaso ;" alike, and hund at more length;
-// li and unu are short words that many longer ones begin with
-const EXTRA = ["san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf", "cxas", "herb", "hundicx", "hunded", "ras"];
+// li and unu are short words that many longer ones begin with; anarhx spells its
+// word anarkio too, in a <var> of its own kap, and ark/an/kio would split that
+const EXTRA = ["anarhx", "ark", "an", "kio", "ism", "ist", "san", "mal", "ul", "ej", "hund", "lup", "unu", "li", "cxeval", "aidos", "bel", "figur", "ornam", "fer", "huf", "ofer", "is", "as", "ej1", "paf", "cxas", "herb", "hundicx", "hunded", "ras"];
 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "voko-build-"));
@@ -356,6 +357,14 @@ describe("pass morph", () => {
     expect(one<{ seg: string; source: string }>(
       "SELECT seg, source FROM x_morph WHERE form = 'hufofero'")).toEqual(
       { seg: "huf|o|fer|o", source: "tilde" });
+  });
+
+  test("a variant's root is a root of its article", () => {
+    // anarĥio is anarkio too (<var><kap><rad>anarki</rad>/o</kap></var>): without
+    // that root the word fell apart into an|ar|kio, and kio's family took it in
+    const seg = (form: string) => one<{ seg: string }>("SELECT seg FROM x_morph WHERE form = ?", form)?.seg;
+    expect(seg("anarkio")).toBe("anarki|o");
+    expect(seg("anarkismo")).toBe("anark|ism|o");
   });
 
   test("an ending article is an ending, not a root", () => {
