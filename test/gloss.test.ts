@@ -105,6 +105,20 @@ describe("gloss: Esperanto audit", () => {
     expect(kazuaro.parts!.some((p) => p.shortFor)).toBe(false);
   });
 
+  test("an ending and a linking vowel are named by the ending's article", () => {
+    const g = eo("Mi vidas hundojn kaj hundoĉaron, kaj volas iri.");
+    const hundojn = word(g, "hundojn")!;
+    expect(hundojn.parts!.at(-1)?.endings?.map((e) => [e.m, e.mrk, e.gloss])).toEqual([
+      ["o", "o.0", "la vorton kiel substantivon"],
+      ["j", "j.0", expect.stringMatching(/^la pluralon/)],
+      ["n", "n.0", expect.stringMatching(/^la akuzativon/)],
+    ]);
+    // the linking o of hundoĉaro is the ending -o
+    expect(word(g, "hundoĉaron")!.parts!.find((p) => p.k === "L")).toMatchObject({ m: "o", mrk: "o.0" });
+    // -i the ending is i1, not i, the affix of country names (Franc·i·o)
+    expect(word(g, "iri")!.parts!.at(-1)?.endings).toEqual([expect.objectContaining({ m: "i", art: "i1" })]);
+  });
+
   test("-end-/-it- derivations resolve through the affix articles", () => {
     const g = eo("Tio estas farenda kaj jam endita.");
     const farenda = word(g, "farenda")!;
@@ -286,7 +300,8 @@ describe("gloss: Esperanto audit", () => {
     expect(t.verdict).toBe("attested");
     expect(t.seg).toBe("art|e|far|it|a");
     expect(t.kinds).toBe("RLRSE");
-    expect(t.parts!.find((p) => p.m === "e")?.gloss).toBeUndefined();
+    // named by the ending it spells, not by the letter
+    expect(t.parts!.find((p) => p.m === "e")).toMatchObject({ mrk: "e.0", gloss: "la vorton kiel adverbon" });
   });
 
   test("a number needs no ending and counts as one root", () => {

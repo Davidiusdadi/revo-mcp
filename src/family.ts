@@ -205,7 +205,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
     if (roots.includes(articleRoot)) roots = [articleRoot, ...roots.filter((root) => root !== articleRoot)];
   }
 
-  const affixKind = db.query<{ kind: "P" | "S" }, [string]>("SELECT kind FROM x_affix WHERE morph = ?");
+  const affixKind = db.query<{ kind: "P" | "S" }, [string]>("SELECT kind FROM x_affix WHERE morph = ? AND kind != 'E'");
   const articlesOf = db.query<{ article: string; rad: string }, [string]>(
     `SELECT a.file AS article, a.rad FROM x_morpheme m JOIN article a ON a.id = m.article_id
       WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file`);

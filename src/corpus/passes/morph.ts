@@ -58,7 +58,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 14,
+  version: 15,
   tables: ["x_morpheme", "x_pair", "x_affix", "x_family"],
   run(db, log) {
     const { inv, pairs, heads } = prepare(db, log);
@@ -116,8 +116,8 @@ type Pin = Fixed & { word: string };
 interface Affix {
   /** the headword as written: "mal-", "-ul" */
   txt: string;
-  /** P: written "mal-" · S: written "-ul" */
-  kind: "P" | "S";
+  /** P: written "mal-" · S: written "-ul" · E: an ending, its article defines a Finaĵo */
+  kind: "P" | "S" | "E";
   /** the article's file name */
   art: string;
   /** the entry's mark, when a marked node carries the headword */
@@ -136,6 +136,8 @@ interface Built extends Inventory {
   tildes: Map<number, string>;
   /** the affix articles by bare morpheme, the first article to write each */
   affixes: Map<string, Affix>;
+  /** the ending articles by bare morpheme: -i is i1, where the affix -i is i (Franc·i·o) */
+  endings: Map<string, Affix>;
 }
 
 /** "-ul" → "ul"; null for a headword that is not written as an affix. */
@@ -154,6 +156,7 @@ export function buildInventory(db: Database): Built {
   const classes = new Map<string, WordClass>();
   const classRows = new Map<string, WordClass>();
   const affixes = new Map<string, Affix>();
+  const endings = new Map<string, Affix>();
   /**
    * Word class of a root: the headwords that are the root plus one vowel — an
    * article's own kap ("hund/o") and the derivations written "~o", "~a", "~e",
@@ -206,6 +209,7 @@ export function buildInventory(db: Database): Built {
   for (const { article, art, roots: articleRoots, nodes } of articleTrees(db)) {
     // the article's definitions, in document order, for the affix articles among them
     const difs: string[] = [];
+    const written: { m: string; txt: string; mrk: string | null }[] = [];
     for (const n of nodes) {
       for (const c of contentOf(n.el)) {
         if (c.el.name === "dif") {
@@ -221,12 +225,20 @@ export function buildInventory(db: Database): Built {
         // affix articles: kap "mal-" / "-ul"; the first node to write the affix names it, a marked one gives the mark
         const m = affixMorph(forms.txt);
         if (m === null) continue;
+        written.push({ m, txt: forms.txt, mrk: n.mrk });
         let a = affixes.get(m);
         if (!a) {
           a = { txt: forms.txt, kind: forms.txt.startsWith("-") ? "S" : "P", art: article.file, mrk: null, difs };
           affixes.set(m, a);
         }
         if (a.art === article.file && a.mrk === null && n.mrk !== null) a.mrk = n.mrk;
+      }
+    }
+    // an article that defines its affix as an ending first is that ending's: "Finaĵo markanta…", "Verba finaĵo…"
+    if (/^(\p{L}+ )?finaĵo\b/iu.test(difs[0] ?? "")) {
+      for (const w of written) {
+        if (w.txt.startsWith("-") && !endings.has(w.m)) endings.set(w.m, { txt: w.txt, kind: "E", art: article.file, mrk: w.mrk, difs });
+        else if (endings.get(w.m)?.art === article.file && endings.get(w.m)!.mrk === null) endings.get(w.m)!.mrk = w.mrk;
       }
     }
     const rad = article.rad;
@@ -258,7 +270,7 @@ export function buildInventory(db: Database): Built {
     if (a.txt.endsWith("-") && !a.txt.startsWith("-")) prefixes.add(m);
     else if (a.txt.startsWith("-") && !a.txt.endsWith("-")) suffixes.add(m);
   }
-  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, tildes, classes, classRows, affixes };
+  return { roots, prefixes, suffixes, words, rootArts, drv, rootWeight, tildes, classes, classRows, affixes, endings };
 }
 
 /**
@@ -270,6 +282,8 @@ export function buildInventory(db: Database): Built {
  */
 export function affixGloss(txt: string): string {
   let s = txt.replace(/\s+/g, " ").trim();
+  // the aside after the kind names it, it says nothing of the meaning: "Finaĵo (lingvoscience: sufikso) markanta…"
+  s = s.replace(/^(sufikso|prefikso|vortero|finaĵo)\s*\([^)]*\)/i, "$1");
   s = s.replace(
     /^(sufikso|prefikso|vortero|finaĵo)\s*(esprimanta|montranta|almetebla|signifanta|markanta|uzata|de|kiu)?\s*[,:;]?\s*/i,
     ""
@@ -291,17 +305,18 @@ export function affixGloss(txt: string): string {
 function writeAffixes(db: Database, inv: Built): number {
   db.run(`
     CREATE TABLE x_affix (
-      morph  TEXT PRIMARY KEY,   -- the bare morpheme: mal, ul
-      kind   TEXT NOT NULL,      -- P: the headword is written "mal-" · S: "-ul"
+      morph  TEXT NOT NULL,      -- the bare morpheme: mal, ul
+      kind   TEXT NOT NULL,      -- P: the headword is written "mal-" · S: "-ul" · E: the ending "-o", one more row where it is an affix too
       txt    TEXT NOT NULL,      -- the headword as written
       art    TEXT NOT NULL,      -- the article's file name
       mrk    TEXT,               -- the entry's mark, when a marked node carries the headword
-      gloss  TEXT                -- its definition cut to the phrase that says what it means
-    )`);
+      gloss  TEXT,               -- its definition cut to the phrase that says what it means
+      PRIMARY KEY (morph, kind)
+    ) WITHOUT ROWID`);
   const ins = db.prepare("INSERT INTO x_affix VALUES (?,?,?,?,?,?)");
   const empty = /^(samsignifa|uzata memstare|vortero)/i;
   let n = 0;
-  for (const [m, a] of inv.affixes) {
+  for (const [m, a] of [...inv.affixes, ...inv.endings]) {
     let gloss: string | null = null;
     for (const d of a.difs.filter((d) => d.length > 8 && !empty.test(d)).slice(0, 5)) {
       const g = affixGloss(d);

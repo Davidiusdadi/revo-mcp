@@ -56,6 +56,14 @@ export const glossInputSchema = z.object({
 
 export type GlossInput = z.infer<typeof glossInputSchema>;
 
+const endingSchema = z.object({
+  m: z.string(),
+  k: z.literal("E"),
+  gloss: z.string().optional().describe("The ending's definition."),
+  art: z.string().optional(),
+  mrk: z.string().optional(),
+});
+
 const partSchema = z.object({
   m: z.string(),
   k: z.string().describe("P prefix · R root · S suffix · L linking vowel · E ending · W endingless word"),
@@ -63,6 +71,7 @@ const partSchema = z.object({
   art: z.string().optional(),
   mrk: z.string().optional().describe("The entry that names the part."),
   shortFor: z.string().optional().describe("The root the part shortens, as a name does: Miĥael for Mi in Miĉjo."),
+  endings: z.array(endingSchema).optional().describe("An ending's pieces, each with its article: -o, -j, -n for ojn."),
 });
 
 const readingSchema = z.object({

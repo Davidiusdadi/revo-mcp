@@ -85,6 +85,18 @@ export interface Part {
   mrk?: string;
   /** The root the part shortens, as ReVo writes it, where it is a name's shortened root: Miĥael for Mi in Miĉjo. */
   shortFor?: string;
+  /** An ending's pieces, each with its article: -o, -j, -n for ojn. */
+  endings?: Part[];
+}
+
+/** An inflected ending as it comes apart: a vowel or tense, then plural, then accusative (ojn → o, j, n). */
+const ENDING = /^(as|is|os|us|u|i|o|a|e)?(j)?(n)?$/;
+
+/** An ending's pieces; one piece, the ending whole, where it does not come apart that way. */
+export function endingPieces(ending: string): string[] {
+  const m = ending.match(ENDING);
+  const pieces = m ? m.slice(1).filter((p): p is string => Boolean(p)) : [];
+  return pieces.length ? pieces : [ending];
 }
 
 /** One way of taking a word apart, and the article it comes from. */
@@ -265,14 +277,17 @@ interface AffixRow {
   mrk: string | null;
 }
 
-/** Every affix article as the `morph` pass stored it (`x_affix`), keyed by the bare morpheme. */
+/**
+ * Every affix article as the `morph` pass stored it (`x_affix`), keyed by the
+ * bare morpheme, an ending's as "-o": -i the affix is i, -i the ending i1.
+ */
 function affixesOf(db: SqlReader): Map<string, AffixRow> {
   const hit = affixCache.get(db);
   if (hit) return hit;
   const out = new Map<string, AffixRow>();
-  for (const r of db.query<{ morph: string; txt: string; art: string; mrk: string | null; gloss: string | null }, []>(
-    "SELECT morph, txt, art, mrk, gloss FROM x_affix").all()) {
-    out.set(r.morph, { txt: r.txt, gloss: r.gloss ?? "", art: r.art, mrk: r.mrk });
+  for (const r of db.query<{ morph: string; kind: string; txt: string; art: string; mrk: string | null; gloss: string | null }, []>(
+    "SELECT morph, kind, txt, art, mrk, gloss FROM x_affix").all()) {
+    out.set(r.kind === "E" ? `-${r.morph}` : r.morph, { txt: r.txt, gloss: r.gloss ?? "", art: r.art, mrk: r.mrk });
   }
   affixCache.set(db, out);
   return out;
@@ -890,14 +905,21 @@ function partsOf(db: SqlReader, ms: Morph[], split?: Split): Part[] {
   const affixes = affixesOf(db);
   return ms.map((m, i) => {
     const part: Part = { m: m.m, k: m.k };
-    if (m.k === "P" || m.k === "S") {
-      const a = affixes.get(m.m);
+    // an affix, a linking vowel and an ending each have an article of their own: -ul, -o
+    const named = (p: Part, key = p.m): Part => {
+      const a = affixes.get(key);
       if (a) {
-        part.art = a.art;
-        if (a.gloss) part.gloss = a.gloss;
-        if (a.mrk) part.mrk = a.mrk;
+        p.art = a.art;
+        if (a.gloss) p.gloss = a.gloss;
+        if (a.mrk) p.mrk = a.mrk;
       }
-    } else if (m.k === "R" || m.k === "W") {
+      return p;
+    };
+    // a linking vowel is the ending it spells (hund·o·ĉar)
+    if (m.k === "P" || m.k === "S") named(part);
+    else if (m.k === "L") named(part, `-${m.m}`);
+    else if (m.k === "E") part.endings = endingPieces(m.m).map((e) => named({ m: e, k: "E" }, `-${e}`));
+    else if (m.k === "R" || m.k === "W") {
       let head = rootHeadword(db, m.m);
       if (split && i === split.marked && head?.art !== fromXSystem(split.art)) {
         head = rootHeadword(db, split.root.toLowerCase()) ?? head;
