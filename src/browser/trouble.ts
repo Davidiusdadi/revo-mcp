@@ -11,6 +11,8 @@ export type RevoTroubleCode =
   | "copy/none-in-tab"
   /** Another tab holds the copy, so this one keeps none. */
   | "copy/another-tab"
+  /** The browser's storage does not answer, so no copy is kept or read for now. */
+  | "copy/storage-silent"
   /** A stored copy could not serve queries and was deleted; `detail` says why. */
   | "copy/deleted"
   /** The browser allows less storage than the file needs; `detail` is its size in MB. */

@@ -21,7 +21,8 @@ export type RevoWorkerInit = {
 export type RevoWorkerCommand = { type: "revo:local"; action: "download" | "delete" };
 
 export type RevoWorkerEvent =
-  | { type: "revo:loading"; phase: "sqlite" | "mcp" }
+  // What the start is doing, so a page can say where one that never finished stopped.
+  | { type: "revo:loading"; phase: "sqlite" | "storage" | "file" | "mcp" }
   | { type: "revo:ready"; engine: RevoEngine }
   /** Progress of the local copy, in bytes of the database file. */
   | { type: "revo:download"; loaded: number; total: number }

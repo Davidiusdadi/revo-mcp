@@ -32,6 +32,29 @@ interface Session {
   attaching?: Promise<void>;
 }
 
+/**
+ * How long the browser's storage gets to answer. A call into it can hang for
+ * good, as it has on a phone after an update, and no query may wait for it.
+ */
+const STORAGE_MS = 4000;
+const TIMED_OUT = Symbol("timed out");
+
+function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<typeof TIMED_OUT>((resolve) => { timer = setTimeout(() => resolve(TIMED_OUT), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/** Whether the copies can be opened now, are held by another Worker, or the storage does not answer. */
+async function storage(wait = 0): Promise<"free" | "held" | "silent"> {
+  const free = await within(LocalCopies.free(wait).catch(() => true), wait + STORAGE_MS);
+  return free === TIMED_OUT ? "silent" : free ? "free" : "held";
+}
+
+function silentStorage(): RevoTrouble {
+  return new RevoTrouble("copy/storage-silent", "The browser's storage does not answer, so the dictionary keeps no local copy for now and reads the published file.");
+}
+
 let started = false;
 let session: Session | undefined;
 
@@ -74,14 +97,16 @@ async function start({ databaseUrl, mcpPort, access = "auto" }: RevoWorkerInit):
   const sqlite3 = await initSqlite();
   const current: Session = { sqlite3, url: databaseUrl, engine: "remote" };
   // After a reload the previous page's Worker may still hold the copies; this
-  // one then starts remotely and takes them over once they are free.
-  const held = !await LocalCopies.free().catch(() => true);
-  if (!held) await openCopies(current, access);
-  // Remote access keeps no copy, also none stored before; a download command still makes one.
-  if (access === "remote") current.copies?.removeAllBut(undefined);
-  const stored = access === "auto" ? current.copies?.latest() : undefined;
+  // one then starts remotely and takes them over once they are free. Remote
+  // access touches the storage only once it answers queries, since it needs
+  // none: it deletes a copy stored before, and a download command makes one.
+  if (access === "auto") emit({ type: "revo:loading", phase: "storage" });
+  const now = access === "auto" ? await storage() : "held";
+  if (now === "free") await openCopies(current, access);
+  const stored = current.copies?.latest();
   let published: DatabaseHeader | undefined;
   if (!stored || !useCopy(current, stored)) {
+    emit({ type: "revo:loading", phase: "file" });
     // The range VFS takes any answer to its HEAD request for the file, so a
     // missing file is reported here rather than as a malformed database.
     published = await fetchHeader(databaseUrl);
@@ -92,7 +117,7 @@ async function start({ databaseUrl, mcpPort, access = "auto" }: RevoWorkerInit):
   emit({ type: "revo:loading", phase: "mcp" });
   await connectWorkerServer(createMcpServer(), mcpPort);
   emit({ type: "revo:ready", engine: current.engine });
-  if (held) {
+  if (now !== "free") {
     current.attaching = attachCopies(current, access, published).catch(notice).finally(() => {
       current.attaching = undefined;
     });
@@ -103,21 +128,24 @@ async function start({ databaseUrl, mcpPort, access = "auto" }: RevoWorkerInit):
 
 async function openCopies(current: Session, access: NonNullable<RevoWorkerInit["access"]>): Promise<void> {
   try {
-    current.copies = await LocalCopies.open(current.sqlite3);
+    const copies = await within(LocalCopies.open(current.sqlite3), STORAGE_MS);
+    if (copies === TIMED_OUT) throw silentStorage();
+    current.copies = copies;
   } catch (error) {
-    if (access === "auto") {
-      const why = error instanceof Error ? error.message : String(error);
-      notice(new RevoTrouble("copy/none-in-tab", `The dictionary keeps no local copy in this tab: ${why}`, why));
-    }
+    if (access !== "auto") return;
+    if (error instanceof RevoTrouble) return notice(error);
+    const why = error instanceof Error ? error.message : String(error);
+    notice(new RevoTrouble("copy/none-in-tab", `The dictionary keeps no local copy in this tab: ${why}`, why));
   }
 }
 
 /** Takes the copies over from the Worker that held them at start, then goes on as a start with them would. */
 async function attachCopies(current: Session, access: NonNullable<RevoWorkerInit["access"]>, published?: DatabaseHeader): Promise<void> {
   // A reload's previous Worker lets go within moments; another tab's does not.
-  if (!await LocalCopies.free(3000)) {
-    if (access === "auto") notice(new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it."));
-    return;
+  const now = await storage(3000);
+  if (now !== "free") {
+    if (access !== "auto") return;
+    return notice(now === "silent" ? silentStorage() : new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it."));
   }
   await openCopies(current, access);
   if (!current.copies) return;
