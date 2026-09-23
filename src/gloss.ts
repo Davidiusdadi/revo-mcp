@@ -520,6 +520,8 @@ const NEAR_USAGE_RATIO = 30;
  * used neighbour comes first.
  */
 function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
+  const hatted = withHats(db, word, limit);
+  if (hatted.length > 0) return hatted;
   const scored = new Map<string, { tier: number; n: number }>();
   let checked = 0;
   const take = (guess: string) => {
@@ -550,6 +552,43 @@ function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
     .sort((a, b) => a[1].tier - b[1].tier || b[1].n - a[1].n)
     .slice(0, limit)
     .map(([w]) => w);
+}
+
+const HATS: Record<string, string> = { c: "ĉ", g: "ĝ", h: "ĥ", j: "ĵ", s: "ŝ", u: "ŭ" };
+/** Past this many hat-less letters only one letter at a time is given its hat. */
+const HAT_SUBSETS = 5;
+
+
+/**
+ * The words this one is when its hats are put back — the commonest slip there
+ * is, since most keyboards have no ĉ or ŭ. Two ways of leaving them off are
+ * read here: not at all (`audas` for `aŭdas`) and the h-system (`chambro`);
+ * the x-system is already undone before a word is classed. Such a word is
+ * taken over any one letter away, and without the usage check: whoever writes
+ * `audas` meant `aŭdas`, however often the web does the same.
+ */
+function withHats(db: SqlReader, word: string, limit: number): string[] {
+  const guesses = new Set<string>();
+  guesses.add(word.replace(/([cghjs])h/g, (_, base: string) => HATS[base]));
+  const bare = [...word].flatMap((ch, i) => (HATS[ch] ? [i] : []));
+  const letters = [...word];
+  if (bare.length <= HAT_SUBSETS) {
+    for (let mask = 1; mask < 1 << bare.length; mask++) {
+      guesses.add(letters.map((ch, i) => (bare.includes(i) && mask & (1 << bare.indexOf(i)) ? HATS[ch] : ch)).join(""));
+    }
+  } else {
+    for (const i of bare) guesses.add(letters.map((ch, j) => (j === i ? HATS[ch] : ch)).join(""));
+  }
+  guesses.delete(word);
+  const found: { word: string; tier: number; n: number }[] = [];
+  for (const guess of guesses) {
+    const ev = evidence(db, guess);
+    if (ev) found.push({ word: guess, ...ev });
+  }
+  return found
+    .sort((a, b) => a.tier - b.tier || b.n - a.n)
+    .slice(0, limit)
+    .map((f) => f.word);
 }
 
 /** True when the two equal-length strings differ in exactly one position. */

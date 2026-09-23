@@ -134,6 +134,15 @@ describe("gloss: Esperanto audit", () => {
     expect(t.seg).toBeUndefined();
   });
 
+  test("a word written without its hats is offered with them", () => {
+    const g = eo("Ĉu vi audas min? Hodiau la chambro estas malvarma.");
+    expect(word(g, "audas")!.near).toEqual(["aŭdas"]);
+    expect(word(g, "hodiau")!.near).toEqual(["hodiaŭ"]);
+    expect(word(g, "chambro")!.near).toEqual(["ĉambro"]);
+    // a word that means nothing with hats either is still left without one
+    expect(classify(getDb(), "buch", inventoryOf(getDb())).near ?? []).toEqual([]);
+  });
+
   test("an invented compound gets no invented neighbour", () => {
     const t = word(eo("Li estas makilaĵfaranto."), "makilaĵfaranto")!;
     expect(t.verdict).toBe("unknown");
