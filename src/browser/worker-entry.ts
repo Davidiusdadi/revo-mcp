@@ -3,16 +3,17 @@
  * The dictionary Worker: the ReVo MCP server over one database file, voko.db.
  *
  * Without a local copy it reads the published file remotely, page by page over
- * HTTP range requests, so the first search answers at once; meanwhile it
- * downloads the file once into OPFS, reporting progress, and then answers every
- * query from that copy. On later starts the copy answers at once, and a newer
- * published revision replaces it the same way.
+ * HTTP range requests, so the first search answers at once. A copy in OPFS is
+ * downloaded once, reporting progress, by itself ("auto") or when the page asks
+ * ("on-request"), and then answers every query. On later starts the copy
+ * answers at once, and a newer published revision replaces it the same way,
+ * or is offered to the page first.
  */
 import type { Sqlite3Static } from "@sqlite.org/sqlite-wasm";
 import { configureDatabase } from "../db";
 import { createMcpServer } from "../server";
 import { connectWorkerServer } from "./connect-worker-server";
-import { databaseBytes, fetchHeader, type DatabaseHeader } from "./database-file";
+import { databaseBytes, fetchHeader, revisionInUrl, type DatabaseHeader } from "./database-file";
 import { initSqlite, openRemoteDatabase } from "./http-sqlite-reader";
 import { LocalCopies, type LocalCopy } from "./local-copy";
 import type { RevoEngine, RevoWorkerCommand, RevoWorkerEvent, RevoWorkerInit } from "./protocol";
@@ -30,6 +31,8 @@ interface Session {
   download?: { done: Promise<void>; abort: AbortController };
   /** while the copies are taken over from a Worker that still holds them */
   attaching?: Promise<void>;
+  /** why no copies could be opened, said when the page asks for one */
+  unavailable?: RevoTrouble;
 }
 
 /**
@@ -37,6 +40,8 @@ interface Session {
  * good, as it has on a phone after an update, and no query may wait for it.
  */
 const STORAGE_MS = 4000;
+/** How long a download may go without a byte before it gives up, rather than stand at the same percentage for good. */
+const STALL_MS = 30_000;
 const TIMED_OUT = Symbol("timed out");
 
 function within<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
@@ -100,17 +105,26 @@ async function start({ databaseUrl, mcpPort, access = "auto" }: RevoWorkerInit):
   // one then starts remotely and takes them over once they are free. Remote
   // access touches the storage only once it answers queries, since it needs
   // none: it deletes a copy stored before, and a download command makes one.
-  if (access === "auto") emit({ type: "revo:loading", phase: "storage" });
-  const now = access === "auto" ? await storage() : "held";
+  if (access !== "remote") emit({ type: "revo:loading", phase: "storage" });
+  let now = access !== "remote" ? await storage() : "held";
   if (now === "free") await openCopies(current, access);
-  const stored = current.copies?.latest();
   let published: DatabaseHeader | undefined;
-  if (!stored || !useCopy(current, stored)) {
+  if (!usedStored(current)) {
     emit({ type: "revo:loading", phase: "file" });
-    // The range VFS takes any answer to its HEAD request for the file, so a
-    // missing file is reported here rather than as a malformed database.
-    published = await fetchHeader(databaseUrl);
-    configureDatabase(openRemoteDatabase(sqlite3, databaseUrl));
+    try {
+      // The range VFS takes any answer to its HEAD request for the file, so a
+      // missing file is reported here rather than as a malformed database.
+      published = await fetchHeader(databaseUrl);
+      configureDatabase(openRemoteDatabase(sqlite3, databaseUrl));
+    } catch (error) {
+      // Offline right after a reload, the copy the previous page's Worker
+      // still holds is the only way to answer: it is waited for.
+      if (access === "remote" || now !== "held") throw error;
+      now = await storage(3000);
+      if (now !== "free") throw error;
+      await openCopies(current, access);
+      if (!usedStored(current)) throw error;
+    }
   }
   session = current;
 
@@ -121,9 +135,29 @@ async function start({ databaseUrl, mcpPort, access = "auto" }: RevoWorkerInit):
     current.attaching = attachCopies(current, access, published).catch(notice).finally(() => {
       current.attaching = undefined;
     });
-  } else if (access === "auto" && current.copies) {
-    download(current, published).catch(notice);
+  } else if (current.copies) {
+    keepUp(current, access, published).catch(notice);
   }
+}
+
+/** Replaces an older copy by itself, or offers the newer revision to the page; stores a first copy only by itself. */
+function keepUp(current: Session, access: NonNullable<RevoWorkerInit["access"]>, published?: DatabaseHeader): Promise<void> {
+  if (access === "auto") return download(current, published);
+  if (access === "on-request") return offerUpdate(current, published);
+  return Promise.resolve();
+}
+
+/**
+ * Tells the page when the copy in use is older than the published file. A
+ * URL that names its revision answers without the network; any other costs
+ * the 100-byte header, and offline says nothing, as the copy is for that.
+ */
+async function offerUpdate(current: Session, known?: DatabaseHeader): Promise<void> {
+  if (!current.local) return;
+  const named = revisionInUrl(current.url);
+  const revision = known?.revision ?? named ?? (await fetchHeader(current.url).catch(() => undefined))?.revision;
+  if (revision === undefined || revision === current.local.revision) return;
+  emit({ type: "revo:update", revision });
 }
 
 async function openCopies(current: Session, access: NonNullable<RevoWorkerInit["access"]>): Promise<void> {
@@ -132,10 +166,11 @@ async function openCopies(current: Session, access: NonNullable<RevoWorkerInit["
     if (copies === TIMED_OUT) throw silentStorage();
     current.copies = copies;
   } catch (error) {
-    if (access !== "auto") return;
-    if (error instanceof RevoTrouble) return notice(error);
     const why = error instanceof Error ? error.message : String(error);
-    notice(new RevoTrouble("copy/none-in-tab", `The dictionary keeps no local copy in this tab: ${why}`, why));
+    current.unavailable = error instanceof RevoTrouble
+      ? error
+      : new RevoTrouble("copy/none-in-tab", `The dictionary keeps no local copy in this tab: ${why}`, why);
+    if (access === "auto") notice(current.unavailable);
   }
 }
 
@@ -144,15 +179,22 @@ async function attachCopies(current: Session, access: NonNullable<RevoWorkerInit
   // A reload's previous Worker lets go within moments; another tab's does not.
   const now = await storage(3000);
   if (now !== "free") {
-    if (access !== "auto") return;
-    return notice(now === "silent" ? silentStorage() : new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it."));
+    current.unavailable = now === "silent" ? silentStorage() : new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it.");
+    if (access === "auto") notice(current.unavailable);
+    return;
   }
   await openCopies(current, access);
   if (!current.copies) return;
   if (access === "remote") return current.copies.removeAllBut(undefined);
   const stored = current.copies.latest();
   if (stored && useCopy(current, stored)) emit({ type: "revo:engine", engine: "local" });
-  await download(current, published);
+  await keepUp(current, access, published);
+}
+
+/** Whether a stored copy now answers queries. */
+function usedStored(current: Session): boolean {
+  const stored = current.copies?.latest();
+  return !!stored && useCopy(current, stored);
 }
 
 /** Answers queries from a stored copy; one that cannot serve them is deleted. */
@@ -183,7 +225,7 @@ function download(current: Session, published?: DatabaseHeader): Promise<void> {
 
 async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHeader): Promise<void> {
   const copies = current.copies;
-  if (!copies) throw new RevoTrouble("copy/none-in-tab", "The dictionary keeps no local copy in this tab.");
+  if (!copies) throw current.unavailable ?? new RevoTrouble("copy/none-in-tab", "The dictionary keeps no local copy in this tab.");
   let published: DatabaseHeader;
   try {
     published = known ?? await fetchHeader(current.url);
@@ -204,9 +246,19 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
   let loaded = 0;
   let reported = 0;
   emit({ type: "revo:download", loaded, total });
-  const next = await databaseBytes(current.url, signal);
+  // A connection that stops sending without closing would otherwise leave the
+  // download waiting for good; the page is told, and may ask again.
+  const stall = new AbortController();
+  signal.addEventListener("abort", () => stall.abort(signal.reason), { once: true });
+  const unlessStalled = async <T>(promise: Promise<T>): Promise<T> => {
+    const result = await within(promise, STALL_MS);
+    if (result !== TIMED_OUT) return result;
+    stall.abort();
+    throw new RevoTrouble("download/stalled", `The dictionary download stopped: nothing arrived for ${STALL_MS / 1000} s.`, String(STALL_MS / 1000));
+  };
+  const next = await unlessStalled(databaseBytes(current.url, stall.signal));
   const copy = await copies.import(published.revision, async () => {
-    const chunk = await next();
+    const chunk = await unlessStalled(next());
     if (chunk) {
       loaded += chunk.byteLength;
       // A report per half percent is smooth enough and keeps the page's work small.
@@ -223,7 +275,7 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
   if (revision !== published.revision) {
     reader.close();
     copies.removeAllBut(current.local);
-    throw new RevoTrouble("download/revision-mismatch", `The downloaded dictionary (${current.url}.gz) is not the revision of ${current.url}; they are published together.`);
+    throw new RevoTrouble("download/revision-mismatch", `The downloaded dictionary (${current.url}.zst) is not the revision of ${current.url}; they are published together.`);
   }
   // Replaces and closes what queries read until now.
   configureDatabase(reader);
@@ -236,7 +288,7 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
 
 /** Deletes the local copy; queries read the published file again. */
 async function deleteCopy(current: Session): Promise<void> {
-  if (!current.copies) throw new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it.");
+  if (!current.copies) throw current.unavailable ?? new RevoTrouble("copy/another-tab", "The dictionary keeps no local copy in this tab; another tab holds it.");
   if (current.download) {
     current.download.abort.abort();
     await current.download.done.catch(() => undefined);

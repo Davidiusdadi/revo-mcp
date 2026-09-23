@@ -30,8 +30,8 @@ for (const [entrypoint, naming] of [
 
 await Promise.all([
   copyFile("test/browser/index.html", resolve(output, "index.html")),
-  copyFile("node_modules/sqlite-wasm-http/deps/dist/sqlite3.wasm", resolve(output, "sqlite3.wasm")),
+  copyFile("node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm", resolve(output, "sqlite3.wasm")),
   symlink(database, resolve(output, "voko.db")),
-  existsSync(`${database}.gz`) ? symlink(`${database}.gz`, resolve(output, "voko.db.gz")) : undefined,
+  ...[".zst", ".gz"].map((suffix) => existsSync(`${database}${suffix}`) ? symlink(`${database}${suffix}`, resolve(output, `voko.db${suffix}`)) : undefined),
 ]);
 console.log(output);

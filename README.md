@@ -121,27 +121,34 @@ That is three steps, which also run on their own:
 # The parser's tables, from the pinned DTDs
 pnpm corpus:entities
 
-# The database a browser reads: search, lookup, entries, languages, Esperanto glossing, word families and examples (~193 MB, ~93 MB gzipped)
-pnpm corpus:build --stage core --out ./dist/revo/voko.db
+# The database a browser reads, the full stage the server reads too (~343 MB, ~157 MB gzipped);
+# `--stage core` leaves out the server's enrichment (~193 MB)
+pnpm corpus:build --out ./dist/revo/voko.db
 
 # Bundle the Worker; sqlite3.wasm is copied beside it
 pnpm browser:build --out ./dist/revo/revo-worker.js
 ```
 
-The build writes `voko.db.gz` next to `voko.db`; publish both, together.
+The build writes `voko.db.zst` (zstd level 19) next to `voko.db`; publish
+both, together, ideally under a folder named for the revision so each URL means
+one file for good.
 
-The Worker answers at once and gets faster later:
+The Worker answers at once, and from a local copy once there is one:
 
 1. **Remote.** Without a local copy it opens `voko.db` over HTTP range
    requests (`sqlite-wasm-http`), reading only the pages a query touches,
    4 KB each, and keeping them in a 16 MB cache.
-2. **Download.** Meanwhile it downloads the file once, `voko.db.gz` through
-   `DecompressionStream` (the uncompressed file if there is no `.gz`), into an
-   SQLite pool in the origin private file system, reporting progress.
+2. **Download.** With `access: "auto"` it downloads the file by itself; with
+   `"on-request"` only when the page sends `revo:local` `download`. It fetches
+   `voko.db.zst`, unpacked as it streams with `fzstd` (then `.gz` through
+   `DecompressionStream`, then the uncompressed file), into an SQLite pool in
+   the origin private file system, reporting progress. A download that gets
+   no bytes for 30 s stops and says so.
 3. **Local.** When the copy is complete, queries switch to it, and later starts
-   open it without waiting for the network. The Worker compares the published
-   file's revision (`PRAGMA user_version`, set to the build time; one 100-byte
-   request) and downloads a newer one the same way.
+   open it without waiting for the network. A newer published revision (named
+   in the URL's `db/<revision>/` folder, or read from the file's first 100
+   bytes: `PRAGMA user_version`, the build time) is downloaded by itself in
+   `"auto"`, and announced with `revo:update` in `"on-request"`.
 
 One tab at a time can hold the local copy; in a second tab the Worker stays
 remote and says so. After a reload the previous page's Worker still holds it

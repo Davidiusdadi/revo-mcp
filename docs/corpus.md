@@ -8,8 +8,8 @@ parses it; `src/corpus/` builds and enriches the database.
 ```sh
 pnpm db:setup                   # both of the next two steps, for a fresh clone
 pnpm fonto                      # check out both submodules, generate the parser's tables
-pnpm corpus:build               # XML → data/voko.db, then all passes (~4 min, ~300 MB, + voko.db.gz)
-pnpm corpus:build --stage core  # what a browser downloads: articles + structure + search + morph + usage + examples (~184 MB, ~89 MB gzipped)
+pnpm corpus:build               # XML → data/voko.db, then all passes (~4 min, ~340 MB, + voko.db.zst)
+pnpm corpus:build --stage core  # without the enrichment: articles + structure + search + morph + usage + examples (~184 MB, ~89 MB gzipped)
 pnpm start                      # serve from data/voko.db; REVO_DB=… overrides the path
 pnpm corpus:validate            # parity report against data/revo.db → data/parity.md
 pnpm corpus:eval                # stemming recall on attested word forms
@@ -223,9 +223,9 @@ case but not diacritics ("songo" finds sonĝo only in a full file).
 
 Every build ends in `finish()`: `PRAGMA user_version` = the build time in Unix
 seconds, `ANALYZE`, `VACUUM` (so each table and index lies in contiguous
-pages), and `<out>.gz` beside the file. `user_version` sits at byte 60 of the
+pages), and `<out>.zst` beside the file (zstd level 19, about 2.5 min). `user_version` sits at byte 60 of the
 file header, so a browser compares its stored copy with the published file by
-reading the first 100 bytes; publish `voko.db` and `voko.db.gz` together, as
+reading the first 100 bytes; publish `voko.db` and `voko.db.zst` together, as
 the browser checks that the download is the revision it saw.
 
 ## Passes (L2)
@@ -280,12 +280,11 @@ and a reader skips that lookup for the 97 % that have none (3,483 have some).
 ("hund" in "ĉashundojn"); `fts_ekz_word` (`unicode61`, case folded, diacritics
 kept) finds a word as a word of its own ("si" and "sin", not "sinjoro").
 
-A browser reads the core file with the SQLite that sqlite-wasm-http bundles
-(3.44.2), whose trigram tokenizer refuses `remove_diacritics`; a table it
-cannot construct fails every query that reaches it, so `fts_ekz` is
-`trigram case_sensitive 0` and `test/browser-sqlite.test.ts` loads it in that
-build. The `fts` pass adds `fts_ekz_fold`, diacritics folded as well, for the
-server's `examples` tool. `fts_ekz` keeps no positions (`detail=none`): 13.6 MB
+`fts_ekz` is `trigram case_sensitive 0`; the `fts` pass adds `fts_ekz_fold`,
+diacritics folded as well, for the `examples` tool. A browser reads the file
+with the SQLite of `@sqlite.org/sqlite-wasm`, and a table that build cannot
+construct fails every query that reaches it: `remove_diacritics` needs 3.45 or
+later, which `test/browser-sqlite.test.ts` checks. `fts_ekz` keeps no positions (`detail=none`): 13.6 MB
 instead of 28.9 MB (11 MB less gzipped). Without positions FTS5 answers no
 phrase longer than a trigram, so a query asks for all of a text's trigrams
 (`trigramMatch()` in `db-voko.ts`) and the reader checks the text itself; the

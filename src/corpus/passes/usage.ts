@@ -1,7 +1,7 @@
 /**
  * Pass `usage`: how often each lemma of `corpus/freq/counts.tsv` is used, and
- * nothing else. It is the one frequency table the core file carries: a browser
- * glossing from that file needs the counts to tell a slip of the finger from a
+ * nothing else. It is the one frequency table the core file carries: a gloss
+ * from that file needs the counts to tell a slip of the finger from a
  * rare word (`finsita` is written by nobody, `finita` 11,786 times on the web),
  * but not the splits and verdicts the `freq` pass holds against ReVo, which
  * need the stored splits the core file leaves out.

@@ -23,6 +23,8 @@ export type RevoTroubleCode =
   | "download/failed"
   /** What was downloaded is not a database. */
   | "download/not-sqlite"
+  /** The download stopped sending; nothing arrived for half a minute. */
+  | "download/stalled"
   /** The published file did not answer; `detail` is the HTTP status. */
   | "file/unreadable"
   /** The published file is not a database. */

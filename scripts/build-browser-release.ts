@@ -2,7 +2,7 @@
  * Builds everything a browser app serves into one directory, from the checked-out
  * sources and this commit's code:
  *
- *   voko.db, voko.db.gz   the core stage
+ *   voko.db, voko.db.zst  the full stage, the database revo-mcp's server reads too
  *   revo-worker.js        the dictionary Worker
  *   sqlite3.wasm          the SQLite build it loads
  *
@@ -42,6 +42,6 @@ mkdirSync(out, { recursive: true });
 const t0 = Date.now();
 // The parser's tables, from the pinned DTDs; a container build has none yet.
 step("scripts/gen-entities.ts");
-step("src/corpus/build.ts", "--stage", "core", "--out", join(out, "voko.db"));
+step("src/corpus/build.ts", "--stage", "full", "--out", join(out, "voko.db"));
 step("scripts/build-browser-worker.ts", "--out", join(out, "revo-worker.js"));
-console.log(`\n${out}: voko.db, voko.db.gz, revo-worker.js, sqlite3.wasm in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+console.log(`\n${out}: voko.db, voko.db.zst, revo-worker.js, sqlite3.wasm in ${((Date.now() - t0) / 1000).toFixed(0)}s`);

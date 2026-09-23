@@ -14,11 +14,8 @@
  * query asks for a text's trigrams rather than the phrase (`trigramMatch`),
  * which finds a sentence without the text in a few cases in a thousand.
  *
- * It folds case but not diacritics. A browser opens the core file with
- * the SQLite that sqlite-wasm-http bundles (3.44.2), whose trigram tokenizer
- * refuses `remove_diacritics`, and a table it cannot construct fails every
- * query that reaches it. The full stage adds `fts_ekz_fold`, which folds them
- * too, for the server's example search (the `fts` pass).
+ * It folds case but not diacritics. The full stage adds `fts_ekz_fold`,
+ * which folds them too, for the example search (the `fts` pass).
  *
  * `fts_ekz_word` keeps no positions either (4.7 MB) and does not fold
  * diacritics, so "ĉu" is not "cu". A word too short for a trigram is found
@@ -32,7 +29,7 @@ import { idOf, lastIdOf } from "../../articles";
 import { contentOf, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 
-/** The index a browser reads: a tokenizer SQLite 3.44 can construct. */
+/** The core stage's example index: case folded, no positions. */
 export const EKZ_FTS_DDL = `
   CREATE VIRTUAL TABLE fts_ekz USING fts5(
     ekz_md, content='ekzemplo', content_rowid='rowid',

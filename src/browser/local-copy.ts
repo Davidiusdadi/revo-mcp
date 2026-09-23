@@ -65,8 +65,8 @@ export class LocalCopies {
       // Room for the copy in use and its replacement while that downloads.
       initialCapacity: 4,
     });
-    // SQLite 3.44 resolves with the error when the pool's files are held
-    // elsewhere, as by the Worker of another tab.
+    // Older SQLite builds resolve with the error, rather than reject, when the
+    // pool's files are held elsewhere, as by the Worker of another tab.
     if (pool instanceof Error) throw pool;
     return new LocalCopies(pool);
   }

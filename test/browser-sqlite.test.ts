@@ -1,13 +1,13 @@
 /**
- * The core database is read in a browser by the SQLite sqlite-wasm-http
- * bundles, older than node:sqlite: every virtual table in the file has to be
+ * The database is read in a browser by the SQLite of @sqlite.org/sqlite-wasm,
+ * which may differ from node:sqlite: every virtual table in the file has to be
  * one it can construct, or each query that touches it fails.
  */
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import sqlite3InitModule from "sqlite-wasm-http/sqlite3.js";
+import sqlite3InitModule from "@sqlite.org/sqlite-wasm";
 import { Database } from "../src/runtime/node-database";
 import { EKZ_FTS_DDL, EKZ_WORD_FTS_DDL } from "../src/corpus/passes/examples";
 import { trigramMatch } from "../src/db-voko";
@@ -34,8 +34,9 @@ function openInWasm(path: string) {
 }
 
 describe("the browser's SQLite", () => {
-  test("is the version the core stage is built for", () => {
-    expect(sqlite3.version.libVersion).toBe("3.44.2");
+  test("folds diacritics in trigrams, which the full stage's example index needs (3.45+)", () => {
+    const [major, minor] = sqlite3.version.libVersion.split(".").map(Number);
+    expect(major * 1000 + minor).toBeGreaterThanOrEqual(3045);
   });
 
   test("reads the example indexes the core stage writes", () => {
@@ -72,13 +73,18 @@ describe("the browser's SQLite", () => {
     }
   });
 
-  test("cannot construct the diacritic-folding index, which stays in the full stage", () => {
+  test("reads the diacritic-folding index the full stage writes", () => {
     const db = new sqlite3.oo1.DB();
     try {
       db.exec("CREATE TABLE ekzemplo (rowid INTEGER PRIMARY KEY, ekz_md TEXT)");
-      expect(() => db.exec(
+      db.exec("INSERT INTO ekzemplo VALUES (1, 'Ĉirkaŭ la domo'), (2, 'dolĉaj sonĝoj')");
+      db.exec(
         "CREATE VIRTUAL TABLE fts_ekz_fold USING fts5(ekz_md, content='ekzemplo', content_rowid='rowid', " +
-        "tokenize='trigram case_sensitive 0 remove_diacritics 1')")).toThrow();
+        "tokenize='trigram case_sensitive 0 remove_diacritics 1')");
+      db.exec("INSERT INTO fts_ekz_fold(fts_ekz_fold) VALUES('rebuild')");
+      const hits = (query: string) => db.selectValues("SELECT rowid FROM fts_ekz_fold WHERE fts_ekz_fold MATCH ?", [query]);
+      expect(hits('"cirkau"')).toEqual([1]);
+      expect(hits('"songo"')).toEqual([2]);
     } finally {
       db.close();
     }

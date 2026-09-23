@@ -33,6 +33,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "~1.27.1",
     "@sqlite.org/sqlite-wasm": "^3.53.4-build1",
+    "fzstd": "0.1.1",
     "lru-cache": "^11.5.2",
     "sqlite-wasm-http": "1.2.0",
     "tsx": "^4.23.13",

@@ -22,5 +22,5 @@ await build({
   sourcemap: args.includes("--sourcemap") ? "external" : false,
   logLevel: "warning",
 });
-await copyFile("node_modules/sqlite-wasm-http/deps/dist/sqlite3.wasm", resolve(dirname(output), "sqlite3.wasm"));
+await copyFile("node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm", resolve(dirname(output), "sqlite3.wasm"));
 console.log(output);

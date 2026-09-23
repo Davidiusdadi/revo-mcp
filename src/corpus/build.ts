@@ -3,7 +3,7 @@
  * src/corpus/documents.ts), then the passes of the requested stage.
  *
  *   pnpm corpus:build                    full rebuild: core + enrichment passes
- *   pnpm corpus:build --stage core       articles + structure + search + morph + examples, what a browser downloads
+ *   pnpm corpus:build --stage core       articles + structure + search + morph + examples, without the enrichment
  *   pnpm corpus:build --pass fts         run one pass on the existing DB
  *   pnpm corpus:build --limit 200        dev: first N articles only
  *   pnpm corpus:build --overlay DIR      merge that directory instead of corpus/overlay
@@ -15,7 +15,7 @@
  * (FTS, the tilde occurrences, the reference graph) and the indexes they need. Both hold every article whole,
  * so a core file is raised to full later with `--pass` on each enrichment pass,
  * without the sources. Every build ends with VACUUM, so tables lie in
- * contiguous pages, and writes `<out>.gz` next to the file.
+ * contiguous pages, and writes `<out>.zst` next to the file.
  *
  * The import fails on an element or attribute the DTD does not declare, and
  * on an article that does not read back from the tables as its file parsed,
@@ -23,8 +23,8 @@
  */
 import { Database } from "../runtime/node-database";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { gzipSync } from "node:zlib";
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants as zlib, zstdCompressSync } from "node:zlib";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { plainText, childElements, substituteEntities, parse, type Roots } from "voko-xml";
@@ -182,8 +182,9 @@ export function buildArticles(out: string, limit?: number, extra: string[] = [],
 /**
  * Makes a built database ready to ship: statistics for the planner, then
  * VACUUM, which rewrites every table and index into contiguous pages (so a
- * range scan over HTTP reads neighbouring pages), then the gzip copy a browser
- * downloads once.
+ * range scan over HTTP reads neighbouring pages), then the zstd copy a browser
+ * downloads once. Level 19 takes a few minutes and makes the copy 40 % of the
+ * file (gzip -9: 46 %); its 8 MB window is one a phone decodes easily.
  *
  * The file's revision is its `user_version`, the time it was finished in Unix
  * seconds. It sits in the 100-byte file header, so a browser compares its local
@@ -194,7 +195,9 @@ export function finish(db: Database, out: string): void {
   db.exec("ANALYZE");
   db.exec("VACUUM");
   db.close();
-  writeFileSync(`${out}.gz`, gzipSync(readFileSync(out), { level: 9 }));
+  writeFileSync(`${out}.zst`, zstdCompressSync(readFileSync(out), { params: { [zlib.ZSTD_c_compressionLevel]: 19 } }));
+  // the copy earlier builds wrote, which would no longer be this file
+  rmSync(`${out}.gz`, { force: true });
 }
 
 function main() {
@@ -229,7 +232,7 @@ function main() {
   }
   finish(db, out);
   const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
-  console.log(`${out}: ${mb(statSync(out).size)} MB, ${out}.gz: ${mb(statSync(`${out}.gz`).size)} MB`);
+  console.log(`${out}: ${mb(statSync(out).size)} MB, ${out}.zst: ${mb(statSync(`${out}.zst`).size)} MB`);
 }
 
 // Run as a script, not imported (tsx leaves import.meta.main unset).

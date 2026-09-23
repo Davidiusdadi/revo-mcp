@@ -2,6 +2,7 @@
  * The published database file, read without SQLite: its header, to compare
  * revisions, and its bytes, to store a local copy.
  */
+import { Decompress } from "fzstd";
 import { RevoTrouble } from "./trouble";
 
 export interface DatabaseHeader {
@@ -42,18 +43,29 @@ export async function fetchHeader(url: string): Promise<DatabaseHeader> {
 }
 
 /**
+ * The revision a database URL names, when it names one: revo-mcp's builds are
+ * published in a folder per revision (`…/db/<revision>/voko.db`), so a page
+ * knows what the published file is without asking the network.
+ */
+export function revisionInUrl(url: string): number | undefined {
+  const match = /\/db\/(-?\d+)\/voko\.db$/.exec(new URL(url).pathname);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
  * The database file's bytes, a chunk per call and `undefined` at the end:
- * from its gzip copy (url + ".gz") when that is published, else from the file
- * itself. Static hosts rarely compress a binary file on the fly, so the copy
- * saves most of the download. What arrives is told by its first bytes: a host
- * may decode the copy itself (Content-Encoding) or answer a missing file with
- * its HTML fallback page.
+ * from its zstd copy (url + ".zst") when that is published, else its gzip
+ * copy (".gz", which earlier builds wrote), else the file itself. Static hosts
+ * rarely compress a binary file on the fly, so the copy saves most of the
+ * download. What arrives is told by its first bytes: a host may decode the
+ * copy itself (Content-Encoding) or answer a missing file with its HTML
+ * fallback page.
  */
 export async function databaseBytes(
   url: string,
   signal: AbortSignal,
 ): Promise<() => Promise<Uint8Array | undefined>> {
-  const bytes = await openBytes(`${url}.gz`, signal) ?? await openBytes(url, signal);
+  const bytes = await openBytes(`${url}.zst`, signal) ?? await openBytes(`${url}.gz`, signal) ?? await openBytes(url, signal);
   if (!bytes) throw new RevoTrouble("download/not-sqlite", "The dictionary download is not an SQLite database.");
   return async () => {
     const next = await bytes.read();
@@ -69,7 +81,8 @@ async function openBytes(url: string, signal: AbortSignal): Promise<ReadableStre
   const first = await body.read();
   const start = first.done ? new Uint8Array() : first.value;
   const gzipped = start[0] === 0x1f && start[1] === 0x8b;
-  if (!gzipped && String.fromCharCode(...start.subarray(0, 16)) !== MAGIC) {
+  const zstd = start[0] === 0x28 && start[1] === 0xb5 && start[2] === 0x2f && start[3] === 0xfd;
+  if (!gzipped && !zstd && String.fromCharCode(...start.subarray(0, 16)) !== MAGIC) {
     await body.cancel();
     return undefined;
   }
@@ -84,6 +97,26 @@ async function openBytes(url: string, signal: AbortSignal): Promise<ReadableStre
     },
     cancel: (reason) => body.cancel(reason),
   });
-  if (!gzipped) return stream.getReader();
-  return stream.pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>).getReader();
+  if (zstd) return stream.pipeThrough(zstdDecoder()).getReader();
+  if (gzipped) return stream.pipeThrough(new DecompressionStream("gzip") as unknown as ReadableWritablePair<Uint8Array, Uint8Array>).getReader();
+  return stream.getReader();
+}
+
+/** Browsers decode no zstd of their own yet, so fzstd does, block by block as the bytes arrive. */
+function zstdDecoder(): TransformStream<Uint8Array, Uint8Array> {
+  let decoder: Decompress;
+  return new TransformStream({
+    start(controller) {
+      // Each block arrives in an array of its own, so it can be passed on as it is.
+      decoder = new Decompress((block) => {
+        if (block.byteLength) controller.enqueue(block);
+      });
+    },
+    transform(chunk) {
+      decoder.push(chunk);
+    },
+    flush() {
+      decoder.push(new Uint8Array(0), true);
+    },
+  });
 }

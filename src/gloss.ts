@@ -24,8 +24,8 @@
  * article pinned, the way the corpus build does it — and a word filed under
  * two articles keeps both readings. A build with the `splits` pass has those
  * splits stored, pinned by ReVo's own root marks, together with the forms
- * written in the examples; the core file a browser downloads has not, and
- * splits a word when it is asked about.
+ * written in the examples; a core file has not, and splits a word when it
+ * is asked about.
  */
 
 import type { SqlReader } from "./sql";

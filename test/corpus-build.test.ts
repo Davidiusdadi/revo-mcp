@@ -623,7 +623,7 @@ describe("enrichment reads", () => {
   });
 });
 
-// A browser downloads the core stage and glosses from it: the morpheme
+// A core file glosses without the enrichment: the morpheme
 // inventory is there, the stored splits and the tilde occurrences they were
 // built from are not — a word is split when it is asked about.
 describe("core stage", () => {
