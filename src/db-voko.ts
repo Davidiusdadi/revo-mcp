@@ -25,6 +25,8 @@ export const SCHEMA_VERSION = 3;
 
 export interface LookupResult {
   headword: string;
+  /** The same word spelled otherwise, as the entry's own kap writes it (anarĥio: anarkio); absent when none. */
+  variants?: string[];
   article: string;
   mrk: string;
   senses: SenseEntry[];
@@ -354,8 +356,10 @@ export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOpti
       return targetKap === undefined ? { target, type } : { target, type, targetKap };
     });
   }
+  const variants = variantsOf(db, node);
   return {
     headword: node.headword,
+    ...(variants.length ? { variants } : {}),
     article: node.article,
     mrk: node.mrk,
     senses: full ? sensesIn(content!.senses, options.languages) : [],
@@ -363,6 +367,25 @@ export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOpti
     crossRefs,
     usageDomains: options.domains ?? content!.usageDomains,
   };
+}
+
+/** The entry's variant headwords, in the order its kap writes them. */
+function variantsOf(db: SqlReader, node: EntryNode): string[] {
+  return spellingsOf(db, node).filter((txt) => txt !== node.headword);
+}
+
+/**
+ * Every spelling of an entry's headword, its own first, then its variants as
+ * its kap writes them (anarĥio, anarkio). A kap's id lies inside its node's
+ * id..last_id, so the primary key finds them without an index on node_id.
+ */
+export function spellingsOf(db: SqlReader, node: { id: number; last_id: number }): string[] {
+  const rows = db
+    .query<{ txt: string }, [number, number, number]>(
+      "SELECT txt FROM headword WHERE id BETWEEN ? AND ? AND node_id = ? ORDER BY main_id IS NOT NULL, id")
+    .all(node.id, node.last_id, node.id)
+    .map((r) => r.txt);
+  return rows.filter((txt, i) => rows.indexOf(txt) === i);
 }
 
 /** The senses with their definitions in other languages kept to those asked for; all when none are named. */

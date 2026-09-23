@@ -36,7 +36,7 @@ import {
   type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
-import { hasPass, translationsOf, type Translation } from "./db-voko";
+import { hasPass, spellingsOf, translationsOf, type Translation } from "./db-voko";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -105,6 +105,8 @@ export interface EoTerm {
   mrk?: string;
   /** The entry's translations in the languages asked for, as `entry` lists them. */
   translations?: Translation[];
+  /** When the entry spells its word more than one way, every spelling, its own first (anarĥio, anarkio). */
+  spellings?: string[];
   /** How the dictionary form was reached: infl · class · ptcp. */
   how?: string;
   /** attested: occurrences in the example corpus. */
@@ -984,6 +986,8 @@ export function classify(db: SqlReader, word: string, inv: Inventory, languages?
     if (!node?.mrk) return term;
     term.mrk = node.mrk;
     if (languages) term.translations = translationsOf(db, node, languages);
+    const spellings = spellingsOf(db, node);
+    if (spellings.length > 1) term.spellings = spellings;
     return term;
   };
   const guessed = () => {

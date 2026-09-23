@@ -143,6 +143,13 @@ describe("gloss: Esperanto audit", () => {
     expect(classify(getDb(), "buch", inventoryOf(getDb())).near ?? []).toEqual([]);
   });
 
+  test("a word spelled two ways names both spellings, whichever was written", () => {
+    const g = eo("La anarkio kaj la anarĥio, sed la hundo.");
+    expect(word(g, "anarkio")!.spellings).toEqual(["anarĥio", "anarkio"]);
+    expect(word(g, "anarĥio")!.spellings).toEqual(["anarĥio", "anarkio"]);
+    expect(word(g, "hundo")!.spellings).toBeUndefined();
+  });
+
   test("an invented compound gets no invented neighbour", () => {
     const t = word(eo("Li estas makilaĵfaranto."), "makilaĵfaranto")!;
     expect(t.verdict).toBe("unknown");

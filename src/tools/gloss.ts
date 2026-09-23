@@ -78,6 +78,7 @@ const eoTermSchema = z.object({
   art: z.string().optional(),
   mrk: z.string().optional().describe("The dictionary form's entry, what `entry` loads."),
   translations: z.array(translationSchema).optional(),
+  spellings: z.array(z.string()).optional().describe("Every spelling of the entry's word when it has more than one, its own first."),
   how: z.string().optional(),
   attested: z.number().int().optional(),
   seg: z.string().optional().describe("The reading, morphemes separated by |."),

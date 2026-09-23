@@ -32,6 +32,15 @@ describe("lookupEsperanto", () => {
     expect(results[0].headword).toContain("ĉirkaŭ");
   });
 
+  test("names the other spellings of a headword, and none where there are none", () => {
+    expect(lookupEsperanto("anarĥio", 1)[0].variants).toEqual(["anarkio"]);
+    // found by its variant, the entry is still the one headword with its spellings
+    const [byVariant] = lookupEsperanto("anarkio", 1);
+    expect(byVariant.headword).toBe("anarĥio");
+    expect(byVariant.variants).toEqual(["anarkio"]);
+    expect(lookupEsperanto("hundo", 1)[0].variants).toBeUndefined();
+  });
+
   test("returns translations for results", () => {
     const results = lookupEsperanto("amiko", 1);
     expect(results[0].translations.length).toBeGreaterThan(0);
