@@ -55,16 +55,26 @@ export function schemaVersionOf(db: SqlReader): number {
   return Number(row?.value ?? 1);
 }
 
-const passesByDb = new WeakMap<SqlReader, Set<string>>();
+const passesByDb = new WeakMap<SqlReader, Map<string, number>>();
+
+function passesOf(db: SqlReader): Map<string, number> {
+  let passes = passesByDb.get(db);
+  if (!passes) {
+    passes = new Map(db.query<{ pass: string; version: number }, []>("SELECT pass, version FROM meta_pass").all()
+      .map((r) => [r.pass, r.version]));
+    passesByDb.set(db, passes);
+  }
+  return passes;
+}
 
 /** Whether the database was built with a pass (meta_pass); a core database has only `structure` and `search`. */
 export function hasPass(db: SqlReader, name: string): boolean {
-  let passes = passesByDb.get(db);
-  if (!passes) {
-    passes = new Set(db.query<{ pass: string }, []>("SELECT pass FROM meta_pass").all().map((r) => r.pass));
-    passesByDb.set(db, passes);
-  }
-  return passes.has(name);
+  return passesOf(db).has(name);
+}
+
+/** The version of a pass the database was built with; 0 without it. */
+export function passVersion(db: SqlReader, name: string): number {
+  return passesOf(db).get(name) ?? 0;
 }
 
 const tablesByDb = new WeakMap<SqlReader, Set<string>>();
@@ -226,21 +236,13 @@ export interface Translation {
   sense?: number;
 }
 
-const structureByDb = new WeakMap<SqlReader, number>();
-
 /**
  * The structure pass the database was built with: from 3 `translation` keeps
  * the notes and readings, from 4 where each was found. A copy of the database
  * stored in a browser before that is still read.
  */
 function structureVersion(db: SqlReader): number {
-  let version = structureByDb.get(db);
-  if (version === undefined) {
-    const row = db.query<{ version: number }, []>("SELECT version FROM meta_pass WHERE pass = 'structure'").get();
-    version = row?.version ?? 0;
-    structureByDb.set(db, version);
-  }
-  return version;
+  return passVersion(db, "structure");
 }
 
 /**
@@ -255,7 +257,7 @@ export function translationsOf(
   senses?: ReadonlyMap<number, number>,
 ): Translation[] {
   if (languages?.length === 0) return [];
-  // `+lng`: the entry's range is the narrow index; a full build's
+  // `+lng`: the entry's range is the narrow index; an older full build's
   // idx_translation_lng_key would otherwise scan a whole language.
   const only = languages ? ` AND +lng IN (${languages.map(() => "?").join(",")})` : "";
   const version = structureVersion(db);

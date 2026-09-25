@@ -186,8 +186,10 @@ meta (key, value) · meta_pass (pass, version, input_hash, rows, ms, at)
 Upstream's shapes (`nodo`, `var`, `traduko`, `referenco`, `uzo`) are computed
 by `scripts/compare-db.ts` from these tables and the articles; the runtime
 reads the tables and `serĉo`. `ekzemplo`, `fts_ekz` (trigram over it) and
-`fts_ekz_word` (its words) come from the `examples` pass; `fts_kap`, `fts_trd` (+ `ind`, `baz`, `pr`),
-`fts_ekz_fold` (trigram over `ekzemplo`, diacritics folded) and `fts_dif`
+`fts_ekz_word` (its words) come from the `examples` pass; `fts_kap`, `fts_trd`
+(the translations outside examples, + `ind`, `baz`, `pr` and the language, so a
+lookup matches within one language; it keeps no copy of the text, since lookup
+reads only the id), `fts_ekz_fold` (trigram over `ekzemplo`, diacritics folded) and `fts_dif`
 (definitions, for reverse lookup) from the `fts` pass.
 
 ## Stages and revisions
@@ -244,7 +246,7 @@ the counts file. Rows:
 | `structure` | `node`, `headword`, `translation` | 887,186 |
 | `search` | `serĉo`, `serĉo_lng` | 758,070 |
 | `examples` | `ekzemplo`, `fts_ekz`, `fts_ekz_word` | 114,441 |
-| `index` | the indexes the enrichment tools read through | 5 |
+| `index` | the indexes the enrichment tools read through | 4 |
 | `fts` | `fts_kap`, `fts_trd`, `fts_dif`, `fts_ekz_fold` | 840,585 |
 | `tld-links` | `x_tld_occ` | 176,088 |
 | `refs` | `x_ref_tip`, `x_ref_edge`, `x_ref_issue` | 113,867 |

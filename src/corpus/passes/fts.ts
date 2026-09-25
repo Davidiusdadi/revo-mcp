@@ -16,7 +16,7 @@ import { articleTrees } from "../documents";
 
 export const ftsPass: Pass = {
   name: "fts",
-  version: 3,
+  version: 4,
   tables: ["fts_kap", "fts_trd", "fts_dif", "fts_ekz_fold"],
   run(db, log) {
     if (!db.query("SELECT 1 FROM sqlite_master WHERE name = 'ekzemplo'").get()) {
@@ -28,11 +28,19 @@ export const ftsPass: Pass = {
     log("fts_kap: headwords incl. variants");
 
     // Translation + its index word, base form and transcription, so pinyin /
-    // hiragana / Indonesian base forms are searchable too.
-    db.run(`CREATE VIRTUAL TABLE fts_trd USING fts5(trd, ind, baz, pr, tokenize='unicode61 remove_diacritics 2')`);
+    // hiragana / Indonesian base forms are searchable too, and its language,
+    // so a lookup matches within one language instead of filtering every
+    // language's hits afterwards. Lookup reads only the rowid, the
+    // translation's id: the index keeps no copy of the text (content='') and
+    // no lengths for ranking (columnsize=0). Example translations are left
+    // out, as lookup never wants them.
+    db.run(`CREATE VIRTUAL TABLE fts_trd USING fts5(trd, ind, baz, pr, lng, content='', columnsize=0,
+      tokenize='unicode61 remove_diacritics 2')`);
+    const lngOf = new Map(db.query<{ id: number; lng: string }, []>(
+      "SELECT id, lng FROM translation WHERE in_ekz = 0").all().map((r) => [r.id, r.lng]));
     // node_id: what the matched definition defines
     db.run(`CREATE VIRTUAL TABLE fts_dif USING fts5(dif, node_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`);
-    const insTrd = db.prepare("INSERT INTO fts_trd(rowid, trd, ind, baz, pr) VALUES (?,?,?,?,?)");
+    const insTrd = db.prepare("INSERT INTO fts_trd(rowid, trd, ind, baz, pr, lng) VALUES (?,?,?,?,?,?)");
     const insDif = db.prepare("INSERT INTO fts_dif(rowid, dif, node_id) VALUES (?,?,?)");
 
     let nTrd = 0, nDif = 0;
@@ -42,8 +50,10 @@ export const ftsPass: Pass = {
         for (const c of contentOf(n.el)) {
           const id = idOf(c.el)!;
           if (c.el.name === "trd") {
+            const lng = lngOf.get(id);
+            if (lng === undefined) continue;
             insTrd.run(id, textIn(c.el, roots, OMIT.trd), childText(c.el, "ind", roots),
-              childText(c.el, "baz", roots), childText(c.el, "pr", roots));
+              childText(c.el, "baz", roots), childText(c.el, "pr", roots), lng);
             nTrd++;
           } else if (c.el.name === "dif" && inEsperanto(c.el)) {
             insDif.run(id, textIn(c.el, roots, OMIT.dif), nodeId);
@@ -52,7 +62,7 @@ export const ftsPass: Pass = {
         }
       }
     }
-    log("fts_trd: txt + ind + baz + pr");
+    log("fts_trd: txt + ind + baz + pr, by language, outside examples");
     log("fts_dif: definitions (reverse dictionary)");
 
     db.run(`

@@ -20,6 +20,7 @@ import {
   isVokoDb,
   schemaVersionOf,
   hasPass as hasPassIn,
+  passVersion,
   hasTable,
   requirePasses,
   trigramMatch,
@@ -250,14 +251,20 @@ export function lookupTranslation(
   let matchKind: LookupResult["matchKind"] = hits.length > 0 ? "exact" : undefined;
 
   if (hits.length === 0 && hasPassIn(db, "fts")) {
-    // 2. FTS match, mapped back to the entries' rows
+    // 2. FTS match, mapped back to the entries' rows. From version 4 the
+    //    index knows each translation's language, so only that language's
+    //    hits are read; an older copy stored in a browser filters afterwards.
     try {
+      const quoted = (s: string) => `"${s.replaceAll('"', '""')}"`;
+      const byLanguage = passVersion(db, "fts") >= 4;
       const ftsRows = db
-        .query<{ node_id: number; lng: string; txt: string; ind: string | null }, [string, string]>(
+        .query<{ node_id: number; lng: string; txt: string; ind: string | null }, string[]>(
           `SELECT t.node_id, t.lng, t.txt, t.ind FROM fts_trd f JOIN translation t ON t.id = f.rowid
-            WHERE fts_trd MATCH '"' || ? || '"' AND t.lng = ? AND t.in_ekz = 0 LIMIT 100`
+            WHERE fts_trd MATCH ?${byLanguage ? "" : " AND t.lng = ? AND t.in_ekz = 0"} LIMIT 100`
         )
-        .all(normalized, lang);
+        .all(...(byLanguage
+          ? [`{trd ind baz pr}: ${quoted(normalized)} AND lng: ${quoted(lang)}`]
+          : [quoted(normalized), lang]));
       const found = ftsRows.flatMap((t) => {
         const nid = entryIdAt(db, t.node_id);
         const row: SearchRow = { norm: normalizeQuery(t.ind ?? t.txt), ord: 0, nid: nid ?? 0, txt: t.txt, ind: t.ind === null ? null : 1, fak: null };

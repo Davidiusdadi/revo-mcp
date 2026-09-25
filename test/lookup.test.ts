@@ -89,6 +89,15 @@ describe("lookupTranslation", () => {
     expect(hundo).toBeDefined();
   });
 
+  test("finds a word inside a translation, in the language asked for only", () => {
+    // "kugelrund" is no translation of its own; it is a word of bareliĝi's
+    const results = lookupTranslation("kugelrund", "de", 5);
+    expect(results[0]?.matchKind).toBe("fts");
+    expect(results.map((r) => r.headword)).toContain("bareliĝi");
+    for (const r of results) expect(r.matchedVia).toMatch(/^translation:de:/);
+    expect(lookupTranslation("kugelrund", "fr", 5)).toEqual([]);
+  });
+
   test("returns empty for non-existent translation", () => {
     const results = lookupTranslation("xyzzy", "en", 5);
     expect(results.length).toBe(0);

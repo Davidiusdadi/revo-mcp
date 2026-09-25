@@ -230,6 +230,19 @@ describe("entries read from the stored articles", () => {
     expect(r.mrk).toBeTruthy();
   });
 
+  test("fts_trd knows each translation's language and leaves out examples'", () => {
+    const hits = (word: string, lng: string) => db.query<{ id: number; lng: string; in_ekz: number }, []>(
+      `SELECT t.id, t.lng, t.in_ekz FROM fts_trd f JOIN translation t ON t.id = f.rowid
+        WHERE fts_trd MATCH '{trd ind baz pr}: "${word}" AND lng: "${lng}"'`).all();
+    expect(hits("hund", "de").length).toBeGreaterThan(0);
+    for (const h of hits("hund", "de")) expect(h).toMatchObject({ lng: "de", in_ekz: 0 });
+    // an example's translation is not found by its own words
+    const ekz = one<{ id: number; lng: string; txt: string }>(
+      "SELECT id, lng, txt FROM translation WHERE in_ekz = 1 AND lng = 'de' ORDER BY id LIMIT 1");
+    const word = ekz.txt.match(/\p{L}{3,}/u)![0].toLowerCase();
+    expect(hits(word, "de").map((h) => h.id)).not.toContain(ekz.id);
+  });
+
   test("sensesOf: numbered senses with their own examples", () => {
     const multi = one<{ mrk: string; n: number; id: number; last_id: number }>(
       `SELECT d.mrk, COUNT(*) n, d.id, d.last_id FROM node d JOIN node s ON s.parent_id = d.id

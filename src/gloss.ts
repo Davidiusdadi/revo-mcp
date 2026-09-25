@@ -343,20 +343,24 @@ interface TrdRow {
   txt: string;
 }
 
-/** Translations whose index form is one of `forms`, exact on the indexed expression. */
+/**
+ * Translations whose index form is one of `forms`: `serĉo`'s rows, keyed by
+ * the form folded as a query is, one per entry. `txt` is the translation as
+ * written, a filed one's whole expression.
+ */
 function trdByForm(db: SqlReader, lang: string, forms: string[]): TrdRow[] {
-  if (forms.length === 0) return [];
-  const qs = forms.map(() => "?").join(",");
+  const norms = [...new Set(forms.map(normalizeQuery).filter(Boolean))];
+  if (norms.length === 0) return [];
   return db
-    .query<TrdRow, []>(
-      `SELECT k.txt AS eo, a.file AS art, t.txt AS txt
-         FROM translation t
-         JOIN node n ON n.id = t.node_id
+    .query<TrdRow, string[]>(
+      `SELECT k.txt AS eo, a.file AS art, COALESCE(s.txt, s.norm) AS txt
+         FROM serĉo s
+         JOIN node n ON n.id = s.nid
          JOIN article a ON a.id = n.article_id
          JOIN headword k ON k.id = n.kap_id
-        WHERE t.lng = ? AND COALESCE(t.ind, t.txt) COLLATE NOCASE IN (${qs})
-        ORDER BY t.node_id, t.id`)
-    .all(...([lang, ...forms] as unknown as []));
+        WHERE s.lng = ? AND s.norm IN (${norms.map(() => "?").join(",")})
+        ORDER BY s.nid, s.ord`)
+    .all(lang, ...norms);
 }
 
 /**
