@@ -199,6 +199,10 @@ Measured in Chromium against the core build of `d18ad4f` (13,079 articles,
 
 A search reads `serĉo` and `translation`; an entry rebuilds its derivation
 from the tables of the elements in it, a few pages each, and so reads more.
+That includes the parts of its examples' citations (`bib`, `aut`, `vrk`,
+`lok`, `url`), since an entry says where each example is quoted from: 10 to
+16 requests more per entry, measured in Kunirado on hund.0o, afer.0o, dom.0o,
+lingv.0o and pli.0.
 The count of requests, not their size, is what a slow connection feels: they
 are made one after another, so at a 100 ms round trip a `mal` page takes about
 5 s and `Haus` about 1.5 s. Once the copy is stored a search makes no request

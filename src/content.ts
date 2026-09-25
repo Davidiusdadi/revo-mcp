@@ -16,7 +16,7 @@
  */
 
 import {
-  NODE_KIND_SET, childElements, firstChild, nodes, plainText,
+  NODE_KIND_SET, childElements, descendants, firstChild, nodes, plainText,
   type Element, type Node, type Roots,
 } from "voko-xml/view";
 
@@ -170,6 +170,52 @@ export function translationParts(trd: Element, roots: Roots): TranslationPart[] 
   return parts;
 }
 
+/**
+ * An example as an entry shows it, or null when it has no text. The ";" that
+ * separates the sentence from its citation goes with the citation.
+ */
+export function exampleIn(ekz: Element, roots: Roots): Example | null {
+  const text = textIn(ekz, roots, OMIT.ekz).replace(/\s*;$/, "");
+  if (!text) return null;
+  const example: Example = { text };
+  const fnt = firstChild(ekz, "fnt");
+  const source = fnt && sourceIn(fnt, roots);
+  if (source) example.source = source;
+  const translations = translationsIn(ekz, roots, null);
+  if (translations.length > 0) example.translations = translations;
+  return example;
+}
+
+const SOURCE_PARTS = ["bib", "aut", "vrk", "lok"] as const;
+
+function sourceIn(fnt: Element, roots: Roots): ExampleSource | null {
+  const source: ExampleSource = {};
+  for (const name of SOURCE_PARTS) {
+    const part = childText(fnt, name, roots);
+    if (part) source[name] = part;
+  }
+  const url = [...descendants(fnt, "url")].find((u) => u.attrs.ref)?.attrs.ref;
+  if (url) source.url = url;
+  if (Object.keys(source).length === 0) {
+    const txt = textIn(fnt, roots);
+    if (txt) source.txt = txt;
+  }
+  return Object.keys(source).length > 0 ? source : null;
+}
+
+/** The <trd>s directly in an element or its <trdgrp>s; one in a translation's <klr> glosses that translation, not the example. */
+function translationsIn(el: Element, roots: Roots, grpLng: string | null): ExampleTranslation[] {
+  return childElements(el).flatMap((c): ExampleTranslation[] => {
+    if (c.name === "trdgrp") return translationsIn(c, roots, c.attrs.lng ?? null);
+    if (c.name !== "trd") return [];
+    const translation: ExampleTranslation = { lng: c.attrs.lng ?? grpLng ?? "", trd: textIn(c, roots, OMIT.trd) };
+    const parts = translationParts(c, roots);
+    if (parts) translation.parts = parts;
+    if (c.attrs.fnt) translation.fnt = c.attrs.fnt;
+    return [translation];
+  });
+}
+
 /** The text of an element's `name` children, joined; null when it has none. */
 export function childText(el: Element, name: string, roots: Roots): string | null {
   const parts = childElements(el, name).map((c) => textIn(c, roots));
@@ -219,8 +265,50 @@ export interface SenseEntry {
   definition: string;
   /** the definition in other languages, when the article gives it */
   definitions?: ForeignDefinition[];
-  examples: string[];
+  examples: Example[];
   domain?: string;
+}
+
+/**
+ * Where an example is quoted from, as its <fnt> says: a work of ReVo's
+ * bibliography by its code (<bib>), an author, a work, a place in it, a link.
+ * A citation written as plain text, without parts, is its `txt`.
+ */
+export interface ExampleSource {
+  bib?: string;
+  aut?: string;
+  vrk?: string;
+  lok?: string;
+  url?: string;
+  txt?: string;
+  /** the work `bib` names, as the bibliography describes it; an entry adds it, since the tree has only the code */
+  bibliogr?: Bibliography;
+}
+
+/** A work of ReVo's bibliography: title, author, the year of its first listed edition, a link. */
+export interface Bibliography {
+  tit?: string;
+  aut?: string;
+  dat?: string;
+  url?: string;
+}
+
+/** A translation of an example sentence, from a <trd> inside its <ekz>. */
+export interface ExampleTranslation {
+  lng: string;
+  /** without its notes */
+  trd: string;
+  /** with its notes in place, when it has any */
+  parts?: TranslationPart[];
+  /** <trd fnt>: where it was found, if it says */
+  fnt?: string;
+}
+
+/** An example sentence of a sense, with where it is quoted from and its translations when it has them. */
+export interface Example {
+  text: string;
+  source?: ExampleSource;
+  translations?: ExampleTranslation[];
 }
 
 export interface EntryContent {
@@ -253,7 +341,10 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
     const sense: SenseEntry = {
       mrk,
       definition,
-      examples: of("ekz").map((c) => textIn(c.el, roots, OMIT.ekz)).filter((t) => t.length > 0),
+      examples: of("ekz").flatMap((c) => {
+        const example = exampleIn(c.el, roots);
+        return example ? [example] : [];
+      }),
     };
     const foreign = difs.filter((c) => !inEsperanto(c.el)).map((c): ForeignDefinition => {
       const d: ForeignDefinition = { lng: c.el.attrs.lng!, txt: textIn(c.el, roots, OMIT.dif) };

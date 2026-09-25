@@ -15,8 +15,8 @@ import type { SqlReader } from "./sql";
 import type { Element, Roots } from "voko-xml/view";
 import { generateStems, normalizeQuery } from "./stemmer";
 import { lemmaCandidates } from "./morph";
-import { idOf, inMask, maskOf, readRange, storedTablesOf } from "./articles";
-import { entryContent, rootsFrom, usesVariantRoots, type EntryContent, type SenseEntry, type TranslationPart } from "./content";
+import { idOf, readRange } from "./articles";
+import { entryContent, rootsFrom, usesVariantRoots, type Bibliography, type EntryContent, type SenseEntry, type TranslationPart } from "./content";
 
 export type { SenseEntry } from "./content";
 
@@ -293,24 +293,9 @@ function rootsAt(db: SqlReader, node: EntryNode, drv: Element): Roots {
   return rootsFrom(node.rad, variants);
 }
 
-/**
- * The parts of a citation. The DTD puts them only in <fnt>, <rim> and <adm>,
- * and <url> also beside a node's content: nowhere an entry reads text, so an
- * entry leaves their tables out, a fifth of its table reads (3.4 of 18 on
- * average), each a few pages of a file read over HTTP. <fnt> itself stays: its
- * row holds the whitespace before it, which the text around it keeps. Should
- * entries read <rim> or <adm> text, <aut> goes from here.
- */
-const UNREAD_IN_ENTRIES: ReadonlySet<string> = new Set(["bib", "vrk", "lok", "aut", "url"]);
-
-/** A node's table mask without the tables an entry does not read. */
-function entryMask(db: SqlReader, mask: Uint8Array): Uint8Array {
-  return maskOf(storedTablesOf(db).flatMap((table, i) => inMask(mask, i) && !UNREAD_IN_ENTRIES.has(table.name) ? [i] : []));
-}
-
 /** What an entry's derivation says: its senses, references and usage domains. */
 function contentOf(db: SqlReader, node: EntryNode): EntryContent {
-  const [drv] = readRange(db, node.id, node.last_id, { mask: entryMask(db, node.mask) });
+  const [drv] = readRange(db, node.id, node.last_id, { mask: node.mask });
   if (drv?.type !== "element") throw new Error(`${node.mrk}: no element at ${node.id}`);
   return entryContent(drv, rootsAt(db, node, drv));
 }
@@ -362,7 +347,7 @@ export function assembleEntry(db: SqlReader, node: EntryNode, options: EntryOpti
     ...(variants.length ? { variants } : {}),
     article: node.article,
     mrk: node.mrk,
-    senses: full ? sensesIn(content!.senses, options.languages) : [],
+    senses: full ? withBibliography(db, sensesIn(content!.senses, options.languages)) : [],
     translations: translationsOf(db, node, options.languages, full ? sensesById(content!, node.id) : undefined),
     crossRefs,
     usageDomains: options.domains ?? content!.usageDomains,
@@ -388,15 +373,57 @@ export function spellingsOf(db: SqlReader, node: { id: number; last_id: number }
   return rows.filter((txt, i) => rows.indexOf(txt) === i);
 }
 
-/** The senses with their definitions in other languages kept to those asked for; all when none are named. */
+/** The senses with their definitions and their examples' translations kept to the languages asked for; all when none are named. */
 function sensesIn(senses: SenseEntry[], languages?: string[]): SenseEntry[] {
   if (!languages) return senses;
+  const asked = <T extends { lng: string }>(items: T[] | undefined): T[] => (items ?? []).filter((d) => languages.includes(d.lng));
   return senses.map((sense) => {
-    if (!sense.definitions) return sense;
-    const { definitions, ...rest } = sense;
-    const kept = definitions.filter((d) => languages.includes(d.lng));
-    return kept.length > 0 ? { ...rest, definitions: kept } : rest;
+    const { definitions, examples, ...rest } = sense;
+    const kept: SenseEntry = {
+      ...rest,
+      examples: examples.map(({ translations, ...example }) => {
+        const trds = asked(translations);
+        return trds.length > 0 ? { ...example, translations: trds } : example;
+      }),
+    };
+    const defs = asked(definitions);
+    if (defs.length > 0) kept.definitions = defs;
+    return kept;
   });
+}
+
+/** A work of ReVo's bibliography (revo-fonto cfg/bibliogr.xml) as a citation names it. */
+function bibliographyOf(db: SqlReader, codes: string[]): Map<string, Bibliography> {
+  const works = new Map<string, Bibliography>();
+  if (codes.length === 0) return works;
+  const rows = db
+    .query<{ mll: string; tit: string | null; aut: string | null; url: string | null; eld: string | null }, string[]>(
+      `SELECT mll, tit, aut, url, eld FROM bibliogr WHERE mll IN (${codes.map(() => "?").join(",")})`)
+    .all(...codes);
+  for (const row of rows) {
+    const work: Bibliography = {};
+    if (row.tit) work.tit = row.tit;
+    if (row.aut) work.aut = row.aut;
+    const dat = row.eld ? (JSON.parse(row.eld) as { dat?: string }[])[0]?.dat : undefined;
+    if (dat) work.dat = dat;
+    if (row.url) work.url = row.url;
+    works.set(row.mll, work);
+  }
+  return works;
+}
+
+/** The senses with each cited work of the bibliography named beside its code. */
+function withBibliography(db: SqlReader, senses: SenseEntry[]): SenseEntry[] {
+  const codes = [...new Set(senses.flatMap((s) => s.examples.flatMap((e) => e.source?.bib ?? [])))];
+  const works = bibliographyOf(db, codes);
+  if (works.size === 0) return senses;
+  return senses.map((sense) => ({
+    ...sense,
+    examples: sense.examples.map((example) => {
+      const work = example.source?.bib && works.get(example.source.bib);
+      return work ? { ...example, source: { ...example.source, bibliogr: work } } : example;
+    }),
+  }));
 }
 
 /**

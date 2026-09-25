@@ -3,6 +3,7 @@
  */
 
 import type { LookupResult, WildcardMatch, ExampleHit } from "./db";
+import type { ExampleSource } from "./content";
 
 const LANGUAGE_NAMES: Record<string, string> = {
   af: "Afrikaans", am: "Amara", ar: "Araba", az: "Azerbajĝana",
@@ -192,7 +193,11 @@ function formatSingleResult(
 
       // Examples
       for (const ex of sense.examples) {
-        lines.push(`  - *${ex}*`);
+        const cited = ex.source ? ` — ${citation(ex.source)}` : "";
+        lines.push(`  - *${ex.text}*${cited}`);
+        for (const t of filterTranslations(ex.translations ?? [], showLanguages)) {
+          lines.push(`    - (${t.lng}) ${t.trd}`);
+        }
       }
       lines.push("");
     }
@@ -214,6 +219,21 @@ function formatSingleResult(
   }
 
   return lines.join("\n");
+}
+
+/**
+ * An example's citation as a reader writes one: "Zamenhof, *Proverbaro
+ * esperanta*" for a work of the bibliography, else its author, work and place
+ * as the article gives them.
+ */
+export function citation(source: ExampleSource): string {
+  const work = source.bibliogr;
+  const aut = source.aut ?? work?.aut;
+  const vrk = source.vrk ?? work?.tit ?? source.bib;
+  const inside = source.vrk && (work?.tit ?? source.bib);
+  // a place that is the work's own title again (FK's "Fundamenta Krestomatio …") says nothing more
+  const lok = source.lok !== vrk && source.lok !== inside ? source.lok : undefined;
+  return [aut, vrk && `*${vrk}*`, inside && `*${inside}*`, lok, source.txt].filter(Boolean).join(", ");
 }
 
 function filterTranslations<T extends { lng: string }>(

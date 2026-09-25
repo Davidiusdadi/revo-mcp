@@ -264,20 +264,30 @@ describe("entries read from the stored articles", () => {
     expect(sensesOf("ne.0ekzistas")).toEqual([]);
   });
 
-  test("an entry reads the same without the tables of a citation's parts", () => {
-    // what db-voko leaves out: bib, vrk, lok, aut and url rows inside the entries
-    expect(one<{ c: number }>(
-      `SELECT COUNT(*) c FROM node n JOIN aut x ON x.id BETWEEN n.id AND n.last_id WHERE ${IS_ENTRY}`).c).toBeGreaterThan(0);
-    const marks = all<{ mrk: string }>(`SELECT n.mrk FROM node n WHERE ${IS_ENTRY}`).map((r) => r.mrk);
-    expect(marks.length).toBeGreaterThan(400);
-    for (const mrk of marks) {
-      const node = entryNodeByMark(db as never, mrk)!;
-      const [drv] = readRange(db as never, node.id, node.last_id);
-      const { senses, crossRefs, usageDomains } = entryContent(drv as Element, treeOf(node.article).roots);
-      const entry = assembleEntry(db as never, node);
-      expect({ senses: entry.senses, crossRefs: entry.crossRefs.map(({ target, type }) => ({ target, type })), usageDomains: entry.usageDomains })
-        .toEqual({ senses, crossRefs, usageDomains });
-    }
+  test("an entry's example says where it is quoted from, and carries its own translations", () => {
+    const examples = assembleEntry(db as never, entryNodeByMark(db as never, "hund.0o")!).senses.flatMap((s) => s.examples);
+    const fundamento = examples.find((e) => e.text === "li promenas kun tri hundoj")!;
+    // the ";" before the translations goes with the citation
+    expect(fundamento.source).toMatchObject({ bib: "F", bibliogr: { tit: "Fundamento de Esperanto", aut: "L. L. Zamenhof" } });
+    expect(fundamento.source!.lok).toMatch(/12$/);
+    expect(fundamento.translations).toBeUndefined();
+    const known = examples.find((e) => e.text.startsWith("oni lin konas kiel makulharan hundon"))!;
+    expect(known.source).toEqual({ bib: "Prv" });
+    expect(known.translations).toEqual([
+      { lng: "de", trd: "er ist bekannt wie ein bunter Hund" },
+      { lng: "fr", trd: "il est connu comme le loup blanc" },
+    ]);
+    // the languages an entry is asked for keep its examples' translations too
+    const german = assembleEntry(db as never, entryNodeByMark(db as never, "hund.0o")!, { languages: ["de"] }).senses
+      .flatMap((s) => s.examples).find((e) => e.text === known.text)!;
+    expect(german.translations).toEqual([{ lng: "de", trd: "er ist bekannt wie ein bunter Hund" }]);
+    // an author, a work and a place, where the article names no work of the bibliography
+    expect(examples.some((e) => e.source?.aut && e.source.vrk && !e.source.bib)).toBe(true);
+    // an entry reads its examples as the tree it is built from has them
+    const node = entryNodeByMark(db as never, "hund.0o")!;
+    const [drv] = readRange(db as never, node.id, node.last_id);
+    expect(entryContent(drv as Element, treeOf(node.article).roots).senses.flatMap((s) => s.examples).map((e) => e.text))
+      .toEqual(examples.map((e) => e.text));
   });
 
   // "quelle <ind>chose</ind>" is filed under chose and means quelle chose

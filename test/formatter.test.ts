@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "vitest";
 import { closeDb, lookupEsperanto, type LookupResult } from "../src/db";
-import { formatResults } from "../src/formatter";
+import { citation, formatResults } from "../src/formatter";
 
 afterAll(() => closeDb());
 
@@ -36,5 +36,23 @@ describe("See also", () => {
       "- Has part: ŝakalo",
       "- Has part: kojoto",
     ]);
+  });
+});
+
+describe("Examples", () => {
+  test("name where they are quoted from, as a reader cites a work", () => {
+    expect(citation({ bib: "F", lok: "Ekzercaro, § 12", bibliogr: { tit: "Fundamento de Esperanto", aut: "L. L. Zamenhof" } }))
+      .toBe("L. L. Zamenhof, *Fundamento de Esperanto*, Ekzercaro, § 12");
+    // the article's own author and work come first; the work of the bibliography it appeared in after them
+    expect(citation({ aut: "C. Minnaja", vrk: "Lingvo kaj popolo", bib: "LOdE", lok: "2007:3", bibliogr: { tit: "La Ondo de Esperanto" } }))
+      .toBe("C. Minnaja, *Lingvo kaj popolo*, *La Ondo de Esperanto*, 2007:3");
+    // a code the bibliography lacks stands for itself, and a place that only repeats the title is left out
+    expect(citation({ bib: "Prv" })).toBe("*Prv*");
+    expect(citation({ bib: "FK", lok: "Fundamenta Krestomatio", bibliogr: { tit: "Fundamenta Krestomatio" } })).toBe("*Fundamenta Krestomatio*");
+  });
+
+  test("hundo's proverb carries its translations under it", () => {
+    const text = formatResults(lookupEsperanto("hundo", 1), ["de"]);
+    expect(text).toContain("  - *oni lin konas kiel makulharan hundon (li estas de ĉiuj konata)* — *Prv*\n    - (de) er ist bekannt wie ein bunter Hund");
   });
 });
