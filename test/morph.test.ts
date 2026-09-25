@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { lemmaCandidates, lemmaOf, markPin, segment, readings, formatSegments, numberLength, spellsNumber, type Inventory, type Morph } from "../src/morph";
+import { lemmaCandidates, lemmaOf, markPin, shortPin, segment, readings, formatSegments, numberLength, spellsNumber, type Inventory, type Morph } from "../src/morph";
 import { Pairs } from "../src/corpus/passes/morph";
 
 const first = (w: string) => lemmaCandidates(w)[0]?.lemma;
@@ -263,5 +263,20 @@ describe("markPin", () => {
     expect(markPin("Miĉjo Muso", "mus.micxj0o")).toBeUndefined();
     expect(markPin("kotopo", "plu.kaj_tiel_0")).toBeUndefined();
     expect(markPin("hundo", null)).toBeUndefined();
+  });
+});
+
+describe("shortPin", () => {
+  const names: Inventory = { ...inv, roots: new Set([...inv.roots, "er", "ne"]), suffixes: new Set([...inv.suffixes, "nj", "ĉj"]) };
+  test("a name's longest start that only suffixes and an ending follow", () => {
+    expect(shortPin("Ernenjo", "Ernest", names)).toEqual({ at: 0, root: "erne", rootOnly: true });
+    // ern|jo is no split, so er|nj|o
+    expect(shortPin("Ernjo", "Ernest", names)).toMatchObject({ root: "er" });
+  });
+
+  test("nothing for a word spelling the whole root, a root without a capital, or a start of one letter", () => {
+    expect(shortPin("Kabe", "Kabe", names)).toBeUndefined();
+    expect(shortPin("hundnjo", "hund", names)).toBeUndefined();
+    expect(shortPin("Enjo", "Ernest", names)).toBeUndefined();
   });
 });

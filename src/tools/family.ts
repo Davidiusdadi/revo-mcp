@@ -40,6 +40,7 @@ export const familyOutputSchema = z.object({
       mrk: z.string(),
       article: z.string(),
       articleRoot: z.string(),
+      articleKap: z.string().describe("The article's root with the ending its headword gives it: Ernest/o."),
       variantOf: z.string().optional(),
       shortened: z.literal(true).optional().describe("Built on the family's root shortened (Miĉjo, Mi from Miĥael)."),
     })),

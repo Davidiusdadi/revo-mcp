@@ -266,6 +266,29 @@ export function markPin(word: string, mrk: string | null | undefined): Fixed | u
   return { at: pre.length, root: w.slice(pre.length, w.length - post.length), rootOnly: true };
 }
 
+/**
+ * The root of a name shortened from its article's, where the entry's mark
+ * does not say it: a variant takes its main headword's mark (Ernenjo in
+ * `ernest.0ino`, Ernestino's). The longest start the word shares with the
+ * root that only suffixes and an ending follow (erne|nj|o from Ernest, not
+ * er|ne|nj|o; er|nj|o, since ern|jo is none). Only for a name, an article
+ * root written with a capital.
+ */
+export function shortPin(word: string, rad: string, inv: Inventory): Fixed | undefined {
+  if (!/^\p{Lu}/u.test(rad) || !/^\p{L}+$/u.test(word)) return undefined;
+  const w = word.toLowerCase(), r = rad.toLowerCase();
+  // a word that spells the whole root (Kabe) is not shortened
+  if (w.startsWith(r)) return undefined;
+  let n = 0;
+  while (n < w.length && n < r.length && w[n] === r[n]) n++;
+  for (n = Math.min(n, r.length - 1, w.length - 1); n >= 2; n--) {
+    const pin: Fixed = { at: 0, root: w.slice(0, n), rootOnly: true };
+    const ms = segment(w, inv, pin);
+    if (ms && ms[0].m === pin.root && ms.slice(1).every((m) => m.k === "S" || m.k === "E")) return pin;
+  }
+  return undefined;
+}
+
 // Costs. Measured with `pnpm corpus:eval-segment` on the words whose root
 // the corpus marks; each term earned its place there, and a term that lowered
 // the score (a bigger length bonus, a penalty on proper-name roots, linking

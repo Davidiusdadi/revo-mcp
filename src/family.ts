@@ -36,6 +36,8 @@ export interface FamilyMember extends FamilyWord {
   article: string;
   /** that article's root */
   articleRoot: string;
+  /** that root as its article's headword writes it, with the ending: "Ernest/o" */
+  articleKap: string;
   /** for a variant headword, the headword it is a variant of */
   variantOf?: string;
   /** built on the family's root shortened, as a name (Miĉjo, Mi from Miĥael) */
@@ -132,16 +134,27 @@ const spansOf = (text: string): FamilySpan[] => parseSpans(text).map((s) => ({ m
 /** A member whose headword does not spell the family's root: it is filed under it by its mark (x_family). */
 const shortens = (r: FamilyRow, root: string) => !parseSpans(r.spans).some((s) => s.m === root);
 
-const member = (r: FamilyRow, root: string): FamilyMember => ({
+const member = (r: FamilyRow, root: string, articleKap: string): FamilyMember => ({
   headword: r.txt,
   tilde: r.tilde,
   spans: spansOf(r.spans),
   mrk: r.mrk,
   article: r.art,
   articleRoot: r.rad,
+  articleKap,
   ...(r.variant_of ? { variantOf: r.variant_of } : {}),
   ...(shortens(r, root) ? { shortened: true as const } : {}),
 });
+
+/**
+ * An article's root with the ending its headword gives it, as ReVo's kap
+ * writes it (Ernest/o, san/a), so a reader sees whether the root is a noun,
+ * an adjective or a verb; the root alone where the headword ends otherwise.
+ */
+export function rootWithEnding(headword: string, rad: string): string {
+  const ending = headword.slice(rad.length);
+  return headword.toLowerCase().startsWith(rad.toLowerCase()) && /^[aeio]$/.test(ending) ? `${rad}/${ending}` : rad;
+}
 
 /** A root as a caller may write it: x-system, any case. */
 function normalizeRoot(root: string): string {
@@ -209,6 +222,15 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
   const articlesOf = db.query<{ article: string; rad: string }, [string]>(
     `SELECT a.file AS article, a.rad FROM x_morpheme m JOIN article a ON a.id = m.article_id
       WHERE m.morph = ? AND m.kind = 'R' ORDER BY a.file`);
+  const headOf = db.query<{ txt: string }, [string]>(
+    `SELECT h.txt FROM article a JOIN node n ON n.id BETWEEN a.id AND a.last_id AND n.kind = 'art'
+      JOIN headword h ON h.id = n.kap_id WHERE a.file = ? ORDER BY n.id LIMIT 1`);
+  const kaps = new Map<string, string>();
+  const kapOf = (r: FamilyRow) => {
+    let kap = kaps.get(r.art);
+    if (kap === undefined) kaps.set(r.art, kap = rootWithEnding(headOf.get(r.art)?.txt ?? "", r.rad));
+    return kap;
+  };
   const translations: FamilyResult["translations"] = {};
   const families: WordFamily[] = [];
   for (const root of roots) {
@@ -226,7 +248,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
       ...(affix ? { affix } : {}),
       own: root === articleRoot,
       articles: articlesOf.all(root),
-      members: listed.map((r) => member(r, root)),
+      members: listed.map((r) => member(r, root, kapOf(r))),
       entries: all.length,
       offset,
       translated: [...counts].map(([language, count]) => ({ language, count }))

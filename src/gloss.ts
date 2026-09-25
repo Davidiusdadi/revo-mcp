@@ -32,7 +32,7 @@ import type { SqlReader } from "./sql";
 import { webUsage } from "./freq";
 import { fromXSystem, normalizeQuery } from "./stemmer";
 import {
-  lemmaCandidates, markPin, segment, formatSegments, numberLength, spellsNumber, ENDINGS,
+  lemmaCandidates, markPin, segment, shortPin, formatSegments, numberLength, spellsNumber, ENDINGS,
   type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
@@ -698,8 +698,9 @@ interface Split {
 }
 
 /** Which piece of a headword's split its entry's mark puts the root at, if the mark fits it. */
-function markedPiece(ms: Morph[], mrk: string | null): number | undefined {
-  const pin = markPin(ms.map((m) => m.m).join(""), mrk);
+function markedPiece(ms: Morph[], mrk: string | null, rad: string, inv: Inventory): number | undefined {
+  const word = ms.map((m) => m.m).join("");
+  const pin = markPin(word, mrk) ?? shortPin(word, rad, inv);
   if (!pin) return undefined;
   let off = 0;
   const i = ms.findIndex((m) => {
@@ -729,7 +730,7 @@ function headwordSplits(db: SqlReader, norm: string, inv: Inventory): Split[] {
       .all(norm)
       .map((s) => {
         const ms = relabel(parseSplit(s), inv);
-        return { ms, art: s.art, root: s.root, marked: markedPiece(ms, s.mrk) };
+        return { ms, art: s.art, root: s.root, marked: markedPiece(ms, s.mrk, s.root, inv) };
       });
   }
   // the word itself: "-ul" is split as "ul", a two-word headword not at all
@@ -741,8 +742,8 @@ function headwordSplits(db: SqlReader, norm: string, inv: Inventory): Split[] {
       `SELECT a.id AS id, a.file AS art, a.rad AS root, n.mrk AS mrk FROM headword h JOIN node n ON n.id = h.node_id JOIN article a ON a.id = n.article_id
         WHERE h.norm = ? ORDER BY h.node_id, h.id`)
     .all(norm)) {
-    const ms = pinnedSplit(words[0], articleRoots(db, r.id, r.root), inv, r.mrk);
-    if (ms) out.push({ ms: relabel(ms, inv), art: r.art, root: r.root, marked: markedPiece(ms, r.mrk) });
+    const ms = pinnedSplit(words[0], articleRoots(db, r.id, r.root), inv, r.mrk, r.root);
+    if (ms) out.push({ ms: relabel(ms, inv), art: r.art, root: r.root, marked: markedPiece(ms, r.mrk, r.root, inv) });
   }
   return out;
 }
@@ -760,12 +761,12 @@ function articleRoots(db: SqlReader, id: number, rad: string): string[] {
  * root pinned where it occurs — the first of `roots` that does, exactly once,
  * where the free segmentation does not already read a longer root
  * (`sekvestracio` in `sekvestr`, `hejmo` in `he`); else where the entry's
- * mark puts it (`miĉjo`, `mihxael.0cxjo`: mi, Miĥael shortened); free when
- * neither does. The
+ * mark puts it (`miĉjo`, `mihxael.0cxjo`: mi, Miĥael shortened), or at a
+ * name's shortened start (`ernenjo` in Ernest: erne); free when none does. The
  * pass also has the kap's own root mark to go by, which this has not, so the
  * two differ on a few hundred of the 49,000 headwords (see docs/corpus.md).
  */
-export function pinnedSplit(word: string, roots: string[], inv: Inventory, mrk?: string | null): Morph[] | null {
+export function pinnedSplit(word: string, roots: string[], inv: Inventory, mrk?: string | null, rad?: string): Morph[] | null {
   const free = segment(word, inv);
   for (const root of roots) {
     const at = root ? word.indexOf(root) : -1;
@@ -778,7 +779,7 @@ export function pinnedSplit(word: string, roots: string[], inv: Inventory, mrk?:
     });
     return longer ? free : segment(word, inv, { at, root }) ?? free;
   }
-  const marked = markPin(word, mrk);
+  const marked = markPin(word, mrk) ?? (rad ? shortPin(word, rad, inv) : undefined);
   return (marked && segment(word, inv, marked)) ?? free;
 }
 

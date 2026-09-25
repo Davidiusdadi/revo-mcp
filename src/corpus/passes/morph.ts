@@ -47,7 +47,7 @@ import { contentOf, inEsperanto, textIn, OMIT } from "../../content";
 import { articleTrees } from "../documents";
 import { tldOccurrences, tokenGroups, type TokenGroup } from "./tld-links";
 import {
-  lemmaCandidates, segment, formatSegments, formatSpans, markPin, morphSpans, pinFits, ENDINGS,
+  lemmaCandidates, segment, formatSegments, formatSpans, markPin, morphSpans, pinFits, shortPin, ENDINGS,
   type Fixed, type Inventory, type Morph, type MorphSpan, type WordClass,
 } from "../../morph";
 
@@ -58,7 +58,7 @@ const GRAMMATICAL: ReadonlySet<string> = new Set(["o", "a", "e", "i", "u", "as",
 
 export const morphPass: Pass = {
   name: "morph",
-  version: 15,
+  version: 16,
   tables: ["x_morpheme", "x_pair", "x_affix", "x_family"],
   run(db, log) {
     const { inv, pairs, heads } = prepare(db, log);
@@ -75,7 +75,7 @@ export const morphPass: Pass = {
 
 export const splitsPass: Pass = {
   name: "splits",
-  version: 2,
+  version: 3,
   tables: ["x_morph", "x_token"],
   run(db, log) {
     const { inv, pairs, heads, toks } = prepare(db, log);
@@ -562,10 +562,11 @@ function segmentHeadwords(
       }
     }
     // a kap that spells no root its article names (Miĉjo in Miĥael): the root is
-    // where the mark puts it, a shortened one, filed under the article's own
+    // where the mark puts it, or a name's shortened start (Ernenjo), filed under
+    // the article's own
     let short: string | undefined;
     if (!pin && WORD_ONLY.test(k.norm)) {
-      const at = markPin(k.norm, k.mrk);
+      const at = markPin(k.norm, k.mrk) ?? shortPin(k.norm, k.rad, inv);
       if (at) {
         pin = { word: k.norm, ...at };
         if (!(articleRoots.get(k.article_id) ?? []).includes(at.root)) short = k.rad.toLowerCase();

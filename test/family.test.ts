@@ -25,4 +25,20 @@ describe("word families and shortened names", () => {
     expect(mi.members.map((m) => m.headword)).not.toContain("Miĉjo");
     expect(mi.members.map((m) => m.headword)).not.toContain("Ho-Ĉi-Min-Urbo");
   });
+
+  test("a variant the entry's mark does not fit is read as its name shortened (Ernenjo: Erne from Ernest)", () => {
+    const nj = familyOf(getDb(), "ernest.0ino", { only: "nj" }).families[0];
+    const ernenjo = nj.members.find((m) => m.headword === "Ernenjo")!;
+    expect(ernenjo.spans.map((s) => `${s.morph}:${s.kind}`)).toEqual(["erne:R", "nj:S"]);
+    const ne = familyOf(getDb(), "ne.0", { only: "ne" }).families[0];
+    expect(ne.members.map((m) => m.headword)).not.toContain("Ernenjo");
+  });
+
+  test("a member names its article's root with the ending the article gives it", () => {
+    const nj = familyOf(getDb(), "nj.avi0o", { only: "nj" }).families[0];
+    const kap = (h: string) => nj.members.find((m) => m.headword === h)?.articleKap;
+    expect(kap("Ernenjo")).toBe("Ernest/o");
+    expect(kap("Henjo")).toBe("Henriet/o");
+    expect(kap("panjo")).toBe("nj");
+  });
 });
