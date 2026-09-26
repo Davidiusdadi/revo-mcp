@@ -230,8 +230,9 @@ async function refresh(current: Session, signal: AbortSignal, known?: DatabaseHe
   try {
     published = known ?? await fetchHeader(current.url);
   } catch (error) {
-    // Offline with a local copy is the copy's purpose, not a problem.
-    if (current.local) return;
+    // Offline with a local copy is the copy's purpose, not a problem. A file
+    // the host no longer has is: only a newer page can name the one it has.
+    if (current.local && !(error instanceof RevoTrouble && error.code === "file/gone")) return;
     throw error;
   }
   if (current.local?.revision === published.revision) return;

@@ -27,6 +27,11 @@ export type RevoTroubleCode =
   | "download/stalled"
   /** The published file did not answer; `detail` is the HTTP status. */
   | "file/unreadable"
+  /**
+   * The host no longer has the file the page names (404 or 410): a host that
+   * publishes a folder per revision has moved on, so the page is older than it.
+   */
+  | "file/gone"
   /** The published file is not a database. */
   | "file/not-sqlite";
 

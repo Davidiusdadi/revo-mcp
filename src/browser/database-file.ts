@@ -26,6 +26,9 @@ export function parseHeader(bytes: Uint8Array): DatabaseHeader {
 /** The published file's header: its first 100 bytes, one small request. */
 export async function fetchHeader(url: string): Promise<DatabaseHeader> {
   const response = await fetch(url, { headers: { Range: "bytes=0-99" }, cache: "no-store" });
+  if (response.status === 404 || response.status === 410) {
+    throw new RevoTrouble("file/gone", `The dictionary file is no longer published (${response.status}); the page is older than its host.`, String(response.status));
+  }
   if (!response.ok) throw new RevoTrouble("file/unreadable", `The dictionary file could not be read (${response.status}).`, String(response.status));
   // A server that ignores the range sends the whole file; its start is the same.
   const reader = response.body!.getReader();
