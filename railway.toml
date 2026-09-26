@@ -5,3 +5,7 @@ builder = "dockerfile"
 healthcheckPath = "/"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
+
+# Amsterdam, near the people who use it; recorded here so the dashboard cannot move it back.
+[deploy.multiRegionConfig.europe-west4]
+numReplicas = 1
