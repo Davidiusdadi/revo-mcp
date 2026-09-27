@@ -178,6 +178,65 @@ export function phraseRows(db: SqlReader, lng: string, words: string, limit = 10
   }
 }
 
+/** Where an Esperanto word is written in an entry's text: an example or a definition. */
+export interface TextHit {
+  /** the entry's derivation node */
+  nid: number;
+  kind: "in-example" | "in-definition";
+  /** the stretch of text around the word, cut at word boundaries */
+  snippet: string;
+}
+
+/**
+ * The entries whose examples, then definitions, write this Esperanto word,
+ * each once, in the dictionary's order; none without the indexes. This is
+ * what a search offers for a word no headword or translation matches:
+ * `kuirado` has no entry, but "la kuirado de la viando" is in fork's.
+ */
+export function textRows(db: SqlReader, word: string, limit = 12): TextHit[] {
+  const quoted = `"${word.replaceAll('"', '""')}"`;
+  const hits: TextHit[] = [];
+  const seen = new Set<number>();
+  const add = (nid: number | null, kind: TextHit["kind"], text: string) => {
+    if (nid === null || seen.has(nid)) return;
+    seen.add(nid);
+    hits.push({ nid, kind, snippet: around(text, word) });
+  };
+  try {
+    if (hasTable(db, "fts_ekz_word")) {
+      const rows = db
+        .query<{ node_id: number | null; ekz_md: string }, [string, number]>(
+          `SELECT n.id AS node_id, e.ekz_md FROM fts_ekz_word f
+             JOIN ekzemplo e ON e.rowid = f.rowid
+             LEFT JOIN node n ON n.mrk = e.drv_mrk
+            WHERE fts_ekz_word MATCH ? ORDER BY f.rowid LIMIT ?`)
+        .all(quoted, limit);
+      for (const r of rows) add(r.node_id === null ? null : entryIdAt(db, r.node_id), "in-example", r.ekz_md);
+    }
+    if (hits.length < limit && hasTable(db, "fts_dif")) {
+      const rows = db
+        .query<{ node_id: number; dif: string }, [string, number]>(
+          "SELECT node_id, dif FROM fts_dif WHERE fts_dif MATCH ? ORDER BY node_id LIMIT ?")
+        .all(quoted, limit - hits.length);
+      for (const r of rows) add(entryIdAt(db, r.node_id), "in-definition", r.dif);
+    }
+  } catch {
+    // a word FTS cannot read is in no text
+  }
+  return hits;
+}
+
+/** About `reach` characters either side of `word` in `text`, marked `…` where cut. */
+function around(text: string, word: string, reach = 40): string {
+  const at = text.toLowerCase().indexOf(word.toLowerCase());
+  if (at < 0) return text.length > 2 * reach ? `${text.slice(0, 2 * reach).replace(/\s+\S*$/, "")}…` : text;
+  let start = Math.max(0, at - reach);
+  let end = Math.min(text.length, at + word.length + reach);
+  if (start > 0) start = text.indexOf(" ", start) + 1 || start;
+  if (end < text.length) end = text.lastIndexOf(" ", end) > at + word.length ? text.lastIndexOf(" ", end) : end;
+  return `${start > 0 ? "…" : ""}${text.slice(start, end).trim()}${end < text.length ? "…" : ""}`;
+}
+
 /** The entry a node belongs to: itself or its nearest derivation ancestor that is one. */
 export function entryIdAt(db: SqlReader, nodeId: number): number | null {
   const step = db.query<{ id: number; parent_id: number | null; is_entry: number }, [number]>(

@@ -139,6 +139,27 @@ describe("search over the dictionary", () => {
   });
 });
 
+describe("search for a word nothing names", () => {
+  test("lists the entries whose examples write it, with the passage", () => {
+    const result = search({ query: "kuirado", languages: ["eo", "de"], limit: 50 });
+    expect(result.total).toBeGreaterThan(0);
+    const fork = result.results.find(({ entry }) => entry.headword === "forko")!;
+    expect(fork.matchReasons[0]).toMatchObject({ language: "eo", kind: "in-example" });
+    expect(fork.matchReasons[0].via).toContain("kuirado");
+  });
+
+  test("a word written nowhere, or garbage, finds nothing and does not fail", () => {
+    for (const query of ["kunirado", "xxxxxxx", "qqqq"]) {
+      expect(search({ query, languages: ["eo", "de"], limit: 10 }).total).toBe(0);
+    }
+  });
+
+  test("a word a headword matches gets no text results", () => {
+    const kinds = search({ query: "hundo", languages: ["eo"], limit: 50 }).results.map(({ matchReasons }) => matchReasons[0].kind);
+    expect(kinds).not.toContain("in-example");
+  });
+});
+
 describe("search ranking", () => {
   interface FixtureEntry {
     mrk: string;

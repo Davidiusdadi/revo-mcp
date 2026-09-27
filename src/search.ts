@@ -6,7 +6,8 @@
  * language: Esperanto headwords exactly, else the dictionary forms its ending
  * points to, else as a prefix; each translation language exactly, else a
  * reduced source form ("dogs" → dog), else as a prefix, and then among the
- * words of a longer translation ("pain in the butt"). An entry found in
+ * words of a longer translation ("pain in the butt"). A word that nothing
+ * matches is looked for in the examples and definitions. An entry found in
  * several ways is ranked by its strongest match. The rows carry the entries'
  * usage domains, so counting and narrowing read no entry; only the page shown
  * does, and only what a result card shows of it.
@@ -23,6 +24,7 @@ import {
   indexForm,
   phraseRows,
   prefixRows,
+  textRows,
   spelled,
   type SearchRow,
 } from "./db-voko";
@@ -157,6 +159,14 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
       // and after them the translations with the query among their words: "pain in the butt"
       addRows(language, phraseRows(db, language, normalized).filter(({ norm }) => norm !== normalized), "translation-phrase");
     }
+
+    // a word nothing names may still be written in the entries: kuirado in fork's example
+    if (matches.size === 0 && !/\s/.test(normalized)) {
+      textRows(db, normalized).forEach(({ nid, kind, snippet }, ord) => {
+        matched.get("eo")!.add(nid);
+        matches.set(nid, { reasons: [{ language: "eo", kind, via: snippet, rank: [kindRank(kind), 0, 0, ord] }], domains: [] });
+      });
+    }
   }
 
   const ranked = [...matches].flatMap(([nid, { reasons, domains }]) => {
@@ -173,6 +183,7 @@ function kindRank(kind: string): number {
   if (kind === "headword" || kind === "translation") return 0;
   if (kind === "stem" || kind === "translation-reduced") return 1;
   if (kind === "translation-phrase") return 3;
+  if (kind === "in-example" || kind === "in-definition") return 4;
   return 2;
 }
 
