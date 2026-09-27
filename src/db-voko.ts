@@ -150,6 +150,48 @@ export function prefixRows(db: SqlReader, lng: string, prefix: string): SearchRo
     .sort((a, b) => a.ord - b.ord);
 }
 
+/**
+ * A language's translations with the words among their words, "pain in the
+ * butt" for "butt", as rows of the entries they translate; none without the
+ * fts pass. From version 4 the index knows each translation's language, so
+ * only that language's hits are read; an older copy stored in a browser
+ * filters afterwards. The rows carry no usage domains.
+ */
+export function phraseRows(db: SqlReader, lng: string, words: string, limit = 100): SearchRow[] {
+  if (!hasPass(db, "fts")) return [];
+  const quoted = (s: string) => `"${s.replaceAll('"', '""')}"`;
+  const byLanguage = passVersion(db, "fts") >= 4;
+  try {
+    return db
+      .query<{ node_id: number; txt: string; ind: string | null }, (string | number)[]>(
+        `SELECT t.node_id, t.txt, t.ind FROM fts_trd f JOIN translation t ON t.id = f.rowid
+          WHERE fts_trd MATCH ?${byLanguage ? "" : " AND t.lng = ? AND t.in_ekz = 0"} LIMIT ?`
+      )
+      .all(...(byLanguage ? [`{trd ind baz pr}: ${quoted(words)} AND lng: ${quoted(lng)}`, limit] : [quoted(words), lng, limit]))
+      .flatMap((t, ord) => {
+        const nid = entryIdAt(db, t.node_id);
+        return nid === null ? [] : [{ norm: normalizeQuery(t.ind ?? t.txt), ord, nid, txt: t.txt, ind: t.ind === null ? null : 1, fak: null }];
+      });
+  } catch {
+    // a query FTS cannot read finds nothing
+    return [];
+  }
+}
+
+/** The entry a node belongs to: itself or its nearest derivation ancestor that is one. */
+export function entryIdAt(db: SqlReader, nodeId: number): number | null {
+  const step = db.query<{ id: number; parent_id: number | null; is_entry: number }, [number]>(
+    `SELECT n.id, n.parent_id, COALESCE(${IS_ENTRY}, 0) AS is_entry FROM node n WHERE n.id = ?`,
+  );
+  for (let id: number | null = nodeId; id !== null; ) {
+    const n = step.get(id);
+    if (!n) return null;
+    if (n.is_entry) return n.id;
+    id = n.parent_id;
+  }
+  return null;
+}
+
 /** The spelling a row stands for: as written, else its folded form. */
 export function spelled(row: { norm: string; txt: string | null }): string {
   return row.txt ?? row.norm;

@@ -118,9 +118,24 @@ describe("search over the dictionary", () => {
   test("titles a source-language match in ReVo's spelling", () => {
     const result = search({ query: "gleichmäßig", languages: ["eo", "de", "en"], limit: 10 });
     expect(result.results.map(({ entry }) => entry.headword)).toContain("egala");
-    for (const { matchReasons } of result.results) {
+    // the exact matches first, each titled as ReVo spells it; translations
+    // with the word among others ("gleichmäßig stetig") after them
+    const kinds = result.results.map(({ matchReasons }) => matchReasons[0].kind);
+    const exact = kinds.filter((kind) => kind === "translation").length;
+    expect(exact).toBeGreaterThan(0);
+    expect(kinds.slice(exact).every((kind) => kind.startsWith("translation-phrase"))).toBe(true);
+    for (const { matchReasons } of result.results.slice(0, exact)) {
       expect(matchReasons[0]).toMatchObject({ language: "de", text: "gleichmäßig", kind: "translation" });
     }
+  });
+
+  test("a translation with the query among its words follows the exact matches", () => {
+    const result = search({ query: "butt", languages: ["eo", "en"], matchLanguage: "en", limit: 20 });
+    const heads = result.results.map(({ entry }) => entry.headword);
+    expect(heads.slice(0, 2)).toEqual(expect.arrayContaining(["kolbo"]));
+    const phrase = result.results.find(({ entry }) => entry.headword === "ĉikanema")!;
+    expect(phrase.matchReasons[0]).toMatchObject({ language: "en", kind: "translation-phrase", text: "pain in the butt" });
+    expect(heads.indexOf("ĉikanema")).toBeGreaterThan(heads.indexOf("pafilkapo"));
   });
 });
 

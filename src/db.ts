@@ -26,6 +26,7 @@ import {
   trigramMatch,
   exactRows,
   prefixRows,
+  phraseRows,
   spelled,
   indexForm,
   entryNodesById,
@@ -220,20 +221,6 @@ function translationResults(db: SqlReader, hits: TranslationHit[], limit: number
   return resultsOf(db, hits.map((hit) => hit.row), limit, { via: (nid) => translationVia(firstHit.get(nid)!) });
 }
 
-/** The entry a node belongs to: itself or its nearest derivation ancestor that is one. */
-function entryIdAt(db: SqlReader, nodeId: number): number | null {
-  const step = db.query<{ id: number; parent_id: number | null; is_entry: number }, [number]>(
-    `SELECT n.id, n.parent_id, COALESCE(${IS_ENTRY}, 0) AS is_entry FROM node n WHERE n.id = ?`,
-  );
-  for (let id: number | null = nodeId; id !== null; ) {
-    const n = step.get(id);
-    if (!n) return null;
-    if (n.is_entry) return n.id;
-    id = n.parent_id;
-  }
-  return null;
-}
-
 export function lookupTranslation(
   query: string,
   lang: string,
@@ -250,31 +237,12 @@ export function lookupTranslation(
   let hits: TranslationHit[] = exactRows(db, lang, normalized).map((row) => ({ lng: lang, row }));
   let matchKind: LookupResult["matchKind"] = hits.length > 0 ? "exact" : undefined;
 
-  if (hits.length === 0 && hasPassIn(db, "fts")) {
-    // 2. FTS match, mapped back to the entries' rows. From version 4 the
-    //    index knows each translation's language, so only that language's
-    //    hits are read; an older copy stored in a browser filters afterwards.
-    try {
-      const quoted = (s: string) => `"${s.replaceAll('"', '""')}"`;
-      const byLanguage = passVersion(db, "fts") >= 4;
-      const ftsRows = db
-        .query<{ node_id: number; lng: string; txt: string; ind: string | null }, string[]>(
-          `SELECT t.node_id, t.lng, t.txt, t.ind FROM fts_trd f JOIN translation t ON t.id = f.rowid
-            WHERE fts_trd MATCH ?${byLanguage ? "" : " AND t.lng = ? AND t.in_ekz = 0"} LIMIT 100`
-        )
-        .all(...(byLanguage
-          ? [`{trd ind baz pr}: ${quoted(normalized)} AND lng: ${quoted(lang)}`]
-          : [quoted(normalized), lang]));
-      const found = ftsRows.flatMap((t) => {
-        const nid = entryIdAt(db, t.node_id);
-        const row: SearchRow = { norm: normalizeQuery(t.ind ?? t.txt), ord: 0, nid: nid ?? 0, txt: t.txt, ind: t.ind === null ? null : 1, fak: null };
-        return nid === null ? [] : [{ lng: lang, row }];
-      });
-      hits = found.sort((a, b) => (a.row.ind ?? 0) - (b.row.ind ?? 0) || a.row.norm.length - b.row.norm.length);
-      if (hits.length > 0) matchKind = "fts";
-    } catch {
-      // FTS query might fail — ignore
-    }
+  if (hits.length === 0) {
+    // 2. FTS match: a translation with the word among its words
+    hits = phraseRows(db, lang, normalized)
+      .sort((a, b) => (a.ind ?? 0) - (b.ind ?? 0) || a.norm.length - b.norm.length)
+      .map((row) => ({ lng: lang, row }));
+    if (hits.length > 0) matchKind = "fts";
   }
 
   if (hits.length === 0) {

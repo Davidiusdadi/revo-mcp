@@ -5,7 +5,8 @@
  * A query is looked for in the search rows (`serĉo`) of each searched
  * language: Esperanto headwords exactly, else the dictionary forms its ending
  * points to, else as a prefix; each translation language exactly, else a
- * reduced source form ("dogs" → dog), else as a prefix. An entry found in
+ * reduced source form ("dogs" → dog), else as a prefix, and then among the
+ * words of a longer translation ("pain in the butt"). An entry found in
  * several ways is ranked by its strongest match. The rows carry the entries'
  * usage domains, so counting and narrowing read no entry; only the page shown
  * does, and only what a result card shows of it.
@@ -20,6 +21,7 @@ import {
   entryNodesById,
   exactRows,
   indexForm,
+  phraseRows,
   prefixRows,
   spelled,
   type SearchRow,
@@ -140,19 +142,20 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
 
     for (const language of order.filter((language) => language !== "eo")) {
       const exact = exactRows(db, language, normalized);
-      if (exact.length) {
-        addRows(language, exact, "translation");
-        continue;
+      if (exact.length) addRows(language, exact, "translation");
+      else {
+        let reduced = false;
+        for (const form of reductionsOf(query, language)) {
+          const rows = exactRows(db, language, normalizeQuery(form));
+          if (!rows.length) continue;
+          addRows(language, rows, "translation-reduced", form);
+          reduced = true;
+          break;
+        }
+        if (!reduced) addRows(language, prefixRows(db, language, normalized), "translation-prefix");
       }
-      let reduced = false;
-      for (const form of reductionsOf(query, language)) {
-        const rows = exactRows(db, language, normalizeQuery(form));
-        if (!rows.length) continue;
-        addRows(language, rows, "translation-reduced", form);
-        reduced = true;
-        break;
-      }
-      if (!reduced) addRows(language, prefixRows(db, language, normalized), "translation-prefix");
+      // and after them the translations with the query among their words: "pain in the butt"
+      addRows(language, phraseRows(db, language, normalized).filter(({ norm }) => norm !== normalized), "translation-phrase");
     }
   }
 
@@ -169,6 +172,7 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
 function kindRank(kind: string): number {
   if (kind === "headword" || kind === "translation") return 0;
   if (kind === "stem" || kind === "translation-reduced") return 1;
+  if (kind === "translation-phrase") return 3;
   return 2;
 }
 
