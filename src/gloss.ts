@@ -1013,6 +1013,14 @@ export function glossEsperanto(db: SqlReader, text: string, opts: GlossOptions =
     tally[term.verdict]++;
     terms.push(term);
   }
+  // A text that is itself a headword of several words, "brunkapa anaso", is
+  // that entry too, beside its words.
+  const whole = normalizeQuery(tokens.join(" "));
+  if (tokens.length > 1 && kapByNorm(db, whole)) {
+    const term = classify(db, whole, inv, opts.languages);
+    tally[term.verdict]++;
+    terms.push(term);
+  }
 
   return {
     mode: "eo",

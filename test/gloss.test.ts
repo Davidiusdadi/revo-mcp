@@ -84,6 +84,16 @@ describe("gloss: Esperanto audit", () => {
     expect(skribis.headword).toBe("skribi");
   });
 
+  test("a text that is a headword of several words is that entry too, beside its words", () => {
+    const g = eo("brunkapa anaso");
+    expect(word(g, "brunkapa")?.verdict).not.toBe("headword");
+    const whole = word(g, "brunkapa anaso")!;
+    expect(whole.verdict).toBe("headword");
+    expect(whole.headword).toBe("brunkapa anaso");
+    // a text that only contains one is read word by word
+    expect(word(eo("La brunkapa anaso naĝas."), "brunkapa anaso")).toBeUndefined();
+  });
+
   test("a regular derivation no article lists is reported as well formed", () => {
     const t = word(eo("Ili uzis ardeztabuletojn."), "ardeztabuletojn")!;
     expect(t.verdict).toBe("derived");
