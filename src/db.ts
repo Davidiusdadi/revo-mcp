@@ -489,12 +489,13 @@ export function lookupFamily(query: string): FamilyResult | null {
 /**
  * Get all available languages with their translation counts.
  */
-export function getLanguages(): { lng: string; count: number }[] {
+export function getLanguages(): { lng: string; count: number; name: string | null }[] {
   // Counted by the search pass: translations outside example sentences, which
-  // no lookup reaches.
+  // no lookup reaches. The name is ReVo's, from its list of languages.
   return getDb()
-    .query<{ lng: string; count: number }, []>(
-      "SELECT lng, translations AS count FROM serĉo_lng WHERE lng <> 'eo' ORDER BY translations DESC, lng"
+    .query<{ lng: string; count: number; name: string | null }, []>(
+      `SELECT s.lng, s.translations AS count, l.nomo AS name FROM serĉo_lng s LEFT JOIN lng l ON l.kodo = s.lng
+        WHERE s.lng <> 'eo' ORDER BY s.translations DESC, s.lng`
     )
     .all();
 }

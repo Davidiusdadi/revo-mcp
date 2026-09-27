@@ -142,7 +142,7 @@ export function createMcpServer(): McpServer {
     structuredContent: {
       languages: [
         { code: "eo", name: "Esperanto", count: getHeadwordCount() },
-        ...getLanguages().map(({ lng, count }) => ({ code: lng, name: languageName(lng), count })),
+        ...getLanguages().map(({ lng, count, name }) => ({ code: lng, name: languageName(lng, name), count })),
       ],
     },
   })));

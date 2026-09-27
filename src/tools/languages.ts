@@ -15,9 +15,8 @@ export function handleLanguages(): string {
     "|------|----------|-------------|",
   ];
 
-  for (const { lng, count } of languages) {
-    const name = languageName(lng);
-    lines.push(`| ${lng} | ${name} | ${count.toLocaleString()} |`);
+  for (const { lng, count, name } of languages) {
+    lines.push(`| ${lng} | ${languageName(lng, name)} | ${count.toLocaleString()} |`);
   }
 
   return lines.join("\n");

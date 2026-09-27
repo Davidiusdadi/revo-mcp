@@ -34,8 +34,13 @@ const LANGUAGE_NAMES: Record<string, string> = {
   zu: "Zulua", sgn: "Signolingvo",
 };
 
-export function languageName(code: string): string {
-  return LANGUAGE_NAMES[code] ?? code;
+/**
+ * A language's Esperanto name, capitalised: this table's, else ReVo's own
+ * (`revoName`, from its language list, written small: abĥaza), else the code.
+ */
+export function languageName(code: string, revoName?: string | null): string {
+  if (LANGUAGE_NAMES[code]) return LANGUAGE_NAMES[code];
+  return revoName ? revoName.charAt(0).toLocaleUpperCase("eo") + revoName.slice(1) : code;
 }
 
 /**
