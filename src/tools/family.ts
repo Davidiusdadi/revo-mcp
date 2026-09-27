@@ -35,7 +35,7 @@ export const familyOutputSchema = z.object({
     root: z.string(),
     affix: z.enum(["P", "S"]).optional(),
     own: z.boolean().describe("The root of the entry's own article."),
-    articles: z.array(z.object({ article: z.string(), rad: z.string() })),
+    articles: z.array(z.object({ article: z.string(), rad: z.string(), kap: z.string() })),
     members: z.array(wordSchema.extend({
       mrk: z.string(),
       article: z.string(),

@@ -46,3 +46,8 @@ describe("word families and shortened names", () => {
     expect(kap("panjo")).toBe("nj");
   });
 });
+
+test("a family names its articles' roots with the ending their headwords give them", () => {
+  const articles = familyOf(getDb(), "kap.hauxt0ulo").families.map((f) => [...new Set(f.articles.map((a) => a.kap))]);
+  expect(articles).toEqual([["kap/o"], ["haŭt/o"], ["ul"], ["raz/i"]]);
+});

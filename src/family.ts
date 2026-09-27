@@ -54,8 +54,8 @@ export interface WordFamily {
   affix?: "P" | "S";
   /** the entry's own article root */
   own: boolean;
-  /** the articles whose root it is (homonyms share one) */
-  articles: { article: string; rad: string }[];
+  /** the articles whose root it is (homonyms share one), each with its root ended as its headword ends it: "kap/o" */
+  articles: { article: string; rad: string; kap: string }[];
   /** members from offset on, in the family's order */
   members: FamilyMember[];
   /** members in the whole family */
@@ -237,7 +237,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
     `SELECT h.txt FROM article a JOIN node n ON n.id BETWEEN a.id AND a.last_id AND n.kind = 'art'
       JOIN headword h ON h.id = n.kap_id WHERE a.file = ? ORDER BY n.id LIMIT 1`);
   const kaps = new Map<string, string>();
-  const kapOf = (r: FamilyRow) => {
+  const kapOf = (r: Pick<FamilyRow, "art" | "rad">) => {
     let kap = kaps.get(r.art);
     if (kap === undefined) kaps.set(r.art, kap = rootWithEnding(headOf.get(r.art)?.txt ?? "", r.rad));
     return kap;
@@ -258,7 +258,7 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
       root,
       ...(affix ? { affix } : {}),
       own: root === articleRoot,
-      articles: articlesOf.all(root),
+      articles: articlesOf.all(root).map((a) => ({ ...a, kap: kapOf({ art: a.article, rad: a.rad }) })),
       members: listed.map((r) => member(r, root, kapOf(r))),
       entries: all.length,
       offset,
