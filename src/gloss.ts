@@ -36,7 +36,7 @@ import {
   type Inventory, type Morph, type MorphKind, type WordClass,
 } from "./morph";
 import { sourceFormAttempts } from "./source-forms";
-import { hasPass, spellingsOf, translationsOf, type Translation } from "./db-voko";
+import { hasPass, hasTable, spellingsOf, translationsOf, type Translation } from "./db-voko";
 
 // ---------------------------------------------------------------------------
 // shapes
@@ -155,7 +155,17 @@ export interface EoTerm {
    * that was meant.
    */
   near?: string[];
+  /**
+   * attested / derived / unknown: where the word is written after all, each
+   * count left out when zero. `texts` counts it written as a form of an entry
+   * (the `attested` count), `examples` and `definitions` the ones containing
+   * it, `web` how often the web writes its lemma. It says whether a word the
+   * dictionary lacks is in use, which no verdict can.
+   */
+  evidence?: Evidence;
 }
+
+export interface Evidence { texts?: number; examples?: number; definitions?: number; web?: number }
 
 export interface EoGloss {
   mode: "eo";
@@ -212,7 +222,6 @@ const FUNCTION_WORDS: Record<string, ReadonlySet<string>> = {
 
 const invCache = new WeakMap<SqlReader, CorpusInventory>();
 const affixCache = new WeakMap<SqlReader, Map<string, AffixRow>>();
-const byLenCache = new WeakMap<SqlReader, Map<number, string[]>>();
 
 /**
  * The morpheme inventory the `morph` pass wrote, as `segment` wants it: read
@@ -290,20 +299,6 @@ function affixesOf(db: SqlReader): Map<string, AffixRow> {
     out.set(r.kind === "E" ? `-${r.morph}` : r.morph, { txt: r.txt, gloss: r.gloss ?? "", art: r.art, mrk: r.mrk });
   }
   affixCache.set(db, out);
-  return out;
-}
-
-/** Inventory roots grouped by length, for the near-miss scan. */
-function rootsByLength(db: SqlReader): Map<number, string[]> {
-  const hit = byLenCache.get(db);
-  if (hit) return hit;
-  const out = new Map<number, string[]>();
-  for (const r of inventoryOf(db).roots) {
-    const a = out.get(r.length) ?? [];
-    a.push(r);
-    out.set(r.length, a);
-  }
-  byLenCache.set(db, out);
   return out;
 }
 
@@ -519,68 +514,102 @@ function tokenByNorm(
 const NEAR_USAGE_RATIO = 30;
 
 /**
- * Words one letter away from `word` that the dictionary actually has, best
- * evidence first.
+ * Words one edit from `word` that the dictionary has: a headword, or a
+ * grammatical form of one. An edit is a letter dropped, added, changed, or
+ * swapped with its neighbour (`hudno` → `hundo`), so the diacritic confusions
+ * land here too, `ĉanĝiĝis` → `ŝanĝiĝis`. A form the texts merely write is no
+ * suggestion: `kunirado` is not a slip for `kuirado`, which ReVo has no entry
+ * for, and an invented compound like `makilaĵfaranto` gets nothing rather
+ * than a plausible-looking word nobody listed.
  *
- * Two kinds of slip are covered. A *substituted* letter is found by putting
- * every root within one edit of a prefix of the word in its place — this is
- * where the diacritic confusions land, `ĉanĝiĝis` → `ŝanĝiĝis`. A *dropped or
- * doubled* letter is found by deleting each character in turn, which is what
- * separates `finsita` from `finita`.
+ * Headwords come before forms, then the more used before the less (web usage
+ * where the database has it, else how often the texts write it). A word the
+ * rules build (`derived`) keeps its suggestions only when each is written
+ * NEAR_USAGE_RATIO times as often as the word itself, so a real word one
+ * letter from another gets no question: `agado` (115,000 uses) is nobody's
+ * slip for `agaco`, while `finsita`, which nobody writes, still gets `finita`
+ * and `fiksita`.
  *
- * Candidates that the corpus does not have are dropped, and the rest are
- * ranked by how well attested they are, not by the order the scan found them:
- * `finsita` leads with `finita`, a headword written ten times in the examples,
- * ahead of `fiksita`, which is only an inflection of one. An invented compound
- * like `makilaĵfaranto` gets no suggestion at all rather than a
- * plausible-looking one nobody has ever written.
- *
- * A database with usage counts (the `usage` pass) decides instead by how often
- * the web writes each word. A neighbour has to be written NEAR_USAGE_RATIO
- * times as often as the word itself, so a real word one letter from another
- * gets no question: `agado` (115,000 uses) is nobody's slip for `agaco`, while
- * `finsita`, which nobody writes, still gets `fiksita` and `finita`. The most
- * used neighbour comes first.
+ * Every neighbour and every lemma it could be a form of is looked up in one
+ * batch, a few IN queries on the headword index, whatever the word's length.
  */
-function nearRoots(db: SqlReader, word: string, limit = 3): string[] {
+function nearRoots(db: SqlReader, word: string, limit = 3, derived = false): string[] {
   const hatted = withHats(db, word, limit);
   if (hatted.length > 0) return hatted;
-  const scored = new Map<string, { tier: number; n: number }>();
-  let checked = 0;
-  const take = (guess: string) => {
-    // a letter less than one letter is nothing, though an empty headword exists (korupteco's)
-    if (!guess || guess === word || scored.has(guess) || ++checked > 40) return;
-    const ev = evidence(db, guess);
-    if (ev) scored.set(guess, ev);
-  };
-
-  const byLen = rootsByLength(db);
-  for (let len = Math.min(word.length - 1, 9); len >= 3; len--) {
-    const pre = word.slice(0, len);
-    for (const cand of byLen.get(len) ?? []) {
-      if (cand !== pre && differsByOne(pre, cand)) take(cand + word.slice(len));
-    }
-  }
-  for (let i = 0; i < word.length; i++) take(word.slice(0, i) + word.slice(i + 1));
-
+  // two letters are one edit from too much to mean anything
+  if ([...word].length < 3) return [];
+  const found = ranked(db, dictionaryForms(db, neighbours(word)));
+  if (!derived) return found.slice(0, limit);
   const typed = webUsage(db, word);
-  if (typed !== null) {
-    const used = new Map([...scored.keys()].map((w) => [w, webUsage(db, w) ?? 0]));
-    return [...used.keys()]
-      .filter((w) => used.get(w)! >= NEAR_USAGE_RATIO * Math.max(typed, 1))
-      .sort((a, b) => used.get(b)! - used.get(a)!)
-      .slice(0, limit);
+  if (typed === null) return found.slice(0, limit);
+  return found.filter((w) => (webUsage(db, w) ?? 0) >= NEAR_USAGE_RATIO * Math.max(typed, 1)).slice(0, limit);
+}
+
+/** The Esperanto alphabet, which is all a slip can put in. */
+const ALPHABET = [..."abcĉdefgĝhĥijĵklmnoprsŝtuŭvz"];
+
+/** Every spelling one letter dropped, added, changed or swapped from `word`. */
+function neighbours(word: string): Set<string> {
+  const w = [...word];
+  const at = (i: number, ...put: string[]) => [...w.slice(0, i), ...put].join("");
+  const out = new Set<string>();
+  for (let i = 0; i <= w.length; i++) {
+    for (const ch of ALPHABET) out.add(at(i, ch, ...w.slice(i)));
+    if (i === w.length) break;
+    out.add(at(i, ...w.slice(i + 1)));
+    for (const ch of ALPHABET) out.add(at(i, ch, ...w.slice(i + 1)));
+    if (i + 1 < w.length) out.add(at(i, w[i + 1], w[i], ...w.slice(i + 2)));
   }
-  return [...scored.entries()]
-    .sort((a, b) => a[1].tier - b[1].tier || b[1].n - a[1].n)
-    .slice(0, limit)
-    .map(([w]) => w);
+  out.delete(word);
+  // korupt.xml's main headword is empty, so "" would be found
+  out.delete("");
+  return out;
+}
+
+/** Bound parameters per IN query, well below SQLite's limit. */
+const IN_CHUNK = 200;
+
+/** Which of `norms` are headwords. */
+function headwordsAmong(db: SqlReader, norms: Iterable<string>): Set<string> {
+  const all = [...new Set(norms)].sort();
+  const out = new Set<string>();
+  for (let i = 0; i < all.length; i += IN_CHUNK) {
+    const chunk = all.slice(i, i + IN_CHUNK);
+    const rows = db
+      .query<{ norm: string }, string[]>(`SELECT DISTINCT norm FROM headword WHERE norm IN (${chunk.map(() => "?").join(",")})`)
+      .all(...chunk);
+    for (const r of rows) out.add(r.norm);
+  }
+  return out;
+}
+
+/**
+ * The candidates the dictionary has, each with its tier: 0 a headword, 1 a
+ * grammatical form of one. `class` candidates do not count as forms —
+ * `lemmaCandidates` offers `brula` for `brulao` because they share a stem,
+ * but nobody writes `brulao`.
+ */
+function dictionaryForms(db: SqlReader, candidates: Iterable<string>): Map<string, number> {
+  const list = [...candidates];
+  const lemmas = new Map(list.map((c) => [c, lemmaCandidates(c).filter((l) => l.how !== "class").map((l) => l.lemma)]));
+  const heads = headwordsAmong(db, [...list, ...[...lemmas.values()].flat()]);
+  const tiers = new Map<string, number>();
+  for (const c of list) {
+    if (heads.has(c)) tiers.set(c, 0);
+    else if (lemmas.get(c)!.some((l) => heads.has(l))) tiers.set(c, 1);
+  }
+  return tiers;
+}
+
+/** Headwords first, then the more used, then alphabetically. */
+function ranked(db: SqlReader, tiers: Map<string, number>): string[] {
+  const used = new Map([...tiers.keys()].map((w) => [w, webUsage(db, w) ?? tokenByNorm(db, w)?.n ?? 0]));
+  return [...tiers.keys()].sort((a, b) => tiers.get(a)! - tiers.get(b)! || used.get(b)! - used.get(a)! || a.localeCompare(b));
 }
 
 const HATS: Record<string, string> = { c: "ĉ", g: "ĝ", h: "ĥ", j: "ĵ", s: "ŝ", u: "ŭ" };
 /** Past this many hat-less letters only one letter at a time is given its hat. */
 const HAT_SUBSETS = 5;
-
 
 /**
  * The words this one is when its hats are put back — the commonest slip there
@@ -588,7 +617,8 @@ const HAT_SUBSETS = 5;
  * read here: not at all (`audas` for `aŭdas`) and the h-system (`chambro`);
  * the x-system is already undone before a word is classed. Such a word is
  * taken over any one letter away, and without the usage check: whoever writes
- * `audas` meant `aŭdas`, however often the web does the same.
+ * `audas` meant `aŭdas`, however often the web does the same. As there, only
+ * a headword or a form of one is offered.
  */
 function withHats(db: SqlReader, word: string, limit: number): string[] {
   const guesses = new Set<string>();
@@ -603,46 +633,7 @@ function withHats(db: SqlReader, word: string, limit: number): string[] {
     for (const i of bare) guesses.add(letters.map((ch, j) => (j === i ? HATS[ch] : ch)).join(""));
   }
   guesses.delete(word);
-  const found: { word: string; tier: number; n: number }[] = [];
-  for (const guess of guesses) {
-    const ev = evidence(db, guess);
-    if (ev) found.push({ word: guess, ...ev });
-  }
-  return found
-    .sort((a, b) => a.tier - b.tier || b.n - a.n)
-    .slice(0, limit)
-    .map((f) => f.word);
-}
-
-/** True when the two equal-length strings differ in exactly one position. */
-function differsByOne(a: string, b: string): boolean {
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i] && ++diff > 1) return false;
-  }
-  return diff === 1;
-}
-
-/**
- * How well the corpus backs this exact spelling: tier 0 a headword, tier 1 a
- * form the examples attest (`n` times), tier 2 a grammatical form of a
- * headword, null nothing at all.
- *
- * `class` candidates do not count as forms — `lemmaCandidates` offers `brula`
- * for `brulao` because they share a stem, but nobody writes `brulao`, and
- * counting it let that spelling be suggested as a real word.
- */
-function evidence(db: SqlReader, word: string): { tier: number; n: number } | null {
-  if (kapByNorm(db, word)) {
-    const tok = tokenByNorm(db, word);
-    return { tier: 0, n: tok?.n ?? 0 };
-  }
-  const tok = tokenByNorm(db, word);
-  if (tok) return { tier: 1, n: tok.n };
-  for (const c of lemmaCandidates(word)) {
-    if (c.how !== "class" && kapByNorm(db, c.lemma)) return { tier: 2, n: 0 };
-  }
-  return null;
+  return ranked(db, dictionaryForms(db, guesses)).slice(0, limit);
 }
 
 /**
@@ -1129,7 +1120,7 @@ export function classify(db: SqlReader, word: string, inv: Inventory, languages?
   if (tok) {
     const term: EoTerm = { word, n: 1, verdict: "attested", attested: tok.n, art: tok.art };
     if (tok.headword) term.headword = tok.headword;
-    return withMorph(withEntry(term, tok.node), readingsOf(db, attested()), tok.root);
+    return withEvidence(db, withMorph(withEntry(term, tok.node), readingsOf(db, attested()), tok.root));
   }
 
   const morph = guessed();
@@ -1142,11 +1133,36 @@ export function classify(db: SqlReader, word: string, inv: Inventory, languages?
     };
     const pieces = numberPieces(morph.ms);
     if (!pieces.some((_, i) => numberLength(pieces, i) > 0)) {
-      const near = nearRoots(db, word, 2);
+      const near = nearRoots(db, word, 2, true);
       if (near.length > 0) term.near = near;
     }
-    return term;
+    return withEvidence(db, term);
   }
 
-  return { word, n: 1, verdict: "unknown", near: nearRoots(db, word) };
+  return withEvidence(db, { word, n: 1, verdict: "unknown", near: nearRoots(db, word) });
+}
+
+/** The term with its `evidence`, when there is any. */
+function withEvidence(db: SqlReader, term: EoTerm): EoTerm {
+  const found: Evidence = {
+    texts: tokenByNorm(db, term.word)?.n,
+    examples: ftsCount(db, "fts_ekz_word", term.word),
+    definitions: ftsCount(db, "fts_dif", term.word),
+    web: webUsage(db, term.word) ?? undefined,
+  };
+  const evidence = Object.fromEntries(Object.entries(found).filter(([, n]) => n)) as Evidence;
+  return Object.keys(evidence).length > 0 ? { ...term, evidence } : term;
+}
+
+/** How many rows of a full-text index hold `word`, 0 when there is no such index. */
+function ftsCount(db: SqlReader, table: "fts_ekz_word" | "fts_dif", word: string): number {
+  if (!hasTable(db, table)) return 0;
+  try {
+    return db
+      .query<{ n: number }, [string]>(`SELECT count(*) AS n FROM ${table} WHERE ${table} MATCH ?`)
+      .get(`"${word.replace(/"/g, '""')}"`)?.n ?? 0;
+  } catch {
+    // a word the tokenizer makes nothing of is in no row
+    return 0;
+  }
 }

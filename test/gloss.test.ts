@@ -199,6 +199,43 @@ describe("gloss: Esperanto audit", () => {
     }
   });
 
+  test("a suggestion is a dictionary word, not a form the texts merely write", () => {
+    // kuirado is written in ReVo's texts and on the web, but has no entry
+    const t = classify(getDb(), "kunirado", inventoryOf(getDb()));
+    expect(t.near ?? []).not.toContain("kuirado");
+  });
+
+  test("a word ReVo lacks says where it is written after all", () => {
+    const inv = inventoryOf(getDb());
+    const kuirado = classify(getDb(), "kuirado", inv);
+    expect(kuirado.verdict).toBe("attested");
+    expect(kuirado.evidence).toMatchObject({ texts: 3 });
+    expect(kuirado.evidence!.examples).toBeGreaterThan(0);
+    expect(kuirado.evidence!.definitions).toBeGreaterThan(0);
+    if (hasPass(getDb(), "usage")) expect(kuirado.evidence!.web).toBeGreaterThan(0);
+    // written nowhere: no counts at all rather than zeros
+    expect(classify(getDb(), "kunirado", inv).evidence).toBeUndefined();
+    // a headword needs no evidence
+    expect(classify(getDb(), "hundo", inv).evidence).toBeUndefined();
+  });
+
+  test("a letter added, dropped or swapped finds the word", () => {
+    const inv = inventoryOf(getDb());
+    expect(classify(getDb(), "hudno", inv).near).toContain("hundo");
+    expect(classify(getDb(), "mnĝaĵo", inv).near).toContain("manĝaĵo");
+    expect(classify(getDb(), "kuirdo", inv).near).toContain("kurdo");
+  });
+
+  test("garbage is unknown and suggests nothing", () => {
+    const inv = inventoryOf(getDb());
+    for (const junk of ["xxxxxxx", "qqqq", "ŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭŭ"]) {
+      const t = classify(getDb(), junk, inv);
+      expect(t.verdict).toBe("unknown");
+      expect(t.near ?? []).toEqual([]);
+      expect(t.evidence).toBeUndefined();
+    }
+  });
+
   test("a suggestion must be a real form, not just a related stem", () => {
     // brulaĵo is well formed and unlisted; brula shares its stem, but `brulao`
     // is nobody's spelling of anything and must not come back as a real word
@@ -355,8 +392,8 @@ describe("gloss: Esperanto audit", () => {
     const agado = classify(getDb(), "agado", inv);
     expect(agado.verdict).toBe("derived");
     expect(agado.near ?? []).toEqual([]);
-    // nobody writes finsita; both neighbours are common, the more used first
-    expect(classify(getDb(), "finsita", inv).near).toEqual(["fiksita", "finita"]);
+    // nobody writes finsita; the headword comes before the form
+    expect(classify(getDb(), "finsita", inv).near).toEqual(["finita", "fiksita"]);
   });
 });
 

@@ -97,7 +97,13 @@ const eoTermSchema = z.object({
   readings: z.array(readingSchema.extend({ art: z.string() })).optional(),
   altReading: z.boolean().optional(),
   also: readingSchema.optional(),
-  near: z.array(z.string()).optional(),
+  near: z.array(z.string()).optional().describe("Dictionary words one letter away: what may have been meant."),
+  evidence: z.object({
+    texts: z.number().int().optional(),
+    examples: z.number().int().optional(),
+    definitions: z.number().int().optional(),
+    web: z.number().int().optional(),
+  }).optional().describe("A word ReVo lacks, found written: as a form in its texts, in examples and definitions, and on the web (its lemma)."),
 });
 
 const sourceTermSchema = z.object({
@@ -213,6 +219,19 @@ function part(p: Part): string {
 const build = (parts: Part[] | undefined): string =>
   parts && parts.length > 0 ? parts.map(part).join(" + ") : "";
 
+/** ` (3× in ReVo's texts, 11 examples, ~4,438× on the web)`, or nothing when nowhere. */
+function used(t: EoTerm): string {
+  const e = t.evidence;
+  if (!e) return "";
+  const said = [
+    e.texts && `${e.texts}× in ReVo's texts`,
+    e.examples && `${e.examples} example${e.examples === 1 ? "" : "s"}`,
+    e.definitions && `${e.definitions} definition${e.definitions === 1 ? "" : "s"}`,
+    e.web && `~${e.web.toLocaleString("en")}× on the web`,
+  ].filter(Boolean);
+  return ` _(${said.join(", ")})_`;
+}
+
 function renderEo(g: EoGloss): string {
   const c = g.counts;
   const known = c.headword + c.inflection;
@@ -233,7 +252,7 @@ function renderEo(g: EoGloss): string {
     out.push("**Unknown** — no article, nothing attested, and no reading from known morphemes", "");
     for (const t of unknown) {
       const hint = t.near?.length ? ` — did you mean **${t.near.join("** / **")}**?` : "";
-      out.push(`- **${t.word}**${times(t)}${hint}`);
+      out.push(`- **${t.word}**${times(t)}${used(t)}${hint}`);
     }
     out.push("");
   }
@@ -242,8 +261,8 @@ function renderEo(g: EoGloss): string {
   if (derived.length > 0) {
     out.push("**Regular derivations** — well formed, though no article lists them", "");
     for (const t of derived) {
-      const near = t.near?.length ? ` _(one letter from **${t.near.join("** / **")}**, which ReVo lists — is that the word?)_` : "";
-      out.push(`- **${t.word}**${times(t)} = \`${t.seg}\` — ${build(t.parts)}${near}`);
+      const near = t.near?.length ? ` _(or one letter off **${t.near.join("** / **")}**?)_` : "";
+      out.push(`- **${t.word}**${times(t)} = \`${t.seg}\` — ${build(t.parts)}${used(t)}${near}`);
     }
     out.push("");
   }
@@ -253,7 +272,7 @@ function renderEo(g: EoGloss): string {
     out.push("**Attested, not a headword** — written in ReVo's own examples", "");
     for (const t of attested) {
       const seg = t.seg ? ` = \`${t.seg}\` — ${build(t.parts)}` : "";
-      out.push(`- **${t.word}**${times(t)} (${t.attested}× in the examples)${seg}`);
+      out.push(`- **${t.word}**${times(t)}${used(t)}${seg}`);
     }
     out.push("");
   }
