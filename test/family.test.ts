@@ -34,6 +34,10 @@ describe("word families and shortened names", () => {
     expect(ne.members.map((m) => m.headword)).not.toContain("Ernenjo");
   });
 
+  test("an entry's families are those of each of its headwords: razkapulo beside haŭtkapulo adds raz", () => {
+    expect(familyOf(getDb(), "kap.hauxt0ulo").families.map((f) => f.root)).toEqual(["kap", "haŭt", "ul", "raz"]);
+  });
+
   test("a member names its article's root with the ending the article gives it", () => {
     const nj = familyOf(getDb(), "nj.avi0o", { only: "nj" }).families[0];
     const kap = (h: string) => nj.members.find((m) => m.headword === h)?.articleKap;

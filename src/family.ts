@@ -211,8 +211,19 @@ export function familyOf(db: SqlReader, mark: string, opts: FamilyOptions = {}):
     // the families the headword is filed under, in its order: a root shortened
     // from the article's (Mi in Miĉjo) is filed under the article's, a name's
     // foreign words under none
-    const filed = main ? db.query<{ morph: string }, [number, number]>("SELECT morph FROM x_family WHERE node_id = ? AND kap_id = ?").all(node.id, main.kap_id).map((r) => r.morph) : [];
-    roots = [...new Set([...entry.spans.map((s) => s.morph).filter((m) => filed.includes(m)), ...filed])];
+    const filedUnder = db.query<{ morph: string }, [number, number]>("SELECT morph FROM x_family WHERE node_id = ? AND kap_id = ?");
+    const rootsOf = (row: FamilyRow | undefined) => {
+      if (!row) return [];
+      const filed = filedUnder.all(node.id, row.kap_id).map((r) => r.morph);
+      return [...spansOf(row.spans).map((s) => s.morph).filter((m) => filed.includes(m)), ...filed];
+    };
+    // then the roots of its variants that it lacks, not their affixes or little
+    // words: razkapulo beside haŭtkapulo adds raz, tremado beside tremo no -ad-
+    const variantRoots = [...own.values()].filter((r) => r.variant_of !== null).flatMap((row) => {
+      const roots = new Set(spansOf(row.spans).filter((s) => s.kind === "R").map((s) => s.morph));
+      return rootsOf(row).filter((m) => roots.has(m));
+    });
+    roots = [...new Set([...rootsOf(main), ...variantRoots])];
     // a headword the inventory cannot split still belongs to its article's root
     if (roots.length === 0 && articleRoot.length >= 2) roots = [articleRoot];
     if (roots.includes(articleRoot)) roots = [articleRoot, ...roots.filter((root) => root !== articleRoot)];
