@@ -702,7 +702,7 @@ describe("core stage", () => {
     expect(out.entry).toMatchObject({ headword: "ĉashundo", tilde: "ĉas~o", article: "hund", articleRoot: "hund" });
     expect(out.families.map((f) => [f.root, f.own])).toEqual([["hund", true], ["ĉas", false]]);
     const [hund, cxas] = out.families;
-    expect(hund.articles).toEqual([{ article: "hund", rad: "hund" }]);
+    expect(hund.articles).toEqual([{ article: "hund", rad: "hund", kap: "hund/o" }]);
     // the root's own noun and adjective first, then alphabetically
     expect(hund.members.slice(0, 2).map((m) => m.headword)).toEqual(["hundo", "hunda"]);
     expect(hund.members.find((m) => m.headword === "hundherbo")).toMatchObject({ article: "herb", articleRoot: "herb", tilde: "hund~o" });
