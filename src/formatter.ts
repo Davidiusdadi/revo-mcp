@@ -191,6 +191,9 @@ function formatSingleResult(
 
       if (sense.definition) {
         lines.push(`${prefix}${sense.definition}${domain}`);
+      } else if (sense.refs?.length) {
+        // a sense ReVo gives only as a pointer: l 2. "See: halo!"
+        lines.push(`${prefix}${sense.refs.map((r) => `${refTypeLabel(r.type)}: ${r.text}`).join("; ")}${domain}`);
       }
       for (const d of sense.definitions ?? []) {
         lines.push(`  - (${d.lng}) ${d.txt}${d.fnt ? ` _[${d.fnt}]_` : ""}`);

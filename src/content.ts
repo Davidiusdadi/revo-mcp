@@ -267,6 +267,15 @@ export interface SenseEntry {
   definitions?: ForeignDefinition[];
   examples: Example[];
   domain?: string;
+  /** the sense's own references, not those in its examples or notes, in reading order */
+  refs?: SenseRef[];
+}
+
+/** A reference of a sense: its type (dif, vid, sin, ant, …), the mark it points to, its text. */
+export interface SenseRef {
+  type: string;
+  target: string;
+  text: string;
 }
 
 /**
@@ -336,7 +345,8 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
     const of = (name: string) => content.filter((c) => c.el.name === name);
     const difs = of("dif");
     let definition = difs.filter((c) => inEsperanto(c.el)).map((c) => textIn(c.el, roots, OMIT.dif)).join(" ");
-    const refs = of("ref").filter((c) => c.owner === "node" && c.tip === "dif");
+    const own = of("ref").filter((c) => c.owner === "node");
+    const refs = own.filter((c) => c.tip === "dif");
     if (!definition && refs.length > 0) definition = `= ${refs.map((c) => textIn(c.el, roots)).join(", ")}`;
     const sense: SenseEntry = {
       mrk,
@@ -354,6 +364,9 @@ export function entryContent(drv: Element, roots: Roots): EntryContent {
     if (foreign.length > 0) sense.definitions = foreign;
     const domains = of("uzo").filter((c) => c.owner === "node" && c.el.attrs.tip === "fak").map((c) => textIn(c.el, roots));
     if (domains.length > 0) sense.domain = domains.join(", ");
+    if (own.length > 0) {
+      sense.refs = own.map((c) => ({ type: c.tip ?? "", target: c.el.attrs.cel ?? "", text: textIn(c.el, roots) }));
+    }
     return sense;
   };
 

@@ -8,6 +8,7 @@ import {
   getLanguages,
   closeDb,
 } from "../src/db";
+import { formatResults } from "../src/formatter";
 
 afterAll(() => closeDb());
 
@@ -24,6 +25,14 @@ describe("lookupEsperanto", () => {
     expect(results.length).toBe(1);
     expect(results[0].headword).toBe("hundo");
     expect(results[0].senses.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a sense given only as a pointer carries it", () => {
+    const [lo] = lookupEsperanto("lo", 1);
+    const phone = lo.senses.find((sense) => sense.mrk === "l.0.telefone")!;
+    expect(phone.definition).toBe("");
+    expect(phone.refs).toEqual([{ type: "vid", target: "hola.0", text: "halo!" }]);
+    expect(formatResults([lo])).toMatch(/^\*\*2\.\*\* See: halo!$/m);
   });
 
   test("finds words with Esperanto characters", () => {
