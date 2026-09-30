@@ -137,6 +137,16 @@ describe("search over the dictionary", () => {
     expect(phrase.matchReasons[0]).toMatchObject({ language: "en", kind: "translation-phrase", text: "pain in the butt" });
     expect(heads.indexOf("ĉikanema")).toBeGreaterThan(heads.indexOf("pafilkapo"));
   });
+
+  test("an English verb is found with its \"to\" and without it", () => {
+    for (const query of ["to complain", "complain"]) {
+      const result = search({ query, languages: ["eo", "en"], matchLanguage: "en", limit: 20 });
+      const exact = result.results.filter(({ matchReasons }) => matchReasons[0].kind === "translation");
+      expect(exact.map(({ entry }) => entry.headword)).toEqual(expect.arrayContaining(["plendi", "maldanki"]));
+      // the form as asked for comes first
+      expect(exact[0].matchReasons[0].text).toBe(query);
+    }
+  });
 });
 
 describe("search for a word nothing names", () => {

@@ -143,8 +143,10 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
     }
 
     for (const language of order.filter((language) => language !== "eo")) {
-      const exact = exactRows(db, language, normalized);
-      if (exact.length) addRows(language, exact, "translation");
+      // English files a verb both bare and with its "to": "to complain" is plendi's "complain" too
+      const forms = [normalized, ...(language === "en" ? [infinitiveTwin(normalized)] : [])];
+      const exact = forms.map((form) => exactRows(db, language, form));
+      if (exact.some((rows) => rows.length)) exact.forEach((rows, index) => addRows(language, rows, "translation", undefined, index));
       else {
         let reduced = false;
         for (const form of reductionsOf(query, language)) {
@@ -157,7 +159,7 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
         if (!reduced) addRows(language, prefixRows(db, language, normalized), "translation-prefix");
       }
       // and after them the translations with the query among their words: "pain in the butt"
-      addRows(language, phraseRows(db, language, normalized).filter(({ norm }) => norm !== normalized), "translation-phrase");
+      addRows(language, phraseRows(db, language, normalized).filter(({ norm }) => !forms.includes(norm)), "translation-phrase");
     }
 
     // a word nothing names may still be written in the entries: kuirado in fork's example
@@ -178,6 +180,9 @@ function rank(db: SqlReader, query: string, order: string[], focus?: string): Ra
   const languageMatches = order.map((language) => ({ language, count: matched.get(language)!.size }));
   return { ranked, languageMatches };
 }
+
+/** An English verb with its "to" dropped, or given one: "to complain" ↔ "complain". */
+const infinitiveTwin = (form: string) => (form.startsWith("to ") ? form.slice(3) : `to ${form}`);
 
 function kindRank(kind: string): number {
   if (kind === "headword" || kind === "translation") return 0;
